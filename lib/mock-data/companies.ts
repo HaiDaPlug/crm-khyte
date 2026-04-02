@@ -1,0 +1,58 @@
+import { Company } from '../types'
+
+export const mockCompanies: Company[] = [
+  {
+    id: 'c1',
+    name: 'Meridian Labs',
+    domain: 'meridianlabs.io',
+    industry: 'SaaS',
+    size: '50-200',
+    location: 'Berlin, DE',
+    tags: ['enterprise', 'high-intent'],
+  },
+  {
+    id: 'c2',
+    name: 'Nordvik Capital',
+    domain: 'nordvik.com',
+    industry: 'Finance',
+    size: '200-500',
+    location: 'Stockholm, SE',
+    tags: ['warm', 'decision-maker-engaged'],
+  },
+  {
+    id: 'c3',
+    name: 'Calloway Systems',
+    domain: 'calloway.systems',
+    industry: 'Infrastructure',
+    size: '10-50',
+    location: 'London, UK',
+    tags: ['cold', 'researched'],
+  },
+  {
+    id: 'c4',
+    name: 'Sable Analytics',
+    domain: 'sableanalytics.co',
+    industry: 'Data',
+    size: '50-200',
+    location: 'Amsterdam, NL',
+    tags: ['proposal-sent'],
+  },
+  {
+    id: 'c5',
+    name: 'Fenwick Advisory',
+    domain: 'fenwick.io',
+    industry: 'Consulting',
+    size: '10-50',
+    location: 'Paris, FR',
+    tags: ['new', 'referral'],
+  },
+  {
+    id: 'c6',
+    name: 'Orin Technologies',
+    domain: 'orin.tech',
+    industry: 'Hardware',
+    size: '500+',
+    location: 'Munich, DE',
+    tags: ['enterprise', 'slow-moving'],
+  },
+]
