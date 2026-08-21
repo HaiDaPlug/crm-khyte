@@ -475,12 +475,15 @@ a, button, [role="button"] {
 /* ———— Grain buttons ———— */
 /* A lacquered, tinted-per-variant version of the .grain-card material:
    a 4-stop gradient (glint → hue → shade → burnt edge) reads as a curved,
-   coated surface rather than a flat fill; the grain is two turbulence
-   layers blended together (fine grain modulated by coarse mottling) so it
-   has patchy, organic density instead of uniform static; a two-tone inset
-   border reads as a bevel; and a diagonal sheen sweeps across on hover.
-   Layout (size, padding, radius) stays with Tailwind utilities on the
-   element — this class only owns the material. */
+   coated surface rather than a flat fill; a single fine-turbulence layer
+   adds a uniform film-grain texture without mottling the color; a two-tone
+   inset border reads as a bevel; and a diagonal sheen sweeps across on
+   hover. Layout (size, padding, radius) stays with Tailwind utilities on
+   the element — this class only owns the material.
+   (An earlier pass blended in a second, coarse turbulence layer for extra
+   "character" — at button scale that read as uneven blotches muddying the
+   color rather than grain. That version is kept as .btn-grain-patchy /
+   ButtonGrainPatchy.tsx below, in case it's wanted for a larger surface.) */
 .btn-grain {
   position: relative;
   isolation: isolate;
@@ -489,12 +492,12 @@ a, button, [role="button"] {
   color: var(--btn-fg, var(--background));
   background:
     radial-gradient(38% 65% at 22% -18%, color-mix(in srgb, white 65%, transparent) 0%, transparent 60%),
-    radial-gradient(70% 55% at 100% 118%, color-mix(in srgb, black 40%, transparent) 0%, transparent 60%),
+    radial-gradient(70% 55% at 100% 118%, color-mix(in srgb, black 32%, transparent) 0%, transparent 60%),
     linear-gradient(160deg,
-      color-mix(in srgb, white 22%, var(--btn-hue)) 0%,
-      var(--btn-hue) 40%,
-      color-mix(in srgb, black 16%, var(--btn-hue)) 72%,
-      color-mix(in srgb, black 34%, var(--btn-hue)) 100%);
+      color-mix(in srgb, white 16%, var(--btn-hue)) 0%,
+      var(--btn-hue) 38%,
+      color-mix(in srgb, black 10%, var(--btn-hue)) 70%,
+      color-mix(in srgb, black 22%, var(--btn-hue)) 100%);
   box-shadow:
     inset 0 1.5px 0 0 rgba(255, 255, 255, 0.45),
     inset 0 -2px 0 0 rgba(0, 0, 0, 0.24),
@@ -505,20 +508,19 @@ a, button, [role="button"] {
     0 10px 22px -10px color-mix(in srgb, var(--btn-hue) 75%, transparent);
   transition: filter 0.15s ease, box-shadow 0.15s ease;
 }
-/* Grain: fine turbulence blended over coarse turbulence (feBlend overlay)
-   gives patchy density variation instead of even static — closer to real
-   film grain than a single feTurbulence layer. */
+/* Grain: a single fine turbulence layer, tiled small relative to the button
+   so it reads as even texture rather than a repeating blob. */
 .btn-grain::before {
   content: '';
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.5;
+  opacity: 0.3;
   mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' seed='7' result='fine'/%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.045' numOctaves='2' seed='3' result='coarse'/%3E%3CfeBlend in='fine' in2='coarse' mode='overlay'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' seed='7'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   background-repeat: repeat;
-  background-size: 84px 84px;
+  background-size: 48px 48px;
 }
 /* Diagonal sheen — sits flush left at rest, sweeps across on hover. */
 .btn-grain::after {
@@ -571,9 +573,102 @@ a, button, [role="button"] {
 
 /* Leans past the muted brand --accent toward a more saturated, true orange —
    deliberately a bolder tint than the accent used for text/badges elsewhere. */
-.btn-grain-primary { --btn-hue: color-mix(in srgb, var(--accent) 35%, #FF7A12 65%); --btn-fg: var(--background); }
+.btn-grain-primary { --btn-hue: color-mix(in srgb, var(--accent) 12%, #FF6A00 88%); --btn-fg: var(--background); }
 .btn-grain-danger  { --btn-hue: var(--danger); --btn-fg: #fff; }
 .btn-grain-success { --btn-hue: var(--success); --btn-fg: #fff; }
+
+/* ———— Grain buttons (patchy variant, kept for reference/reuse) ————
+   Byte-for-byte the original two-turbulence-layer treatment from before the
+   "more orange, less patchy" pass on .btn-grain — the coarse turbulence layer
+   blended under the fine grain is what produced the mottled, cloud-like
+   density variation. Used by ButtonGrainPatchy.tsx; not wired into any page. */
+.btn-grain-patchy {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, black 15%, var(--btn-hue));
+  color: var(--btn-fg, var(--background));
+  background:
+    radial-gradient(38% 65% at 22% -18%, color-mix(in srgb, white 65%, transparent) 0%, transparent 60%),
+    radial-gradient(70% 55% at 100% 118%, color-mix(in srgb, black 40%, transparent) 0%, transparent 60%),
+    linear-gradient(160deg,
+      color-mix(in srgb, white 22%, var(--btn-hue)) 0%,
+      var(--btn-hue) 40%,
+      color-mix(in srgb, black 16%, var(--btn-hue)) 72%,
+      color-mix(in srgb, black 34%, var(--btn-hue)) 100%);
+  box-shadow:
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 0 0 rgba(0, 0, 0, 0.24),
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px 0 0 0 rgba(0, 0, 0, 0.1),
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    0 3px 8px -3px color-mix(in srgb, var(--btn-hue) 55%, transparent),
+    0 10px 22px -10px color-mix(in srgb, var(--btn-hue) 75%, transparent);
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+.btn-grain-patchy::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' seed='7' result='fine'/%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.045' numOctaves='2' seed='3' result='coarse'/%3E%3CfeBlend in='fine' in2='coarse' mode='overlay'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 84px 84px;
+}
+.btn-grain-patchy::after {
+  content: '';
+  position: absolute;
+  inset: -20% -40%;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 40%, rgba(255, 255, 255, 0.4) 49%, transparent 58%);
+  background-size: 250% 250%;
+  background-repeat: no-repeat;
+  background-position: -140% 0;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.btn-grain-patchy > * {
+  position: relative;
+  z-index: 1;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+}
+.btn-grain-patchy:hover:not(:disabled) {
+  filter: brightness(1.1) saturate(1.08);
+  box-shadow:
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.5),
+    inset 0 -2px 0 0 rgba(0, 0, 0, 0.24),
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.1),
+    inset -1px 0 0 0 rgba(0, 0, 0, 0.1),
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    0 4px 10px -3px color-mix(in srgb, var(--btn-hue) 60%, transparent),
+    0 14px 28px -10px color-mix(in srgb, var(--btn-hue) 85%, transparent);
+}
+.btn-grain-patchy:hover:not(:disabled)::after {
+  opacity: 1;
+  animation: shimmer 1.1s cubic-bezier(0.25, 0.7, 0.4, 1) 1;
+}
+.btn-grain-patchy:active:not(:disabled) {
+  filter: brightness(0.92) saturate(1.02);
+  box-shadow:
+    inset 0 1.5px 2px 0 rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    0 1px 1px rgba(0, 0, 0, 0.25),
+    0 2px 6px -2px color-mix(in srgb, var(--btn-hue) 55%, transparent);
+}
+.btn-grain-patchy:disabled {
+  opacity: 0.45;
+  filter: grayscale(0.4);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.btn-grain-patchy-primary { --btn-hue: color-mix(in srgb, var(--accent) 35%, #FF7A12 65%); --btn-fg: var(--background); }
+.btn-grain-patchy-danger  { --btn-hue: var(--danger); --btn-fg: #fff; }
+.btn-grain-patchy-success { --btn-hue: var(--success); --btn-fg: #fff; }
 
 /* Display font class */
 .font-display {
