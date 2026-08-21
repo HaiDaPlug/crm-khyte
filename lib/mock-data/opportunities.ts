@@ -1,9 +1,9 @@
-import { Opportunity } from '../types'
+﻿import { Opportunity } from '../types'
 
 export const mockOpportunities: Opportunity[] = [
   {
     id: 'o1', companyId: 'c1', contactId: 'ct1',
-    stage: 'Warm', priority: 'high',
+    stage: 'Warm', priority: 'high', inPipeline: true,
     dealValue: 48000,
     nextStep: 'Send revised proposal with updated pricing',
     followUpDate: '2026-04-02',
@@ -13,7 +13,7 @@ export const mockOpportunities: Opportunity[] = [
   },
   {
     id: 'o2', companyId: 'c2', contactId: 'ct2',
-    stage: 'Meeting Booked', priority: 'high',
+    stage: 'Meeting Booked', priority: 'high', inPipeline: true,
     dealValue: 120000,
     nextStep: 'Discovery call Thursday 2pm',
     followUpDate: '2026-03-27',
@@ -23,7 +23,7 @@ export const mockOpportunities: Opportunity[] = [
   },
   {
     id: 'o3', companyId: 'c3', contactId: 'ct3',
-    stage: 'Contacted', priority: 'medium',
+    stage: 'Contacted', priority: 'medium', inPipeline: true,
     dealValue: 24000,
     nextStep: 'Follow up on email sent last week',
     followUpDate: '2026-03-28',
@@ -33,7 +33,7 @@ export const mockOpportunities: Opportunity[] = [
   },
   {
     id: 'o4', companyId: 'c4', contactId: 'ct4',
-    stage: 'Proposal Sent', priority: 'critical',
+    stage: 'Proposal Sent', priority: 'critical', inPipeline: true,
     dealValue: 75000,
     nextStep: 'Check if proposal was reviewed',
     followUpDate: '2026-03-26',
@@ -43,7 +43,7 @@ export const mockOpportunities: Opportunity[] = [
   },
   {
     id: 'o5', companyId: 'c5', contactId: 'ct5',
-    stage: 'New', priority: 'low',
+    stage: 'New', priority: 'low', inPipeline: false,
     dealValue: 18000,
     nextStep: 'Research company and personalize outreach',
     followUpDate: '2026-04-05',
@@ -53,7 +53,7 @@ export const mockOpportunities: Opportunity[] = [
   },
   {
     id: 'o6', companyId: 'c6', contactId: 'ct6',
-    stage: 'Negotiation', priority: 'high',
+    stage: 'Negotiation', priority: 'high', inPipeline: true,
     dealValue: 200000,
     nextStep: 'Legal review of contract terms',
     followUpDate: '2026-03-30',
@@ -63,7 +63,7 @@ export const mockOpportunities: Opportunity[] = [
   },
   {
     id: 'o7', companyId: 'c1', contactId: 'ct1',
-    stage: 'Researched', priority: 'medium',
+    stage: 'Researched', priority: 'medium', inPipeline: false,
     dealValue: 32000,
     nextStep: 'Draft personalized outreach email',
     followUpDate: '2026-04-01',

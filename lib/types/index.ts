@@ -37,6 +37,8 @@ export interface Opportunity {
   contactId: string
   stage: Stage
   priority: Priority
+  /** Leads only appear on the pipeline board once explicitly added */
+  inPipeline: boolean
   dealValue?: number
   nextStep: string
   followUpDate: string
@@ -91,4 +93,45 @@ export interface Task {
   completed: boolean
   priority: Priority
   createdAt: string
+}
+
+/**
+ * The full working set the client store is built with on boot.
+ * Produced server-side by lib/db/queries.loadSnapshot().
+ */
+export interface CRMSnapshot {
+  companies: Company[]
+  contacts: Contact[]
+  opportunities: Opportunity[]
+  notes: Note[]
+  strategyCards: StrategyCard[]
+  tasks: Task[]
+}
+
+/* ———— Display settings ———— */
+
+export type CurrencyCode = 'SEK' | 'EUR' | 'USD' | 'GBP'
+
+export type AppLanguage = 'sv' | 'en'
+
+export type LocaleCode =
+  | 'en-US' | 'en-GB' | 'de-DE' | 'fr-FR'
+  | 'es-ES' | 'nl-NL' | 'sv-SE' | 'ja-JP'
+
+export type DateFormat = 'locale' | 'iso' | 'us' | 'eu'
+
+/**
+ * How the app renders values, not what it stores. Persisted to localStorage
+ * per browser rather than to Postgres — these are per-device display choices,
+ * and the app is still single-operator.
+ */
+export interface Settings {
+  theme: 'dark' | 'light'
+  /** Language used by app-owned interface copy. */
+  language: AppLanguage
+  currency: CurrencyCode
+  locale: LocaleCode
+  dateFormat: DateFormat
+  /** Collapse large sums to 517K in tiles and totals. */
+  compactNumbers: boolean
 }
