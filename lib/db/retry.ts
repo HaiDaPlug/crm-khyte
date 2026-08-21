@@ -9,17 +9,22 @@ import 'server-only'
  * clock runs a second or two ahead of the validating one, that token is briefly
  * not yet valid and the read is rejected. It clears on its own.
  *
- * Measured 2026-08-21 by polling a trivial REST read every 300ms and recording
- * only the transitions. What the numbers say:
+ * Measured 2026-08-21, in two passes, because the first one got it wrong in a
+ * way worth recording. What the numbers say:
  *
- * - The rejection is `PGRST303 / JWT issued at future`, HTTP 401, and it lasted
- *   **617ms** before the same request succeeded untouched.
+ * - The rejection is `PGRST303 / JWT issued at future`, HTTP 401.
+ * - It runs for **at least 4 seconds**. Three incidents under this schedule
+ *   failed continuously for 4.04s, 3.94s and 3.95s.
+ * - An earlier probe reported a 617ms window and the budget was sized to it.
+ *   That number was a *partial* observation: a continuous poller only sees a
+ *   window from the moment it happens to hit one, so it measured the tail of
+ *   an already-open window and called it the whole thing. Sizing to it left a
+ *   budget that expired mid-fault, which looks exactly like the fix not
+ *   working. Measure from the request that *triggers* the fault, not from
+ *   whenever the poller arrived.
  * - The API's `Date` header ran ~2s *ahead* of this machine. Every part of the
  *   exchange is validated server-side, so the local clock is not involved —
  *   don't go resyncing w32tm over this.
- * - Four of the five incidents in the dev log burnt all three of the old
- *   attempts inside 600ms and still failed; one recovered. The classification
- *   was already right. The budget was 17ms too small.
  *
  * Two tempting explanations are ruled out, so nobody re-derives them:
  *
@@ -57,20 +62,42 @@ const TRANSIENT_READ =
 const RETRYABLE_WRITE = /issued at future|not yet valid/i
 
 /**
- * Backoff schedule, in milliseconds of waiting: 250, 500, 1000, 2000.
+ * Waiting strategy: back off briefly, then poll at a steady 750ms.
  *
- * Sized to the measurement rather than to a habit. The previous schedule
- * (three attempts, 200 + 400) made its last attempt at 600ms and gave up 17ms
- * short of a 617ms window. This one retries at 250ms, 750ms, 1.75s and 3.75s,
- * so the measured fault clears on the third attempt with ~3s still in hand.
+ * Textbook exponential backoff is the wrong shape here, and trying it showed
+ * why: doubling puts nothing between 3.75s and 7.75s, so a 4s window — the
+ * length actually measured — was only noticed at 7.75s. The page sat blank for
+ * twice as long as the fault lasted.
  *
- * Doubling rather than adding matters: most of the budget sits in the last
- * wait, so a blip that clears immediately still costs ~250ms while a longer
- * one gets seconds of cover.
+ * Backoff exists to shed load off a dependency that is struggling. This
+ * dependency is not struggling; it is holding a door shut until a clock
+ * catches up. Our polling costs it nothing, and we want back in the moment it
+ * opens. So: 250ms, 500ms, 1s to clear short blips cheaply, then a flat 750ms
+ * so recovery is spotted within 750ms of it happening rather than at the next
+ * power of two.
  */
-const ATTEMPTS = 5
-const BASE_DELAY_MS = 250
-const delayFor = (attempt: number) => BASE_DELAY_MS * 2 ** (attempt - 1)
+const EARLY_DELAYS_MS = [250, 500, 1000]
+const STEADY_DELAY_MS = 750
+const delayFor = (attempt: number) => EARLY_DELAYS_MS[attempt - 1] ?? STEADY_DELAY_MS
+
+/**
+ * How long we are willing to wait, by what went wrong.
+ *
+ * A clock disagreement *will* resolve itself, so patience is warranted: 8s is
+ * about as long as a page can sit before waiting is worse than failing, and it
+ * covers the ~4s windows with room to spare.
+ *
+ * Everything else — a dead socket, a 503 — has no such promise, and eight
+ * seconds of hope before an error screen is worse than a quick honest answer.
+ * Those get 2.5s.
+ *
+ * If skew windows ever outgrow 8s, more waiting stops being the answer: take
+ * PostgREST out of the read path instead. SUPABASE_DB_URL is already
+ * configured for migrations, and a direct Postgres connection mints no token,
+ * so it cannot have this fault at all.
+ */
+const SKEW_BUDGET_MS = 8_000
+const OTHER_BUDGET_MS = 2_500
 
 /**
  * The clock-skew rejection specifically (PostgREST answers `PGRST303`), as
@@ -87,26 +114,39 @@ export const isClockSkew = (message: string) => CLOCK_SKEW.test(message)
 /**
  * Runs `operation`, retrying while `shouldRetry` matches the failure.
  *
+ * Bounded by elapsed time rather than a number of attempts: the thing being
+ * waited out is a duration, so the budget that matters is "how long will this
+ * page sit here", not "how many requests did we send".
+ *
  * Anything else — a wrong key, a missing table, a constraint violation — throws
  * on the first attempt, so genuine misconfiguration still fails fast and loud
- * rather than taking five times as long to say the same thing.
+ * rather than taking eight seconds to say the same thing.
  */
 export async function withRetry<T>(
   label: string,
   operation: () => Promise<T>,
   shouldRetry: (message: string) => boolean
 ): Promise<T> {
+  const startedAt = Date.now()
+
   for (let attempt = 1; ; attempt++) {
     try {
       return await operation()
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
-      if (attempt >= ATTEMPTS || !shouldRetry(message)) throw cause
+      if (!shouldRetry(message)) throw cause
 
+      const budget = isClockSkew(message) ? SKEW_BUDGET_MS : OTHER_BUDGET_MS
+      const elapsed = Date.now() - startedAt
       const delay = delayFor(attempt)
+      // Stop when the next wait would run past the budget rather than after it
+      // already has — the caller is waiting on this, so overshooting the number
+      // in the log is not free.
+      if (elapsed + delay > budget) throw cause
+
       console.warn(
-        `[khyte] ${label}: transient failure (attempt ${attempt}/${ATTEMPTS}), ` +
-          `retrying in ${delay}ms — ${message}`
+        `[khyte] ${label}: transient failure (attempt ${attempt}, ${elapsed}ms of ` +
+          `${budget}ms budget), retrying in ${delay}ms — ${message}`
       )
       await new Promise((resolve) => setTimeout(resolve, delay))
     }

@@ -116,7 +116,7 @@ there has nothing above it to catch it:
 
 | Layer | Handles |
 |---|---|
-| `lib/db/retry.ts` | Transient faults, absorbed silently. 3 attempts, 200ms/400ms backoff |
+| `lib/db/retry.ts` | Transient faults, absorbed silently. 6 attempts with 250ms–4s exponential waits (7.75s total budget) |
 | `app/global-error.tsx` | Everything the retry can't — renders a themed screen with a working retry button |
 
 **`global-error.tsx` is the only boundary in the app.** A segment `error.tsx`
@@ -439,10 +439,10 @@ Palette philosophy: primary text is pure white (dark) / pure black (light) — n
   request — so the skew is between Supabase's own services and is not fixable
   here. Reads retry the full transient set; writes retry auth-timing faults only,
   because a dropped connection may mean the write landed and only the response
-  was lost. Three attempts, 200ms/400ms backoff; anything non-transient still
-  fails on the first try. Not a cure — a blip longer than ~600ms still surfaces,
-  but `app/global-error.tsx` now catches it with a retry button instead of a
-  blank page
+  was lost. Follow-up probes observed roughly four-second fault windows, so six
+  attempts now wait 250ms, 500ms, 1s, 2s, and 4s before the final try at 7.75s;
+  anything non-transient still fails immediately. A longer fault still surfaces,
+  but `app/global-error.tsx` catches it with a retry button instead of a blank page
 - Adding a lead from the pipeline "Add Leads" picker resets its stage to "New" even if it was further along — intentional per spec, revisit if it feels wrong in use
 - **Seven call sites still call `crypto.randomUUID()` directly** instead of
   `newId()` — `AddCompanyModal`, `AddContactModal` (×2), `CaptureBox`,
