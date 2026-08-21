@@ -15,8 +15,9 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { LeadCard } from './LeadCard'
-import { Opportunity, Company, Contact, Stage } from '@/lib/types'
+import { Company, Contact, Opportunity, Stage } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 const STAGES: Stage[] = [
   'New', 'Researched', 'Contacted', 'Warm',
@@ -49,6 +50,7 @@ interface ColumnProps {
 }
 
 function PipelineColumn({ stage, cards, onCardClick, isOver }: ColumnProps) {
+  const { t } = useTranslations()
   const { setNodeRef } = useDroppable({ id: stage })
   const config = stageConfig[stage]
 
@@ -63,7 +65,7 @@ function PipelineColumn({ stage, cards, onCardClick, isOver }: ColumnProps) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className={cn('w-2 h-2 rounded-full', config.dot)} />
-            <span className="text-[12px] font-medium text-foreground">{stage}</span>
+            <span className="text-[12px] font-medium text-foreground">{t.stages[stage]}</span>
           </div>
           <span className="text-[10px] font-mono text-muted bg-background-raised px-1.5 py-0.5 rounded-md">
             {cards.length}
@@ -98,9 +100,9 @@ function PipelineColumn({ stage, cards, onCardClick, isOver }: ColumnProps) {
           <div className="h-16 flex items-center justify-center">
             <p className={cn(
               'text-[11px] transition-colors duration-150',
-              isOver ? 'text-accent' : 'text-muted/30'
+              isOver ? 'text-accent' : 'text-muted'
             )}>
-              {isOver ? 'Drop here' : 'Empty'}
+              {isOver ? t.crm.board.dropHere : t.crm.board.empty}
             </p>
           </div>
         )}
@@ -116,19 +118,13 @@ interface PipelineBoardProps {
 }
 
 export function PipelineBoard({ rows, onCardClick, onStageChange }: PipelineBoardProps) {
-  const [opportunities, setOpportunities] = useState<Opportunity[]>(
-    rows.map(r => r.opportunity)
-  )
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overStage, setOverStage] = useState<string | null>(null)
 
+  // Cards derive straight from the store-backed rows so drags and newly
+  // added leads stay in sync with every other page
   const getCardsByStage = (stage: Stage): PipelineRow[] => {
-    return opportunities
-      .filter(o => o.stage === stage)
-      .map(opp => {
-        const original = rows.find(r => r.opportunity.id === opp.id)!
-        return { ...original, opportunity: opp }
-      })
+    return rows.filter(r => r.opportunity.stage === stage)
   }
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -146,8 +142,8 @@ export function PipelineBoard({ rows, onCardClick, onStageChange }: PipelineBoar
     if (targetStage) {
       setOverStage(targetStage)
     } else {
-      const targetOpp = opportunities.find(o => o.id === overId)
-      if (targetOpp) setOverStage(targetOpp.stage)
+      const targetRow = rows.find(r => r.opportunity.id === overId)
+      if (targetRow) setOverStage(targetRow.opportunity.stage)
     }
   }
 
@@ -166,22 +162,16 @@ export function PipelineBoard({ rows, onCardClick, onStageChange }: PipelineBoar
     if (targetStage) {
       newStage = targetStage
     } else {
-      const targetOpp = opportunities.find(o => o.id === overId)
-      if (targetOpp) newStage = targetOpp.stage
+      const targetRow = rows.find(r => r.opportunity.id === overId)
+      if (targetRow) newStage = targetRow.opportunity.stage
     }
 
     if (newStage) {
-      setOpportunities(prev =>
-        prev.map(opp =>
-          opp.id === draggedId ? { ...opp, stage: newStage! } : opp
-        )
-      )
       onStageChange?.(draggedId, newStage)
     }
   }
 
   const activeRow = activeId ? rows.find(r => r.opportunity.id === activeId) : null
-  const activeOpp = activeId ? opportunities.find(o => o.id === activeId) : null
 
   return (
     <DndContext
@@ -203,10 +193,10 @@ export function PipelineBoard({ rows, onCardClick, onStageChange }: PipelineBoar
       </div>
 
       <DragOverlay>
-        {activeRow && activeOpp ? (
+        {activeRow ? (
           <div className="rotate-2 opacity-90 scale-105">
             <LeadCard
-              opportunity={activeOpp}
+              opportunity={activeRow.opportunity}
               company={activeRow.company}
               contact={activeRow.contact}
             />

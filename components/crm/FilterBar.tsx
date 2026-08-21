@@ -4,16 +4,11 @@ import { useState } from 'react'
 import { Filter, X, ChevronDown } from 'lucide-react'
 import { Stage, Priority } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { priorityDot } from '@/lib/stage-config'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 const stages: Stage[] = ['New', 'Researched', 'Contacted', 'Warm', 'Meeting Booked', 'Proposal Sent', 'Negotiation', 'Won', 'Lost']
 const priorities: Priority[] = ['critical', 'high', 'medium', 'low']
-
-const priorityDots: Record<Priority, string> = {
-  critical: 'bg-red-500',
-  high: 'bg-accent',
-  medium: 'bg-blue-400',
-  low: 'bg-muted',
-}
 
 interface FilterBarProps {
   selectedStages: Stage[]
@@ -23,6 +18,7 @@ interface FilterBarProps {
 }
 
 export function FilterBar({ selectedStages, selectedPriorities, onStageChange, onPriorityChange }: FilterBarProps) {
+  const { t } = useTranslations()
   const [open, setOpen] = useState(false)
 
   const toggleStage = (stage: Stage) => {
@@ -55,7 +51,7 @@ export function FilterBar({ selectedStages, selectedPriorities, onStageChange, o
         <button
           onClick={() => setOpen(!open)}
           className={cn(
-            'flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12px] font-medium transition-all border',
+            'flex items-center gap-1.5 h-9 px-4 rounded-lg text-[13px] font-medium transition-all border',
             hasFilters
               ? 'bg-accent text-background border-accent'
               : open
@@ -63,23 +59,23 @@ export function FilterBar({ selectedStages, selectedPriorities, onStageChange, o
                 : 'bg-surface text-muted-foreground border-border hover:border-border-accent'
           )}
         >
-          <Filter size={12} />
-          Filter
+          <Filter size={14} />
+          {t.crm.filter.filter}
           {hasFilters && (
-            <span className="bg-white/20 text-[10px] font-bold min-w-[18px] h-[18px] rounded-full flex items-center justify-center ml-0.5">
+            <span className="bg-background/20 text-[11px] font-bold min-w-[19px] h-[19px] rounded-full flex items-center justify-center ml-0.5 tabular-nums">
               {filterCount}
             </span>
           )}
-          <ChevronDown size={11} className={cn('transition-transform', open && 'rotate-180')} />
+          <ChevronDown size={13} className={cn('transition-transform', open && 'rotate-180')} />
         </button>
 
         {hasFilters && (
           <button
             onClick={clearFilters}
-            className="flex items-center gap-1 h-8 px-2.5 rounded-lg text-[12px] text-muted hover:text-foreground transition-colors"
+            className="flex items-center gap-1 h-9 px-3 rounded-lg text-[13px] text-foreground/65 hover:text-foreground transition-colors"
           >
-            <X size={11} />
-            Clear all
+            <X size={13} />
+            {t.crm.filter.clearAll}
           </button>
         )}
 
@@ -89,21 +85,21 @@ export function FilterBar({ selectedStages, selectedPriorities, onStageChange, o
               <button
                 key={stage}
                 onClick={() => toggleStage(stage)}
-                className="flex items-center gap-1 h-7 px-2.5 rounded-lg bg-surface-raised text-[11px] font-medium text-muted-foreground border border-border hover:border-border-accent transition-colors"
+                className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-surface-raised text-[12.5px] font-medium text-foreground/85 border border-border hover:border-border-accent transition-colors"
               >
-                {stage}
-                <X size={9} className="text-muted" />
+                {t.stages[stage]}
+                <X size={11} className="text-foreground/60" />
               </button>
             ))}
             {selectedPriorities.map(priority => (
               <button
                 key={priority}
                 onClick={() => togglePriority(priority)}
-                className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg bg-surface-raised text-[11px] font-medium text-muted-foreground border border-border hover:border-border-accent transition-colors capitalize"
+                className="flex items-center gap-1.5 h-8 px-3 rounded-lg bg-surface-raised text-[12.5px] font-medium text-foreground/85 border border-border hover:border-border-accent transition-colors capitalize"
               >
-                <span className={cn('w-1.5 h-1.5 rounded-full', priorityDots[priority])} />
-                {priority}
-                <X size={9} className="text-muted" />
+                <span className="w-2 h-2 rounded-full" style={{ background: priorityDot[priority] }} />
+                {t.priorities[priority]}
+                <X size={11} className="text-foreground/60" />
               </button>
             ))}
           </div>
@@ -112,48 +108,48 @@ export function FilterBar({ selectedStages, selectedPriorities, onStageChange, o
 
       <div className={cn(
         'overflow-hidden transition-all duration-200 ease-out',
-        open ? 'max-h-[200px] opacity-100 mt-3' : 'max-h-0 opacity-0 mt-0'
+        open ? 'max-h-[240px] opacity-100 mt-3' : 'max-h-0 opacity-0 mt-0'
       )}>
         <div className="p-4 bg-surface border border-border rounded-xl flex flex-wrap gap-6 animate-fade-in">
           <div>
-            <p className="label-mono mb-2.5">Stage</p>
+            <p className="label-mono mb-2.5">{t.crm.filter.stage}</p>
             <div className="flex flex-wrap gap-1.5">
               {stages.map(stage => (
                 <button
                   key={stage}
                   onClick={() => toggleStage(stage)}
                   className={cn(
-                    'h-7 px-2.5 rounded-lg text-[11px] font-medium transition-all border',
+                    'h-8 px-3 rounded-lg text-[12.5px] font-medium transition-all border',
                     selectedStages.includes(stage)
                       ? 'bg-accent text-background border-accent'
                       : 'bg-transparent text-muted-foreground border-border hover:border-border-accent'
                   )}
                 >
-                  {stage}
+                  {t.stages[stage]}
                 </button>
               ))}
             </div>
           </div>
 
           <div>
-            <p className="label-mono mb-2.5">Priority</p>
+            <p className="label-mono mb-2.5">{t.crm.filter.priority}</p>
             <div className="flex flex-wrap gap-1.5">
               {priorities.map(priority => (
                 <button
                   key={priority}
                   onClick={() => togglePriority(priority)}
                   className={cn(
-                    'h-7 px-2.5 rounded-lg text-[11px] font-medium transition-all border capitalize flex items-center gap-1.5',
+                    'h-8 px-3 rounded-lg text-[12.5px] font-medium transition-all border capitalize flex items-center gap-1.5',
                     selectedPriorities.includes(priority)
                       ? 'bg-accent text-background border-accent'
                       : 'bg-transparent text-muted-foreground border-border hover:border-border-accent'
                   )}
                 >
-                  <span className={cn(
-                    'w-1.5 h-1.5 rounded-full',
-                    selectedPriorities.includes(priority) ? 'bg-background/60' : priorityDots[priority]
-                  )} />
-                  {priority}
+                  <span
+                    className={cn('w-2 h-2 rounded-full', selectedPriorities.includes(priority) && 'bg-background/60')}
+                    style={selectedPriorities.includes(priority) ? undefined : { background: priorityDot[priority] }}
+                  />
+                  {t.priorities[priority]}
                 </button>
               ))}
             </div>

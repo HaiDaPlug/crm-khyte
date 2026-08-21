@@ -4,6 +4,7 @@ import { useState, useRef } from 'react'
 import { Send, Sparkles, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Note } from '@/lib/types'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 const mockExtractions = [
   {
@@ -37,6 +38,7 @@ interface CaptureBoxProps {
 }
 
 export function CaptureBox({ onSubmit }: CaptureBoxProps) {
+  const { t } = useTranslations()
   const [value, setValue] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -54,7 +56,7 @@ export function CaptureBox({ onSubmit }: CaptureBoxProps) {
         : undefined
 
       const newNote: Note = {
-        id: `n-${Date.now()}`,
+        id: crypto.randomUUID(),
         raw: trimmed,
         createdAt: new Date().toISOString(),
         aiExtracted: extraction,
@@ -76,14 +78,14 @@ export function CaptureBox({ onSubmit }: CaptureBoxProps) {
   return (
     <div className={cn(
       'bg-surface border border-border rounded-xl overflow-hidden transition-all duration-200',
-      'focus-within:border-accent/30 focus-within:shadow-[0_0_24px_-4px_rgba(212,148,60,0.08)]',
+      'focus-within:border-accent/30 focus-within:shadow-[0_0_24px_-4px_var(--accent-glow)]',
     )}>
       <textarea
         ref={textareaRef}
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Write anything — thoughts, call notes, follow-ups, pain points..."
+        placeholder={t.crm.capture.placeholder}
         className={cn(
           'w-full resize-none px-5 pt-5 pb-2 text-[14px] text-foreground bg-transparent',
           'placeholder:text-muted outline-none leading-relaxed',
@@ -95,7 +97,7 @@ export function CaptureBox({ onSubmit }: CaptureBoxProps) {
       <div className="flex items-center justify-between px-5 py-3 border-t border-border-subtle bg-surface-raised/50">
         <div className="flex items-center gap-1.5 text-[11px] text-muted">
           <Sparkles size={11} className="text-accent" />
-          <span>AI extracts structure on save</span>
+          <span>{t.crm.capture.extracts}</span>
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-muted hidden sm:block font-mono opacity-50">⌘↵</span>
@@ -112,12 +114,12 @@ export function CaptureBox({ onSubmit }: CaptureBoxProps) {
             {isSubmitting ? (
               <>
                 <Loader2 size={12} className="animate-spin" />
-                Extracting...
+                {t.crm.capture.extracting}
               </>
             ) : (
               <>
                 <Send size={11} />
-                Save
+                {t.crm.capture.save}
               </>
             )}
           </button>

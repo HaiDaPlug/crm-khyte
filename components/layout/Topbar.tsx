@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useCRMStore } from '@/lib/store'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 interface TopbarProps {
   title: string
@@ -11,13 +12,14 @@ interface TopbarProps {
 }
 
 export function Topbar({ title, actions }: TopbarProps) {
+  const { t } = useTranslations()
   const searchQuery = useCRMStore((s) => s.searchQuery)
   const setSearchQuery = useCRMStore((s) => s.setSearchQuery)
   const [searchFocused, setSearchFocused] = useState(false)
 
   return (
     <header className="sticky top-0 z-20 h-[52px] bg-background/70 backdrop-blur-xl border-b border-border flex items-center px-6 gap-4">
-      <h1 className="text-[14px] font-medium text-foreground-dim shrink-0 tracking-tight font-mono uppercase">
+      <h1 className="text-[14px] font-medium text-foreground shrink-0 tracking-tight font-mono uppercase">
         {title}
       </h1>
 
@@ -35,7 +37,7 @@ export function Topbar({ title, actions }: TopbarProps) {
           onChange={(e) => setSearchQuery(e.target.value)}
           onFocus={() => setSearchFocused(true)}
           onBlur={() => setSearchFocused(false)}
-          placeholder="Search..."
+          placeholder={t.common.search}
           className={cn(
             'h-8 w-full pl-8 pr-3 text-[13px] bg-surface border border-border rounded-lg',
             'text-foreground placeholder:text-muted outline-none',

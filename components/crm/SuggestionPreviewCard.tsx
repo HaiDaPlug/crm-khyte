@@ -4,12 +4,15 @@ import { Sparkles, ArrowRight, Calendar, ChevronRight, Check } from 'lucide-reac
 import { Note } from '@/lib/types'
 import { useCRMStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 interface SuggestionPreviewCardProps {
   note: Note
 }
 
 export function SuggestionPreviewCard({ note }: SuggestionPreviewCardProps) {
+  const { t } = useTranslations()
+  const copy = t.crm.suggestion
   const ai = note.aiExtracted
   const applyNote = useCRMStore((s) => s.applyNote)
   const dismissNote = useCRMStore((s) => s.dismissNote)
@@ -37,7 +40,7 @@ export function SuggestionPreviewCard({ note }: SuggestionPreviewCardProps) {
               'text-[10px] font-semibold uppercase tracking-wider font-mono',
               isApplied ? 'text-success' : 'text-accent'
             )}>
-              {isApplied ? 'Applied to Record' : 'AI Extraction'}
+              {isApplied ? copy.applied : copy.extraction}
             </span>
           </div>
         </div>
@@ -45,28 +48,28 @@ export function SuggestionPreviewCard({ note }: SuggestionPreviewCardProps) {
         <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 text-[13px]">
           {ai.company && (
             <div className="flex items-baseline gap-2">
-              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">Company</span>
+              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">{copy.company}</span>
               <span className="text-foreground font-medium truncate">{ai.company}</span>
             </div>
           )}
           {ai.contact && (
             <div className="flex items-baseline gap-2">
-              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">Contact</span>
+              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">{copy.contact}</span>
               <span className="text-foreground font-medium truncate">{ai.contact}</span>
             </div>
           )}
           {ai.suggestedStage && (
             <div className="flex items-baseline gap-2">
-              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">Stage</span>
+              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">{copy.stage}</span>
               <span className="bg-accent/15 text-accent text-[11px] font-medium px-1.5 py-0.5 rounded-md">
-                {ai.suggestedStage}
+                {t.stages[ai.suggestedStage]}
               </span>
             </div>
           )}
           {ai.followUpDate && (
             <div className="flex items-baseline gap-2">
               <Calendar size={10} className="text-muted shrink-0 mt-0.5" />
-              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">Follow-up</span>
+              <span className="text-[10px] text-muted font-mono uppercase tracking-wider shrink-0">{copy.followUp}</span>
               <span className="text-foreground font-medium font-mono text-[12px]">{ai.followUpDate}</span>
             </div>
           )}
@@ -74,7 +77,7 @@ export function SuggestionPreviewCard({ note }: SuggestionPreviewCardProps) {
 
         {ai.painPoints && ai.painPoints.length > 0 && (
           <div className="mt-3 pt-3 border-t border-border-subtle">
-            <p className="text-[10px] text-muted font-mono uppercase tracking-wider mb-1.5">Pain Points</p>
+            <p className="text-[10px] text-muted font-mono uppercase tracking-wider mb-1.5">{copy.painPoints}</p>
             <ul className="space-y-1">
               {ai.painPoints.map((point, i) => (
                 <li key={i} className="flex items-start gap-1.5 text-[12.5px] text-muted-foreground">
@@ -92,7 +95,7 @@ export function SuggestionPreviewCard({ note }: SuggestionPreviewCardProps) {
               <ArrowRight size={12} className="mt-0.5 text-accent shrink-0" />
               <div>
                 <span className="text-[10px] text-muted font-mono uppercase tracking-wider block mb-0.5">
-                  Suggested Next Step
+                  {copy.suggestedNextStep}
                 </span>
                 <span className="text-[13px] text-foreground">{ai.nextStep}</span>
               </div>
@@ -106,13 +109,13 @@ export function SuggestionPreviewCard({ note }: SuggestionPreviewCardProps) {
               onClick={() => applyNote(note.id)}
               className="h-7 px-3 rounded-lg text-[11px] font-medium bg-accent text-background hover:bg-accent-hover transition-colors"
             >
-              Apply to record
+              {copy.apply}
             </button>
             <button
               onClick={() => dismissNote(note.id)}
               className="h-7 px-3 rounded-lg text-[11px] font-medium text-muted hover:text-foreground transition-colors"
             >
-              Dismiss
+              {t.common.dismiss}
             </button>
           </div>
         )}

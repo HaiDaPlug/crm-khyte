@@ -19,6 +19,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { Plus } from 'lucide-react'
 import { StrategyCard, StrategyColumn } from '@/lib/types'
 import { cn } from '@/lib/utils'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 const COLUMNS: StrategyColumn[] = [
   'Pain Points', 'Stakeholders', 'Objections',
@@ -75,6 +76,7 @@ interface StrategyColumnViewProps {
 }
 
 function StrategyColumnView({ column, cards, isOver, onAddCard }: StrategyColumnViewProps) {
+  const { t } = useTranslations()
   const { setNodeRef } = useDroppable({ id: column })
   const config = columnConfig[column]
   const [adding, setAdding] = useState(false)
@@ -99,7 +101,7 @@ function StrategyColumnView({ column, cards, isOver, onAddCard }: StrategyColumn
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1.5">
             <span className="text-[13px]">{config.icon}</span>
-            <span className="text-[12px] font-medium text-foreground">{column}</span>
+            <span className="text-[12px] font-medium text-foreground">{t.strategyColumns[column]}</span>
           </div>
           <span className="text-[10px] font-mono text-muted bg-background-raised px-1.5 py-0.5 rounded-md">
             {cards.length}
@@ -124,9 +126,9 @@ function StrategyColumnView({ column, cards, isOver, onAddCard }: StrategyColumn
           <div className="h-12 flex items-center justify-center">
             <p className={cn(
               'text-[11px] transition-colors',
-              isOver ? 'text-accent' : 'text-muted/30'
+              isOver ? 'text-accent' : 'text-muted'
             )}>
-              {isOver ? 'Drop here' : 'Drop here'}
+              {t.crm.board.dropHere}
             </p>
           </div>
         )}
@@ -141,7 +143,7 @@ function StrategyColumnView({ column, cards, isOver, onAddCard }: StrategyColumn
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAdd() }
                 if (e.key === 'Escape') { setAdding(false); setNewContent('') }
               }}
-              placeholder="Type and press Enter..."
+              placeholder={t.crm.board.typeAndEnter}
               className="w-full text-[12px] p-2 bg-surface border border-border rounded-lg resize-none outline-none focus:border-accent/40 placeholder:text-muted text-foreground"
               rows={2}
             />
@@ -152,7 +154,7 @@ function StrategyColumnView({ column, cards, isOver, onAddCard }: StrategyColumn
             className="w-full flex items-center justify-center gap-1 py-1.5 text-[11px] text-muted hover:text-muted-foreground rounded-lg hover:bg-surface-raised transition-colors"
           >
             <Plus size={10} />
-            Add
+            {t.common.add}
           </button>
         )}
       </div>
@@ -223,7 +225,7 @@ export function StrategyBoard({ cards: initialCards, opportunityId, onAddCard }:
 
   const handleAddCard = (column: StrategyColumn, content: string) => {
     const newCard: StrategyCard = {
-      id: `s-${Date.now()}`,
+      id: crypto.randomUUID(),
       opportunityId,
       column,
       content,

@@ -1,26 +1,19 @@
 import { Note } from '@/lib/types'
 import { MessageSquare, Sparkles } from 'lucide-react'
+import { useFormat } from '@/lib/hooks/useFormat'
 import { cn } from '@/lib/utils'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 interface NotesTimelineProps {
   notes: Note[]
 }
 
-function formatDate(dateStr: string) {
-  const date = new Date(dateStr)
-  return date.toLocaleDateString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
 export function NotesTimeline({ notes }: NotesTimelineProps) {
+  const { t } = useTranslations()
+  const fmt = useFormat()
   if (notes.length === 0) {
     return (
-      <p className="text-[13px] text-muted text-center py-6">No notes yet.</p>
+      <p className="text-[13px] text-muted text-center py-6">{t.crm.notes.empty}</p>
     )
   }
 
@@ -45,7 +38,7 @@ export function NotesTimeline({ notes }: NotesTimelineProps) {
           </div>
           <div className="flex-1 pb-5">
             <p className="text-[10px] text-muted font-mono mb-1.5">
-              {formatDate(note.createdAt)}
+              {fmt.dateTime(note.createdAt)}
             </p>
             <p className="text-[13px] text-foreground leading-relaxed">{note.raw}</p>
           </div>

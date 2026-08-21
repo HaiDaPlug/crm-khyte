@@ -4,10 +4,14 @@ import { useState, useMemo } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
 import { StrategyBoard } from '@/components/crm/StrategyBoard'
 import { useCRMStore } from '@/lib/store'
-import { ChevronDown, DollarSign } from 'lucide-react'
+import { useFormat } from '@/lib/hooks/useFormat'
+import { ChevronDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export default function StrategyPage() {
+  const { t } = useTranslations()
+  const fmt = useFormat()
   const opportunities = useCRMStore((s) => s.opportunities)
   const companies = useCRMStore((s) => s.companies)
   const strategyCards = useCRMStore((s) => s.strategyCards)
@@ -33,10 +37,10 @@ export default function StrategyPage() {
 
   return (
     <>
-      <Topbar title="Strategy" />
+      <Topbar title={t.strategy.title} />
       <main className="px-6 py-6 flex-1 overflow-hidden animate-fade-in-up">
         <div className="mb-5">
-          <h2 className="text-[22px] font-display text-foreground tracking-tight mb-3">Deal Strategy</h2>
+          <h2 className="text-[22px] font-display text-foreground tracking-tight mb-3">{t.strategy.dealStrategy}</h2>
 
           {/* Opportunity selector */}
           <div className="relative inline-block">
@@ -49,13 +53,12 @@ export default function StrategyPage() {
               )}
             >
               <span>{selectedCompany?.name}</span>
-              <span className="text-muted text-[11px] font-mono">· {selectedOpp?.stage}</span>
+              <span className="text-muted text-[11px] font-mono">· {selectedOpp ? t.stages[selectedOpp.stage] : null}</span>
               {selectedOpp?.dealValue && (
                 <>
                   <span className="text-border">·</span>
                   <span className="flex items-center gap-0.5 text-muted">
-                    <DollarSign size={11} />
-                    <span className="tabular-nums font-mono text-[11px]">{selectedOpp.dealValue.toLocaleString()}</span>
+                    <span className="tabular-nums font-mono text-[11px]">{fmt.currency(selectedOpp.dealValue)}</span>
                   </span>
                 </>
               )}
@@ -86,7 +89,7 @@ export default function StrategyPage() {
                         )}
                       >
                         <span className="font-medium">{company?.name}</span>
-                        <span className="text-[10px] text-muted font-mono">{opp.stage}</span>
+                        <span className="text-[10px] text-muted font-mono">{t.stages[opp.stage]}</span>
                       </button>
                     )
                   })}
@@ -100,19 +103,19 @@ export default function StrategyPage() {
         {selectedOpp && selectedCompany && (
           <div className="mb-5 p-4 bg-surface border border-border rounded-xl flex items-center gap-8 flex-wrap animate-fade-in">
             <div>
-              <p className="label-mono">Next Step</p>
+              <p className="label-mono">{t.strategy.nextStep}</p>
               <p className="text-[13px] text-foreground mt-0.5">{selectedOpp.nextStep}</p>
             </div>
             <div>
-              <p className="label-mono">Follow-up</p>
-              <p className="text-[13px] text-foreground mt-0.5 font-mono">{selectedOpp.followUpDate}</p>
+              <p className="label-mono">{t.strategy.followUp}</p>
+              <p className="text-[13px] text-foreground mt-0.5 font-mono">{fmt.date(selectedOpp.followUpDate)}</p>
             </div>
             <div>
-              <p className="label-mono">Priority</p>
-              <p className="text-[13px] text-foreground mt-0.5 capitalize">{selectedOpp.priority}</p>
+              <p className="label-mono">{t.strategy.priority}</p>
+              <p className="text-[13px] text-foreground mt-0.5">{t.priorities[selectedOpp.priority]}</p>
             </div>
             {filteredCards.length === 0 && (
-              <p className="text-[12px] text-muted ml-auto">No strategy cards yet — add some below.</p>
+              <p className="text-[12px] text-muted ml-auto">{t.strategy.empty}</p>
             )}
           </div>
         )}

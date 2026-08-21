@@ -1,10 +1,10 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0E0D0C;
-  --background-raised: #141312;
-  --foreground: #E8E4DF;
-  --foreground-dim: #B8B3AC;
+  --background: #171514;
+  --background-raised: #1D1B19;
+  --foreground: #FFFFFF;
+  --foreground-dim: #E2DDD6;
   --sidebar-width: 232px;
   --sidebar-collapsed-width: 64px;
   --topbar-height: 52px;
@@ -13,18 +13,90 @@
   --accent-muted: #D4943C33;
   --accent-light: rgba(212, 148, 60, 0.08);
   --accent-glow: rgba(212, 148, 60, 0.15);
-  --surface: #1A1918;
-  --surface-raised: #201F1D;
-  --border: #2A2826;
-  --border-subtle: #222120;
-  --border-accent: rgba(212, 148, 60, 0.2);
-  --muted: #706B64;
-  --muted-foreground: #918C85;
+  --surface: #242220;
+  --surface-raised: #2B2926;
+  --border: #7D7871;
+  --border-subtle: #625E58;
+  --border-accent: rgba(212, 148, 60, 0.25);
+  --muted: #B3ADA5;
+  --muted-foreground: #C4BFB8;
   --danger: #E05252;
   --danger-muted: rgba(224, 82, 82, 0.1);
   --success: #4CAF72;
   --success-muted: rgba(76, 175, 114, 0.1);
   --noise-opacity: 0.025;
+  color-scheme: dark;
+
+  /* Grain surfaces — Khyte burnt orange + darkened bases (shared by cards & nav) */
+  --grain-hue: #8A3B0E;
+  --grain-base-1: color-mix(in srgb, black 46%, var(--surface-raised));
+  --grain-base-2: color-mix(in srgb, black 54%, var(--surface));
+}
+
+/* Same values as :root — duplicated so a nested element can force the dark
+   palette locally (e.g. the sidebar/modals staying dark inside a light page)
+   via a `data-theme="dark"` attribute, independent of the page-wide theme. */
+[data-theme="dark"] {
+  --background: #171514;
+  --background-raised: #1D1B19;
+  --foreground: #FFFFFF;
+  --foreground-dim: #E2DDD6;
+  --accent: #D4943C;
+  --accent-hover: #E0A554;
+  --accent-muted: #D4943C33;
+  --accent-light: rgba(212, 148, 60, 0.08);
+  --accent-glow: rgba(212, 148, 60, 0.15);
+  --surface: #242220;
+  --surface-raised: #2B2926;
+  --border: #7D7871;
+  --border-subtle: #625E58;
+  --border-accent: rgba(212, 148, 60, 0.25);
+  --muted: #B3ADA5;
+  --muted-foreground: #C4BFB8;
+  --danger: #E05252;
+  --danger-muted: rgba(224, 82, 82, 0.1);
+  --success: #4CAF72;
+  --success-muted: rgba(76, 175, 114, 0.1);
+  --noise-opacity: 0.025;
+  color-scheme: dark;
+
+  --grain-base-1: color-mix(in srgb, black 46%, var(--surface-raised));
+  --grain-base-2: color-mix(in srgb, black 54%, var(--surface));
+}
+
+[data-theme="light"] {
+  --background:        #F7F5F1;
+  --background-raised: #F2EEE8;
+  --foreground:        #1C1B19;
+  --foreground-dim:    #3D3935;
+
+  --accent:            #C4832A;
+  --accent-hover:      #D4943C;
+  --accent-muted:      rgba(196, 131, 42, 0.18);
+  --accent-light:      rgba(196, 131, 42, 0.08);
+  --accent-glow:       rgba(196, 131, 42, 0.12);
+
+  --surface:           #EFEBE4;
+  --surface-raised:    #E8E3DB;
+
+  --border:            #9A938A;
+  --border-subtle:     #B5AFA6;
+  --border-accent:     rgba(196, 131, 42, 0.25);
+
+  --muted:             #6E6861;
+  --muted-foreground:  #55504A;
+
+  --danger:            #C94040;
+  --danger-muted:      rgba(201, 64, 64, 0.1);
+
+  --success:           #3A8F5A;
+  --success-muted:     rgba(58, 143, 90, 0.1);
+
+  --noise-opacity:     0.018;
+  color-scheme: light;
+
+  --grain-base-1: color-mix(in srgb, black 6%, var(--surface-raised));
+  --grain-base-2: color-mix(in srgb, black 3%, var(--surface));
 }
 
 @theme inline {
@@ -51,6 +123,9 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-display: var(--font-instrument-serif);
+  --font-barlow: var(--font-barlow);
+  --font-jakarta: var(--font-jakarta);
+  --font-satoshi: 'Satoshi', var(--font-geist-sans), sans-serif;
 }
 
 * {
@@ -76,6 +151,10 @@ body::before {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
   background-repeat: repeat;
   background-size: 128px 128px;
+  /* Own compositor layer: this sits above the entire app, so without promotion
+     any repaint below it forces the whole viewport to re-blend. */
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 /* Scrollbar */
@@ -171,6 +250,36 @@ body::before {
   animation: scaleIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+@keyframes popoverIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Short and translate-only — a combobox list reopens on almost every keystroke,
+   so a longer scale tween reads as the field lagging behind typing. */
+.animate-popover-in {
+  animation: popoverIn 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform, opacity;
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(0.98) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-modal-in {
+  animation: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-modal-in,
+  .animate-fade-in,
+  .animate-scale-in,
+  .animate-popover-in {
+    animation-duration: 0.01ms;
+  }
+}
+
 .animate-glow-pulse {
   animation: glow-pulse 2.5s ease-in-out infinite;
 }
@@ -238,9 +347,248 @@ a, button, [role="button"] {
   box-shadow: 0 0 0 1px var(--border-accent), 0 4px 24px -4px rgba(212, 148, 60, 0.06);
 }
 
+/* High-class grainy card — warm orange hue with film grain */
+.grain-card {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--grain-hue) 45%, transparent);
+  border-radius: 20px;
+  background:
+    radial-gradient(130% 100% at 12% 0%, color-mix(in srgb, var(--grain-hue) 26%, transparent) 0%, transparent 60%),
+    radial-gradient(90% 80% at 100% 100%, color-mix(in srgb, var(--grain-hue) 18%, transparent) 0%, transparent 55%),
+    linear-gradient(165deg, color-mix(in srgb, var(--grain-hue) 16%, var(--grain-base-1)) 0%, color-mix(in srgb, var(--grain-hue) 9%, var(--grain-base-2)) 100%);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+}
+.grain-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.07;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 110px 110px;
+}
+[data-theme="light"] .grain-card::before {
+  opacity: 0.05;
+}
+.grain-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Grainy modal — same treatment as .grain-card, but no overflow clipping
+   so combobox dropdowns can escape the panel. Grain clips via border-radius. */
+.grain-modal {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid color-mix(in srgb, var(--grain-hue) 45%, transparent);
+  border-radius: 20px;
+  /* Opaque base under the grain layers. The gradients above all fade to
+     `transparent`, so without this the backdrop reads through the panel
+     wherever they fall off. */
+  background-color: var(--grain-base-2);
+  background-image:
+    radial-gradient(130% 100% at 12% 0%, color-mix(in srgb, var(--grain-hue) 26%, transparent) 0%, transparent 60%),
+    radial-gradient(90% 80% at 100% 100%, color-mix(in srgb, var(--grain-hue) 18%, transparent) 0%, transparent 55%),
+    linear-gradient(165deg, color-mix(in srgb, var(--grain-hue) 16%, var(--grain-base-1)) 0%, color-mix(in srgb, var(--grain-hue) 9%, var(--grain-base-2)) 100%);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
+    0 24px 64px -16px rgba(0, 0, 0, 0.5);
+}
+.grain-modal::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.07;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 110px 110px;
+  /* The noise tile is expensive to rasterize. Give it its own compositor layer
+     so typing in a field repaints only the field, not the whole grain surface
+     underneath it. */
+  transform: translateZ(0);
+  will-change: transform;
+  contain: strict;
+}
+/* Lifts section content above the grain ::before overlay. Note this makes each
+   direct child its own stacking context, so a popover inside one section can't
+   stack above a later sibling on its own — see `[data-layer-raised]` below. */
+.grain-modal > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* A section holding an open popover (combobox list, menu) opts out of the flat
+   z-index above so its overflow can paint over later sections. Without this the
+   dropdown renders behind whatever follows it in the DOM. */
+.grain-modal > [data-layer-raised] {
+  z-index: 30;
+}
+
+/* Drawer variant — layered on top of .grain-modal so the material stays
+   identical by construction. Only the geometry changes: anchored to the right
+   edge, so it rounds and borders on the left and casts its shadow leftward. */
+.grain-drawer {
+  /* .grain-modal sets `position: relative` at equal specificity but later in the
+     sheet, which would beat Tailwind's `fixed`. Restate it here (same lesson as
+     the note on .grain-nav) so the panel stays pinned to the viewport edge. */
+  position: fixed;
+  border-width: 0 0 0 1px;
+  border-radius: 20px 0 0 20px;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05),
+    -24px 0 64px -16px rgba(0, 0, 0, 0.5);
+}
+
+/* Grainy nav — same deep amber treatment, edge-to-edge for the sidebar.
+   No position here: the sidebar's own `fixed` must stay in effect. */
+.grain-nav {
+  isolation: isolate;
+  border-right: 1px solid color-mix(in srgb, var(--grain-hue) 45%, transparent);
+  background:
+    radial-gradient(140% 45% at 0% 0%, color-mix(in srgb, var(--grain-hue) 24%, transparent) 0%, transparent 62%),
+    radial-gradient(140% 55% at 50% 100%, color-mix(in srgb, var(--grain-hue) 16%, transparent) 0%, transparent 58%),
+    linear-gradient(180deg, color-mix(in srgb, var(--grain-hue) 15%, var(--grain-base-1)) 0%, color-mix(in srgb, var(--grain-hue) 8%, var(--grain-base-2)) 100%);
+}
+.grain-nav::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.07;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 110px 110px;
+}
+.grain-nav > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ———— Grain buttons ———— */
+/* A lacquered, tinted-per-variant version of the .grain-card material:
+   a 4-stop gradient (glint → hue → shade → burnt edge) reads as a curved,
+   coated surface rather than a flat fill; the grain is two turbulence
+   layers blended together (fine grain modulated by coarse mottling) so it
+   has patchy, organic density instead of uniform static; a two-tone inset
+   border reads as a bevel; and a diagonal sheen sweeps across on hover.
+   Layout (size, padding, radius) stays with Tailwind utilities on the
+   element — this class only owns the material. */
+.btn-grain {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, black 15%, var(--btn-hue));
+  color: var(--btn-fg, var(--background));
+  background:
+    radial-gradient(38% 65% at 22% -18%, color-mix(in srgb, white 65%, transparent) 0%, transparent 60%),
+    radial-gradient(70% 55% at 100% 118%, color-mix(in srgb, black 40%, transparent) 0%, transparent 60%),
+    linear-gradient(160deg,
+      color-mix(in srgb, white 22%, var(--btn-hue)) 0%,
+      var(--btn-hue) 40%,
+      color-mix(in srgb, black 16%, var(--btn-hue)) 72%,
+      color-mix(in srgb, black 34%, var(--btn-hue)) 100%);
+  box-shadow:
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 0 0 rgba(0, 0, 0, 0.24),
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.08),
+    inset -1px 0 0 0 rgba(0, 0, 0, 0.1),
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    0 3px 8px -3px color-mix(in srgb, var(--btn-hue) 55%, transparent),
+    0 10px 22px -10px color-mix(in srgb, var(--btn-hue) 75%, transparent);
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+/* Grain: fine turbulence blended over coarse turbulence (feBlend overlay)
+   gives patchy density variation instead of even static — closer to real
+   film grain than a single feTurbulence layer. */
+.btn-grain::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' seed='7' result='fine'/%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.045' numOctaves='2' seed='3' result='coarse'/%3E%3CfeBlend in='fine' in2='coarse' mode='overlay'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 84px 84px;
+}
+/* Diagonal sheen — sits flush left at rest, sweeps across on hover. */
+.btn-grain::after {
+  content: '';
+  position: absolute;
+  inset: -20% -40%;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 40%, rgba(255, 255, 255, 0.4) 49%, transparent 58%);
+  background-size: 250% 250%;
+  background-repeat: no-repeat;
+  background-position: -140% 0;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.btn-grain > * {
+  position: relative;
+  z-index: 1;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+}
+.btn-grain:hover:not(:disabled) {
+  filter: brightness(1.1) saturate(1.08);
+  box-shadow:
+    inset 0 1.5px 0 0 rgba(255, 255, 255, 0.5),
+    inset 0 -2px 0 0 rgba(0, 0, 0, 0.24),
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.1),
+    inset -1px 0 0 0 rgba(0, 0, 0, 0.1),
+    0 1px 1px rgba(0, 0, 0, 0.3),
+    0 4px 10px -3px color-mix(in srgb, var(--btn-hue) 60%, transparent),
+    0 14px 28px -10px color-mix(in srgb, var(--btn-hue) 85%, transparent);
+}
+.btn-grain:hover:not(:disabled)::after {
+  opacity: 1;
+  animation: shimmer 1.1s cubic-bezier(0.25, 0.7, 0.4, 1) 1;
+}
+.btn-grain:active:not(:disabled) {
+  filter: brightness(0.92) saturate(1.02);
+  box-shadow:
+    inset 0 1.5px 2px 0 rgba(0, 0, 0, 0.25),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.22),
+    0 1px 1px rgba(0, 0, 0, 0.25),
+    0 2px 6px -2px color-mix(in srgb, var(--btn-hue) 55%, transparent);
+}
+.btn-grain:disabled {
+  opacity: 0.45;
+  filter: grayscale(0.4);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* Leans past the muted brand --accent toward a more saturated, true orange —
+   deliberately a bolder tint than the accent used for text/badges elsewhere. */
+.btn-grain-primary { --btn-hue: color-mix(in srgb, var(--accent) 35%, #FF7A12 65%); --btn-fg: var(--background); }
+.btn-grain-danger  { --btn-hue: var(--danger); --btn-fg: #fff; }
+.btn-grain-success { --btn-hue: var(--success); --btn-fg: #fff; }
+
 /* Display font class */
 .font-display {
   font-family: var(--font-instrument-serif), Georgia, 'Times New Roman', serif;
+}
+
+/* Plus Jakarta Sans — geometric sans for modal/dialog titles */
+.font-jakarta {
+  font-family: var(--font-jakarta), 'Plus Jakarta Sans', var(--font-geist-sans), sans-serif;
+}
+
+/* Clean serif for the dashboard chat headline */
+.font-headline {
+  font-family: var(--font-source-serif), Georgia, 'Times New Roman', serif;
+  font-weight: 380;
 }
 
 /* Mono accent — for labels and data */
@@ -250,6 +598,30 @@ a, button, [role="button"] {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
+}
+
+/* Modal type scale — labels run 2px larger and white inside a modal panel,
+   without disturbing the same class elsewhere in the app. */
+.grain-modal .label-mono {
+  font-size: 12px;
+  color: var(--foreground);
+}
+
+/* Data-grid type scale — a dense table has to stay as readable as the detail
+   panels, so column headers sit a step above the app-wide 10px label. */
+.data-table .label-mono {
+  font-size: 11px;
+  color: var(--foreground-dim);
+}
+
+/* Barlow headline font */
+.font-barlow {
+  font-family: var(--font-barlow), 'Barlow', sans-serif;
+}
+
+/* Satoshi body font */
+.font-satoshi {
+  font-family: 'Satoshi', var(--font-geist-sans), sans-serif;
 }
 
 /* Subtle inner glow for inputs */

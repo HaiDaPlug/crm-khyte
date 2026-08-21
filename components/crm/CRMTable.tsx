@@ -9,28 +9,12 @@ import {
   ColumnDef,
   SortingState,
 } from '@tanstack/react-table'
-import { ChevronsUpDown, ChevronUp, ChevronDown } from 'lucide-react'
-import { Opportunity, Company, Contact, Priority, Stage } from '@/lib/types'
+import { ChevronsUpDown, ChevronUp, ChevronDown, Check } from 'lucide-react'
+import { Opportunity, Company, Contact } from '@/lib/types'
 import { cn } from '@/lib/utils'
-
-const priorityConfig: Record<Priority, { dot: string; label: string }> = {
-  critical: { dot: 'bg-red-500', label: 'Critical' },
-  high: { dot: 'bg-accent', label: 'High' },
-  medium: { dot: 'bg-blue-400', label: 'Medium' },
-  low: { dot: 'bg-muted', label: 'Low' },
-}
-
-const stageColors: Record<Stage, string> = {
-  'New': 'bg-surface-raised text-foreground-dim',
-  'Researched': 'bg-blue-500/10 text-blue-400',
-  'Contacted': 'bg-sky-500/10 text-sky-400',
-  'Warm': 'bg-orange-500/10 text-orange-400',
-  'Meeting Booked': 'bg-violet-500/10 text-violet-400',
-  'Proposal Sent': 'bg-amber-500/10 text-amber-400',
-  'Negotiation': 'bg-yellow-500/10 text-yellow-400',
-  'Won': 'bg-success-muted text-success',
-  'Lost': 'bg-danger-muted text-danger',
-}
+import { useFormat } from '@/lib/hooks/useFormat'
+import { stageColors, priorityDot } from '@/lib/stage-config'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export interface TableRow {
   opportunity: Opportunity
@@ -44,54 +28,70 @@ interface CRMTableProps {
 }
 
 export function CRMTable({ data, onRowClick }: CRMTableProps) {
+  const { t } = useTranslations()
+  const fmt = useFormat()
   const [sorting, setSorting] = useState<SortingState>([])
 
   const columns: ColumnDef<TableRow>[] = [
     {
       id: 'company',
       accessorFn: (row) => row.company.name,
-      header: 'Company',
+      header: t.crm.table.company,
       cell: ({ row }) => (
         <div>
-          <p className="text-[13px] font-medium text-foreground">{row.original.company.name}</p>
-          <p className="text-[11px] text-muted">{row.original.company.industry}</p>
+          <p className="text-[14px] font-medium text-foreground leading-tight">{row.original.company.name}</p>
+          <p className="text-[12.5px] text-foreground/60 mt-0.5">{row.original.company.industry}</p>
         </div>
       ),
     },
     {
       id: 'contact',
       accessorFn: (row) => row.contact.name,
-      header: 'Contact',
+      header: t.crm.table.contact,
       cell: ({ row }) => (
         <div>
-          <p className="text-[13px] text-foreground">{row.original.contact.name}</p>
-          <p className="text-[11px] text-muted">{row.original.contact.role}</p>
+          <p className="text-[14px] text-foreground leading-tight">{row.original.contact.name}</p>
+          <p className="text-[12.5px] text-foreground/60 mt-0.5">{row.original.contact.role}</p>
         </div>
       ),
     },
     {
       id: 'stage',
       accessorFn: (row) => row.opportunity.stage,
-      header: 'Stage',
+      header: t.crm.table.stage,
       cell: ({ row }) => (
         <span className={cn(
-          'inline-flex text-[10.5px] font-medium px-2 py-0.5 rounded-md',
+          'inline-flex items-center h-7 px-2.5 rounded-md text-[13px] font-medium',
           stageColors[row.original.opportunity.stage]
         )}>
-          {row.original.opportunity.stage}
+          {t.stages[row.original.opportunity.stage]}
         </span>
       ),
     },
     {
+      id: 'pipeline',
+      accessorFn: (row) => (row.opportunity.inPipeline ? 1 : 0),
+      header: t.crm.table.pipeline,
+      cell: ({ row }) =>
+        row.original.opportunity.inPipeline ? (
+          <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-accent">
+            <Check size={14} />
+            {t.crm.table.onBoard}
+          </span>
+        ) : (
+          <span className="text-[13px] text-foreground/40">—</span>
+        ),
+    },
+    {
       id: 'priority',
       accessorFn: (row) => row.opportunity.priority,
-      header: 'Priority',
+      header: t.crm.table.priority,
       cell: ({ row }) => {
-        const p = priorityConfig[row.original.opportunity.priority]
+        const priority = row.original.opportunity.priority
         return (
-          <div className="flex items-center gap-1.5">
-            <span className={cn('w-2 h-2 rounded-full shrink-0', p.dot)} />
-            <span className="text-[12px] text-muted-foreground">{p.label}</span>
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: priorityDot[priority] }} />
+            <span className="text-[13.5px] text-foreground/85">{t.priorities[priority]}</span>
           </div>
         )
       },
@@ -99,13 +99,13 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
     {
       id: 'dealValue',
       accessorFn: (row) => row.opportunity.dealValue ?? 0,
-      header: 'Deal Value',
+      header: t.crm.table.dealValue,
       cell: ({ row }) => {
         const val = row.original.opportunity.dealValue
-        if (!val) return <span className="text-muted text-[13px]">—</span>
+        if (!val) return <span className="text-foreground/40 text-[14px]">—</span>
         return (
-          <span className="text-[13px] text-foreground font-medium tabular-nums">
-            ${val.toLocaleString()}
+          <span className="text-[15px] font-semibold text-foreground tabular-nums">
+            {fmt.currency(val)}
           </span>
         )
       },
@@ -113,19 +113,19 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
     {
       id: 'lastInteraction',
       accessorFn: (row) => row.opportunity.lastInteraction,
-      header: 'Last Touch',
+      header: t.crm.table.lastTouch,
       cell: ({ row }) => (
-        <span className="text-[11px] text-muted font-mono">
-          {row.original.opportunity.lastInteraction}
+        <span className="text-[12.5px] text-foreground/65 font-mono tabular-nums">
+          {fmt.date(row.original.opportunity.lastInteraction)}
         </span>
       ),
     },
     {
       id: 'nextStep',
       accessorFn: (row) => row.opportunity.nextStep,
-      header: 'Next Step',
+      header: t.crm.table.nextStep,
       cell: ({ row }) => (
-        <p className="text-[12px] text-muted-foreground max-w-[200px] truncate">
+        <p className="text-[13.5px] text-foreground/85 max-w-[240px] truncate">
           {row.original.opportunity.nextStep}
         </p>
       ),
@@ -133,16 +133,16 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
     {
       id: 'followUpDate',
       accessorFn: (row) => row.opportunity.followUpDate,
-      header: 'Follow-up',
+      header: t.crm.table.followUp,
       cell: ({ row }) => {
         const date = row.original.opportunity.followUpDate
         const isPast = new Date(date) < new Date()
         return (
           <span className={cn(
-            'text-[11px] font-mono',
-            isPast ? 'text-danger font-medium' : 'text-muted'
+            'text-[12.5px] font-mono tabular-nums',
+            isPast ? 'text-danger font-medium' : 'text-foreground/65'
           )}>
-            {date}
+            {fmt.date(date)}
           </span>
         )
       },
@@ -150,16 +150,16 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
     {
       id: 'tags',
       accessorFn: (row) => row.opportunity.tags.join(', '),
-      header: 'Tags',
+      header: t.crm.table.tags,
       cell: ({ row }) => (
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-nowrap items-center gap-1.5">
           {row.original.opportunity.tags.slice(0, 2).map(tag => (
-            <span key={tag} className="text-[9.5px] font-mono px-1.5 py-0.5 bg-surface-raised text-muted border border-border-subtle rounded-md">
+            <span key={tag} className="text-[11.5px] font-mono px-2 py-0.5 bg-surface-raised text-foreground/80 border border-border-subtle rounded-md">
               {tag}
             </span>
           ))}
           {row.original.opportunity.tags.length > 2 && (
-            <span className="text-[10px] text-muted">+{row.original.opportunity.tags.length - 2}</span>
+            <span className="text-[11.5px] text-foreground/60">+{row.original.opportunity.tags.length - 2}</span>
           )}
         </div>
       ),
@@ -176,7 +176,7 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
   })
 
   return (
-    <div className="bg-surface border border-border rounded-xl overflow-hidden">
+    <div className="data-table bg-surface border border-border rounded-xl overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
@@ -185,22 +185,22 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
                 {headerGroup.headers.map(header => (
                   <th
                     key={header.id}
-                    className="px-4 py-2.5 text-left select-none bg-surface-raised/50"
+                    className="px-5 py-3 text-left select-none bg-surface-raised/50"
                     onClick={header.column.getToggleSortingHandler()}
                     style={{ cursor: header.column.getCanSort() ? 'pointer' : 'default' }}
                   >
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1.5">
                       <span className="label-mono whitespace-nowrap">
                         {flexRender(header.column.columnDef.header, header.getContext())}
                       </span>
                       {header.column.getCanSort() && (
-                        <span className="text-muted/40">
+                        <span className="text-foreground/50">
                           {header.column.getIsSorted() === 'asc' ? (
-                            <ChevronUp size={11} className="text-accent" />
+                            <ChevronUp size={12} className="text-accent" />
                           ) : header.column.getIsSorted() === 'desc' ? (
-                            <ChevronDown size={11} className="text-accent" />
+                            <ChevronDown size={12} className="text-accent" />
                           ) : (
-                            <ChevronsUpDown size={11} />
+                            <ChevronsUpDown size={12} />
                           )}
                         </span>
                       )}
@@ -218,7 +218,7 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
                 className="border-b border-border-subtle last:border-0 hover:bg-accent-light cursor-pointer transition-colors duration-100"
               >
                 {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} className="px-4 py-3 whitespace-nowrap">
+                  <td key={cell.id} className="px-5 py-3.5 whitespace-nowrap align-middle">
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
@@ -229,7 +229,7 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
 
         {data.length === 0 && (
           <div className="py-16 text-center">
-            <p className="text-[13px] text-muted">No leads match the current filters.</p>
+            <p className="text-[14px] text-foreground/60">{t.crm.table.empty}</p>
           </div>
         )}
       </div>

@@ -1,8 +1,9 @@
 import type { Metadata } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
-import { Instrument_Serif } from 'next/font/google'
+import { Geist, Geist_Mono, Barlow, Plus_Jakarta_Sans } from 'next/font/google'
+import { Instrument_Serif, Source_Serif_4 } from 'next/font/google'
 import './globals.css'
 import { AppShell } from '@/components/layout/AppShell'
+import { loadSnapshot } from '@/lib/db/queries'
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -20,23 +21,52 @@ const instrumentSerif = Instrument_Serif({
   weight: '400',
 })
 
+const barlow = Barlow({
+  variable: '--font-barlow',
+  subsets: ['latin'],
+  weight: ['300', '400', '500', '600', '700', '800'],
+})
+
+const sourceSerif = Source_Serif_4({
+  variable: '--font-source-serif',
+  subsets: ['latin'],
+})
+
+const jakarta = Plus_Jakarta_Sans({
+  variable: '--font-jakarta',
+  subsets: ['latin'],
+  weight: ['500', '600', '700'],
+})
+
 export const metadata: Metadata = {
   title: 'Khyte CRM',
-  description: 'Calm, sharp, premium CRM for operators',
+  description: 'Ett lugnt, skarpt och förstklassigt CRM för operatörer',
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  // One read per full page load, handed to the client store below. Layouts do
+  // not re-run on client-side navigation, so moving between routes costs
+  // nothing — the store carries the data.
+  const snapshot = await loadSnapshot()
+
   return (
     <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} h-full`}
+      lang="sv"
+      className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} ${barlow.variable} ${sourceSerif.variable} ${jakarta.variable} h-full`}
     >
+      <head>
+        <link rel="preconnect" href="https://api.fontshare.com" />
+        <link
+          rel="stylesheet"
+          href="https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700&display=swap"
+        />
+      </head>
       <body className="h-full antialiased">
-        <AppShell>{children}</AppShell>
+        <AppShell snapshot={snapshot}>{children}</AppShell>
       </body>
     </html>
   )

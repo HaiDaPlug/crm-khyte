@@ -2,10 +2,13 @@
 
 import { useState, useMemo } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
+import { AddContactModal } from '@/components/crm/AddContactModal'
 import { useCRMStore } from '@/lib/store'
-import { Search, ExternalLink, Mail, X, Building2 } from 'lucide-react'
+import { useFormat } from '@/lib/hooks/useFormat'
+import { Search, ExternalLink, Mail, X, Building2, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Contact, Company, Opportunity } from '@/lib/types'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 interface ContactDrawerProps {
   contact: Contact | null
@@ -15,6 +18,8 @@ interface ContactDrawerProps {
 }
 
 function ContactDrawer({ contact, company, opportunities, onClose }: ContactDrawerProps) {
+  const { t } = useTranslations()
+  const fmt = useFormat()
   const isOpen = !!contact
 
   return (
@@ -48,6 +53,7 @@ function ContactDrawer({ contact, company, opportunities, onClose }: ContactDraw
               </div>
               <button
                 onClick={onClose}
+                aria-label={t.crm.modal.closeDetails}
                 className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-surface-raised text-muted hover:text-foreground transition-colors"
               >
                 <X size={15} />
@@ -56,7 +62,7 @@ function ContactDrawer({ contact, company, opportunities, onClose }: ContactDraw
 
             <div className="flex-1 overflow-y-auto">
               <div className="px-5 py-4 border-b border-border-subtle">
-                <p className="label-mono mb-3">Contact Info</p>
+                <p className="label-mono mb-3">{t.contacts.contactInfo}</p>
                 <div className="space-y-2.5">
                   <div className="flex items-center gap-3">
                     <Mail size={13} className="text-muted shrink-0" />
@@ -73,7 +79,7 @@ function ContactDrawer({ contact, company, opportunities, onClose }: ContactDraw
                         rel="noopener noreferrer"
                         className="text-[13px] text-foreground hover:text-accent transition-colors"
                       >
-                        LinkedIn Profile
+                        {t.contacts.linkedInProfile}
                       </a>
                     </div>
                   )}
@@ -81,7 +87,7 @@ function ContactDrawer({ contact, company, opportunities, onClose }: ContactDraw
               </div>
 
               <div className="px-5 py-4 border-b border-border-subtle">
-                <p className="label-mono mb-3">Company</p>
+                <p className="label-mono mb-3">{t.contacts.company}</p>
                 <div className="flex items-center gap-3 bg-background-raised rounded-lg p-3 border border-border-subtle">
                   <div className="w-8 h-8 rounded-lg bg-accent-light flex items-center justify-center shrink-0">
                     <Building2 size={14} className="text-accent" />
@@ -94,20 +100,20 @@ function ContactDrawer({ contact, company, opportunities, onClose }: ContactDraw
               </div>
 
               <div className="px-5 py-4">
-                <p className="label-mono mb-3">Related Opportunities</p>
+                <p className="label-mono mb-3">{t.contacts.relatedOpportunities}</p>
                 {opportunities.length === 0 ? (
-                  <p className="text-[12px] text-muted">No opportunities linked.</p>
+                  <p className="text-[12px] text-muted">{t.contacts.noOpportunities}</p>
                 ) : (
                   <div className="space-y-2">
                     {opportunities.map(opp => (
                       <div key={opp.id} className="bg-background-raised border border-border-subtle rounded-lg p-3">
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-[10px] font-medium px-2 py-0.5 bg-surface-raised rounded-md text-muted-foreground border border-border-subtle">
-                            {opp.stage}
+                            {t.stages[opp.stage]}
                           </span>
                           {opp.dealValue && (
                             <span className="text-[12px] font-medium text-foreground tabular-nums font-mono">
-                              ${opp.dealValue.toLocaleString()}
+                              {fmt.currency(opp.dealValue)}
                             </span>
                           )}
                         </div>
@@ -126,6 +132,7 @@ function ContactDrawer({ contact, company, opportunities, onClose }: ContactDraw
 }
 
 export default function ContactsPage() {
+  const { t } = useTranslations()
   const contacts = useCRMStore((s) => s.contacts)
   const companies = useCRMStore((s) => s.companies)
   const opportunities = useCRMStore((s) => s.opportunities)
@@ -133,6 +140,7 @@ export default function ContactsPage() {
 
   const [localSearch, setLocalSearch] = useState('')
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null)
+  const [addContactOpen, setAddContactOpen] = useState(false)
 
   const query = localSearch || searchQuery
 
@@ -154,22 +162,31 @@ export default function ContactsPage() {
 
   return (
     <>
-      <Topbar title="Contacts" />
+      <Topbar title={t.contacts.title} />
       <main className="px-8 py-8 flex-1 animate-fade-in-up">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h2 className="text-[22px] font-display text-foreground tracking-tight">Contacts</h2>
-            <p className="text-[13px] text-muted mt-0.5 font-mono">{filtered.length} contacts</p>
+            <h2 className="text-[22px] font-display text-foreground tracking-tight">{t.contacts.title}</h2>
+            <p className="text-[13px] text-muted mt-0.5 font-mono">{t.contacts.count(filtered.length)}</p>
           </div>
-          <div className="relative flex items-center">
-            <Search size={13} className="absolute left-2.5 text-muted pointer-events-none" />
-            <input
-              type="text"
-              value={localSearch}
-              onChange={(e) => setLocalSearch(e.target.value)}
-              placeholder="Filter contacts..."
-              className="h-8 pl-8 pr-3 text-[13px] bg-surface border border-border rounded-lg text-foreground placeholder:text-muted outline-none focus:border-accent/40 transition-all w-52"
-            />
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex items-center">
+              <Search size={13} className="absolute left-2.5 text-muted pointer-events-none" />
+              <input
+                type="text"
+                value={localSearch}
+                onChange={(e) => setLocalSearch(e.target.value)}
+                placeholder={t.contacts.filter}
+                className="h-8 pl-8 pr-3 text-[13px] bg-surface border border-border rounded-lg text-foreground placeholder:text-muted outline-none focus:border-accent/40 transition-all w-52"
+              />
+            </div>
+            <button
+              onClick={() => setAddContactOpen(true)}
+              className="flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-accent text-background text-[12px] font-medium hover:bg-accent-hover transition-colors"
+            >
+              <Plus size={13} />
+              {t.contacts.newContact}
+            </button>
           </div>
         </div>
 
@@ -210,7 +227,7 @@ export default function ContactsPage() {
 
                 {oppCount > 0 && (
                   <span className="text-[10px] font-mono text-muted bg-surface-raised px-1.5 py-0.5 rounded-md border border-border-subtle hidden lg:block">
-                    {oppCount} deal{oppCount > 1 ? 's' : ''}
+                    {t.contacts.deals(oppCount)}
                   </span>
                 )}
 
@@ -221,7 +238,7 @@ export default function ContactsPage() {
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}
-                      className="text-muted/40 hover:text-accent transition-colors"
+                      className="text-muted hover:text-accent transition-colors"
                     >
                       <ExternalLink size={13} />
                     </a>
@@ -232,6 +249,8 @@ export default function ContactsPage() {
           })}
         </div>
       </main>
+
+      <AddContactModal open={addContactOpen} onClose={() => setAddContactOpen(false)} />
 
       <ContactDrawer
         contact={selectedContact}

@@ -2,10 +2,13 @@
 
 import { useState, useMemo } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
+import { AddCompanyModal } from '@/components/crm/AddCompanyModal'
 import { useCRMStore } from '@/lib/store'
-import { Building2, Search, MapPin, X } from 'lucide-react'
+import { useFormat } from '@/lib/hooks/useFormat'
+import { Building2, Search, MapPin, X, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Company, Opportunity, Contact } from '@/lib/types'
+import { useTranslations } from '@/lib/hooks/useTranslations'
 
 interface CompanyDrawerProps {
   company: Company | null
@@ -15,6 +18,8 @@ interface CompanyDrawerProps {
 }
 
 function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDrawerProps) {
+  const { t } = useTranslations()
+  const fmt = useFormat()
   const isOpen = !!company
 
   return (
@@ -48,6 +53,7 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
               </div>
               <button
                 onClick={onClose}
+                aria-label={t.crm.modal.closeDetails}
                 className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-surface-raised text-muted hover:text-foreground transition-colors"
               >
                 <X size={15} />
@@ -58,15 +64,15 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
               <div className="px-5 py-4 border-b border-border-subtle">
                 <div className="grid grid-cols-3 gap-3">
                   <div className="bg-background-raised rounded-lg px-3 py-2.5">
-                    <p className="label-mono mb-1">Industry</p>
+                <p className="label-mono mb-1">{t.companies.industry}</p>
                     <p className="text-[12px] font-medium text-foreground">{company.industry}</p>
                   </div>
                   <div className="bg-background-raised rounded-lg px-3 py-2.5">
-                    <p className="label-mono mb-1">Size</p>
+                <p className="label-mono mb-1">{t.companies.size}</p>
                     <p className="text-[12px] font-medium text-foreground">{company.size}</p>
                   </div>
                   <div className="bg-background-raised rounded-lg px-3 py-2.5">
-                    <p className="label-mono mb-1">Location</p>
+                <p className="label-mono mb-1">{t.companies.location}</p>
                     <p className="text-[12px] font-medium text-foreground">{company.location}</p>
                   </div>
                 </div>
@@ -82,9 +88,9 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
               </div>
 
               <div className="px-5 py-4 border-b border-border-subtle">
-                <p className="label-mono mb-3">Contacts</p>
+                <p className="label-mono mb-3">{t.companies.contacts}</p>
                 {contacts.length === 0 ? (
-                  <p className="text-[12px] text-muted">No contacts linked.</p>
+                  <p className="text-[12px] text-muted">{t.companies.noContacts}</p>
                 ) : (
                   <div className="space-y-2.5">
                     {contacts.map(c => (
@@ -104,25 +110,25 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
               </div>
 
               <div className="px-5 py-4">
-                <p className="label-mono mb-3">Opportunities</p>
+                <p className="label-mono mb-3">{t.companies.opportunities}</p>
                 {opportunities.length === 0 ? (
-                  <p className="text-[12px] text-muted">No active opportunities.</p>
+                  <p className="text-[12px] text-muted">{t.companies.noOpportunities}</p>
                 ) : (
                   <div className="space-y-2">
                     {opportunities.map(opp => (
                       <div key={opp.id} className="bg-background-raised border border-border-subtle rounded-lg p-3">
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-[10px] font-medium px-2 py-0.5 bg-surface-raised rounded-md text-muted-foreground border border-border-subtle">
-                            {opp.stage}
+                            {t.stages[opp.stage]}
                           </span>
                           {opp.dealValue && (
                             <span className="text-[12px] font-medium text-foreground tabular-nums font-mono">
-                              ${opp.dealValue.toLocaleString()}
+                              {fmt.currency(opp.dealValue)}
                             </span>
                           )}
                         </div>
                         <p className="text-[12px] text-foreground mt-1.5">{opp.nextStep}</p>
-                        <p className="text-[10px] text-muted font-mono mt-1">Follow-up: {opp.followUpDate}</p>
+                        <p className="text-[10px] text-muted font-mono mt-1">{t.companies.followUp} {fmt.date(opp.followUpDate)}</p>
                       </div>
                     ))}
                   </div>
@@ -137,6 +143,8 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
 }
 
 export default function CompaniesPage() {
+  const { t } = useTranslations()
+  const fmt = useFormat()
   const companies = useCRMStore((s) => s.companies)
   const opportunities = useCRMStore((s) => s.opportunities)
   const contacts = useCRMStore((s) => s.contacts)
@@ -144,6 +152,7 @@ export default function CompaniesPage() {
 
   const [localSearch, setLocalSearch] = useState('')
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null)
+  const [addCompanyOpen, setAddCompanyOpen] = useState(false)
 
   const query = localSearch || searchQuery
 
@@ -164,22 +173,31 @@ export default function CompaniesPage() {
 
   return (
     <>
-      <Topbar title="Companies" />
+      <Topbar title={t.companies.title} />
       <main className="px-8 py-8 flex-1 animate-fade-in-up">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h2 className="text-[22px] font-display text-foreground tracking-tight">Companies</h2>
-            <p className="text-[13px] text-muted mt-0.5 font-mono">{filtered.length} companies tracked</p>
+            <h2 className="text-[22px] font-display text-foreground tracking-tight">{t.companies.title}</h2>
+            <p className="text-[13px] text-muted mt-0.5 font-mono">{t.companies.tracked(filtered.length)}</p>
           </div>
-          <div className="relative flex items-center">
-            <Search size={13} className="absolute left-2.5 text-muted pointer-events-none" />
-            <input
-              type="text"
-              value={localSearch}
-              onChange={(e) => setLocalSearch(e.target.value)}
-              placeholder="Filter companies..."
-              className="h-8 pl-8 pr-3 text-[13px] bg-surface border border-border rounded-lg text-foreground placeholder:text-muted outline-none focus:border-accent/40 transition-all w-52"
-            />
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex items-center">
+              <Search size={13} className="absolute left-2.5 text-muted pointer-events-none" />
+              <input
+                type="text"
+                value={localSearch}
+                onChange={(e) => setLocalSearch(e.target.value)}
+                placeholder={t.companies.filter}
+                className="h-8 pl-8 pr-3 text-[13px] bg-surface border border-border rounded-lg text-foreground placeholder:text-muted outline-none focus:border-accent/40 transition-all w-52"
+              />
+            </div>
+            <button
+              onClick={() => setAddCompanyOpen(true)}
+              className="flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-accent text-background text-[12px] font-medium hover:bg-accent-hover transition-colors"
+            >
+              <Plus size={13} />
+              {t.companies.newCompany}
+            </button>
           </div>
         </div>
 
@@ -224,16 +242,16 @@ export default function CompaniesPage() {
 
                 <div className="mt-3 flex items-center gap-4">
                   <div className="flex items-center gap-1 text-[11px]">
-                    <span className="text-muted">Deals:</span>
+                    <span className="text-muted">{t.companies.deals}</span>
                     <span className="font-medium text-foreground">{oppCount}</span>
                   </div>
                   <div className="flex items-center gap-1 text-[11px]">
-                    <span className="text-muted">Contacts:</span>
+                    <span className="text-muted">{t.companies.contacts}:</span>
                     <span className="font-medium text-foreground">{contactCount}</span>
                   </div>
                   {totalValue > 0 && (
                     <div className="flex items-center gap-1 text-[11px] ml-auto">
-                      <span className="font-medium text-accent tabular-nums font-mono">${totalValue.toLocaleString()}</span>
+                      <span className="font-medium text-accent tabular-nums font-mono">{fmt.currency(totalValue)}</span>
                     </div>
                   )}
                 </div>
@@ -255,6 +273,8 @@ export default function CompaniesPage() {
           })}
         </div>
       </main>
+
+      <AddCompanyModal open={addCompanyOpen} onClose={() => setAddCompanyOpen(false)} />
 
       <CompanyDrawer
         company={selectedCompany}
