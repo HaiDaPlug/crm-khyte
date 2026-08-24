@@ -3,13 +3,14 @@ import 'server-only'
 import { connection } from 'next/server'
 
 import type { CRMSnapshot } from '@/lib/types'
-import { getSupabase, isSupabaseConfigured } from '@/lib/supabase/server'
-import { isClockSkew, isTransientRead, withRetry } from './retry'
+import { isSupabaseConfigured } from '@/lib/supabase/server'
+import { getDb, isDirectDbConfigured } from './pg'
+import { isClockSkew } from './retry'
 import { mockCompanies } from '@/lib/mock-data/companies'
 import { mockContacts } from '@/lib/mock-data/contacts'
 import { mockOpportunities } from '@/lib/mock-data/opportunities'
 import { mockNotes } from '@/lib/mock-data/notes'
-import { mockStrategyCards } from '@/lib/mock-data/strategy'
+import { mockStrategyCards, mockStrategyColumns } from '@/lib/mock-data/strategy'
 import { mockTasks } from '@/lib/mock-data/tasks'
 import {
   fromCompanyRow,
@@ -17,6 +18,7 @@ import {
   fromNoteRow,
   fromOpportunityRow,
   fromStrategyCardRow,
+  fromStrategyColumnRow,
   fromTaskRow,
 } from './mappers'
 import type {
@@ -25,6 +27,7 @@ import type {
   NoteRow,
   OpportunityRow,
   StrategyCardRow,
+  StrategyColumnRow,
   TaskRow,
 } from './rows'
 
@@ -48,7 +51,7 @@ export async function loadSnapshot(): Promise<CRMSnapshot> {
   // build time and serve everyone the same frozen pipeline until a redeploy.
   await connection()
 
-  if (!isSupabaseConfigured) {
+  if (!isSupabaseConfigured || !isDirectDbConfigured) {
     if (!warnedAboutMissingConfig) {
       warnedAboutMissingConfig = true
       console.warn(
@@ -59,65 +62,72 @@ export async function loadSnapshot(): Promise<CRMSnapshot> {
     return demoSnapshot()
   }
 
-  // Retried because Supabase occasionally rejects a read with a not-yet-valid
-  // token; see ./retry. A misconfigured database still fails on the first try.
-  return withRetry('loadSnapshot', readSnapshot, isTransientRead)
+  // Reads go straight to Postgres via SUPABASE_DB_URL rather than through
+  // PostgREST — see ./pg. That path mints no JWT, so it cannot hit the
+  // `JWT issued at future` clock-skew fault ./retry was written to wait out;
+  // a misconfigured database still fails immediately, same as before.
+  return readSnapshot()
 }
 
 async function readSnapshot(): Promise<CRMSnapshot> {
-  const supabase = getSupabase()
+  const sql = getDb()
 
-  const [companies, contacts, opportunities, notes, strategyCards, tasks] =
-    await Promise.all([
-      supabase.from('companies').select('*').order('created_at'),
-      supabase.from('contacts').select('*').order('created_at'),
-      supabase
-        .from('opportunities')
-        .select('*')
-        .order('created_at', { ascending: false }),
-      supabase.from('notes').select('*').order('created_at', { ascending: false }),
-      supabase
-        .from('strategy_cards')
-        .select('*')
-        .order('column_name')
-        .order('sort_order'),
-      supabase.from('tasks').select('*').order('created_at', { ascending: false }),
+  const [
+    companies,
+    contacts,
+    opportunities,
+    notes,
+    strategyColumns,
+    strategyCards,
+    tasks,
+  ] = await withDbErrors(() =>
+    Promise.all([
+      sql`select * from companies order by created_at`,
+      sql`select * from contacts order by created_at`,
+      sql`select * from opportunities order by created_at desc`,
+      sql`select * from notes order by created_at desc`,
+      sql`select * from strategy_columns order by opportunity_id, sort_order`,
+      sql`select * from strategy_cards order by sort_order`,
+      sql`select * from tasks order by created_at desc`,
     ])
+  )
 
   return {
-    companies: unwrap<CompanyRow>(companies, 'companies').map(fromCompanyRow),
-    contacts: unwrap<ContactRow>(contacts, 'contacts').map(fromContactRow),
-    opportunities: unwrap<OpportunityRow>(opportunities, 'opportunities').map(
-      fromOpportunityRow
+    companies: (companies as unknown as CompanyRow[]).map(fromCompanyRow),
+    contacts: (contacts as unknown as ContactRow[]).map(fromContactRow),
+    opportunities: (opportunities as unknown as OpportunityRow[]).map(fromOpportunityRow),
+    notes: (notes as unknown as NoteRow[]).map(fromNoteRow),
+    strategyColumns: (strategyColumns as unknown as StrategyColumnRow[]).map(
+      fromStrategyColumnRow
     ),
-    notes: unwrap<NoteRow>(notes, 'notes').map(fromNoteRow),
-    strategyCards: unwrap<StrategyCardRow>(strategyCards, 'strategy_cards').map(
-      fromStrategyCardRow
-    ),
-    tasks: unwrap<TaskRow>(tasks, 'tasks').map(fromTaskRow),
+    strategyCards: (strategyCards as unknown as StrategyCardRow[]).map(fromStrategyCardRow),
+    tasks: (tasks as unknown as TaskRow[]).map(fromTaskRow),
   }
 }
 
-type QueryResult = { data: unknown; error: { message: string } | null }
-
 /**
- * PostgREST hands back `unknown` without generated database types, so the row
- * shape is asserted here against the hand-written types in ./rows.
+ * Wraps the raw driver error with the same diagnostic shape `unwrap` used to
+ * give the PostgREST path — a wrong connection string or an un-migrated
+ * database should still fail loud and specific, not just "connection error".
  */
-function unwrap<Row>(result: QueryResult, table: string): Row[] {
-  if (result.error) {
-    // Two very different failures wear the same shape here. Sending someone to
-    // re-check a key that is provably fine costs more than the outage did.
-    const hint = isClockSkew(result.error.message)
-      ? 'The database rejected a token it considered not yet valid — a clock ' +
-        'disagreement upstream, not a credential problem. It clears on its own; ' +
-        'retrying is all that is needed. See lib/db/retry.ts.'
-      : 'Check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SECRET_KEY are right, ' +
-        'and that supabase/migrations/20260819120000_init.sql has been run on this project.'
+async function withDbErrors<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
 
-    throw new Error(`[khyte] Failed to load "${table}": ${result.error.message}. ${hint}`)
+    // The clock-skew fault this whole module was reworked to avoid is a
+    // PostgREST-only failure mode — it cannot happen on this connection. If
+    // this text ever appears here, something upstream changed; say so rather
+    // than silently mis-attributing it.
+    const hint = isClockSkew(message)
+      ? 'Unexpected: this is a PostgREST-only fault and this path bypasses PostgREST. ' +
+        'See lib/db/pg.ts.'
+      : 'Check SUPABASE_DB_URL is right, and that ' +
+        'supabase/migrations/20260819120000_init.sql has been run on this project.'
+
+    throw new Error(`[khyte] Failed to load snapshot: ${message}. ${hint}`)
   }
-  return (result.data ?? []) as Row[]
 }
 
 /** Credential-free fallback so the app is runnable before the DB is set up. */
@@ -127,6 +137,7 @@ function demoSnapshot(): CRMSnapshot {
     contacts: mockContacts,
     opportunities: mockOpportunities,
     notes: mockNotes,
+    strategyColumns: mockStrategyColumns,
     strategyCards: mockStrategyCards,
     tasks: mockTasks,
   }
@@ -140,5 +151,6 @@ export type {
   NoteRow,
   OpportunityRow,
   StrategyCardRow,
+  StrategyColumnRow,
   TaskRow,
 }

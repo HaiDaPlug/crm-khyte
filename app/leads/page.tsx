@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
 import { CRMTable, TableRow } from '@/components/crm/CRMTable'
 import { FilterBar } from '@/components/crm/FilterBar'
@@ -10,6 +10,7 @@ import { AddLeadModal } from '@/components/crm/AddLeadModal'
 import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
+import { useBoardPan } from '@/lib/hooks/useBoardPan'
 import { Stage, Priority, Note } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Plus } from 'lucide-react'
@@ -24,10 +25,13 @@ export default function LeadsPage() {
   const contacts = useCRMStore((s) => s.contacts)
   const notes = useCRMStore((s) => s.notes)
   const searchQuery = useCRMStore((s) => s.searchQuery)
+  const setSearchQuery = useCRMStore((s) => s.setSearchQuery)
 
   const [selectedStages, setSelectedStages] = useState<Stage[]>([])
   const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([])
   const [view, setView] = useState<ViewMode>('table')
+  const boardRef = useRef<HTMLDivElement>(null)
+  useBoardPan(boardRef)
   const [selectedRow, setSelectedRow] = useState<TableRow | null>(null)
   const [addLeadOpen, setAddLeadOpen] = useState(false)
 
@@ -74,18 +78,18 @@ export default function LeadsPage() {
 
   return (
     <>
-      <Topbar title={t.leads.title} />
-      <main className="px-8 py-8 flex-1 animate-fade-in-up">
-        <div className="flex items-center justify-between mb-5">
+      <Topbar />
+      <main className="min-w-0 flex-1 px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:px-8 lg:py-8">
+        <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-[26px] font-display text-foreground tracking-tight leading-none">{t.leads.allLeads}</h2>
-            <p className="text-[13px] text-foreground/60 mt-1.5 font-mono tabular-nums">
+            <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.leads.allLeads}</h2>
+            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
               {t.leads.count(filteredRows.length, allRows.length)}
             </p>
           </div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex w-full items-center gap-2.5 sm:w-auto">
             <ViewToggle view={view} onChange={setView} />
-            <Button onClick={() => setAddLeadOpen(true)}>
+            <Button onClick={() => setAddLeadOpen(true)} className="shrink-0">
               <Plus size={15} />
               {t.leads.newLead}
             </Button>
@@ -106,17 +110,34 @@ export default function LeadsPage() {
             data={filteredRows}
             onRowClick={(row) => setSelectedRow(row)}
           />
+        ) : filteredRows.length === 0 ? (
+          <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-8 text-center">
+            <p className="text-[15px] text-foreground/70">{t.crm.table.empty}</p>
+            {(selectedStages.length > 0 || selectedPriorities.length > 0 || searchQuery) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedStages([])
+                  setSelectedPriorities([])
+                  setSearchQuery('')
+                }}
+                className="mt-3 min-h-11 rounded-lg px-4 text-[14px] font-medium text-accent transition-colors hover:bg-accent-light"
+              >
+                {t.common.clearFilters}
+              </button>
+            )}
+          </div>
         ) : (
-          <div className="flex gap-3 overflow-x-auto pb-4">
+          <div ref={boardRef} className="board-scroll -mx-4 flex snap-x snap-proximity gap-3 overflow-x-auto px-4 pb-4 scroll-px-4 sm:-mx-6 sm:px-6 sm:scroll-px-6 lg:mx-0 lg:px-0 lg:scroll-px-0 cursor-grab">
             {(Object.entries(rowsByStage) as [Stage, TableRow[]][])
               .filter(([, rows]) => rows.length > 0)
               .map(([stage, rows]) => (
-                <div key={stage} className="shrink-0 w-[260px]">
+                <div key={stage} className="w-[min(82vw,280px)] shrink-0 snap-start sm:w-[260px]">
                   <div className="flex items-center gap-2 mb-3">
-                    <span className={cn('inline-flex items-center h-7 px-2.5 rounded-md text-[13px] font-medium', stageColors[stage])}>
+                    <span className={cn('inline-flex items-center h-7 px-2.5 rounded-md text-[14px] font-medium', stageColors[stage])}>
                       {t.stages[stage]}
                     </span>
-                    <span className="text-[12px] font-mono text-foreground/60 tabular-nums">{rows.length}</span>
+                    <span className="text-[13px] font-mono text-foreground/60 tabular-nums">{rows.length}</span>
                   </div>
                   <div className="space-y-2 stagger-children">
                     {rows.map(row => (
@@ -126,18 +147,18 @@ export default function LeadsPage() {
                         className="w-full text-left bg-surface border border-border rounded-xl p-3.5 hover:border-border-accent card-glow transition-all duration-150 cursor-pointer"
                       >
                         <div className="flex items-start justify-between gap-2 mb-1">
-                          <p className="text-[14px] font-semibold text-foreground leading-snug">{row.company.name}</p>
+                          <p className="text-[15px] font-semibold text-foreground leading-snug">{row.company.name}</p>
                           <span className="w-2 h-2 rounded-full mt-1 shrink-0" style={{ background: priorityDot[row.opportunity.priority] }} />
                         </div>
-                        <p className="text-[12.5px] text-foreground/60 mb-2">{row.contact.name} · {row.contact.role}</p>
+                        <p className="text-[13.5px] text-foreground/60 mb-2">{row.contact.name} · {row.contact.role}</p>
                         {row.opportunity.dealValue && (
                           <div className="flex items-center gap-1 mb-2">
-                            <span className="text-[14px] font-semibold text-foreground tabular-nums">
+                            <span className="text-[15px] font-semibold text-foreground tabular-nums">
                               {fmt.currency(row.opportunity.dealValue)}
                             </span>
                           </div>
                         )}
-                        <p className="text-[12.5px] text-foreground/70 truncate">{row.opportunity.nextStep}</p>
+                        <p className="text-[13.5px] text-foreground/70 truncate">{row.opportunity.nextStep}</p>
                       </button>
                     ))}
                   </div>

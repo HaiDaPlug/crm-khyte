@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react'
 import { Send, Sparkles, Loader2 } from 'lucide-react'
+import { Button } from './Button'
 import { cn } from '@/lib/utils'
 import { Note } from '@/lib/types'
 import { useTranslations } from '@/lib/hooks/useTranslations'
@@ -101,16 +102,7 @@ export function CaptureBox({ onSubmit }: CaptureBoxProps) {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-muted hidden sm:block font-mono opacity-50">⌘↵</span>
-          <button
-            onClick={handleSubmit}
-            disabled={!value.trim() || isSubmitting}
-            className={cn(
-              'flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12px] font-medium transition-all duration-150',
-              value.trim() && !isSubmitting
-                ? 'bg-accent text-background hover:bg-accent-hover'
-                : 'bg-border text-muted cursor-not-allowed'
-            )}
-          >
+          <Button size="sm" onClick={handleSubmit} disabled={!value.trim() || isSubmitting}>
             {isSubmitting ? (
               <>
                 <Loader2 size={12} className="animate-spin" />
@@ -122,7 +114,7 @@ export function CaptureBox({ onSubmit }: CaptureBoxProps) {
                 {t.crm.capture.save}
               </>
             )}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

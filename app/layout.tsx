@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono, Barlow, Plus_Jakarta_Sans } from 'next/font/google'
 import { Instrument_Serif, Source_Serif_4 } from 'next/font/google'
 import './globals.css'
@@ -41,6 +41,16 @@ const jakarta = Plus_Jakarta_Sans({
 export const metadata: Metadata = {
   title: 'Khyte CRM',
   description: 'Ett lugnt, skarpt och förstklassigt CRM för operatörer',
+}
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: [
+    { media: '(prefers-color-scheme: dark)', color: '#120f0c' },
+    { media: '(prefers-color-scheme: light)', color: '#f3efe9' },
+  ],
 }
 
 export default async function RootLayout({

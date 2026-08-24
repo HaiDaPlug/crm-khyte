@@ -86,7 +86,7 @@ export function ConfirmDialog({
   if (!mounted || !open) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[60] flex items-center justify-center py-2 [padding-left:max(0.5rem,env(safe-area-inset-left))] [padding-right:max(0.5rem,env(safe-area-inset-right))] sm:py-4 sm:[padding-left:max(1rem,env(safe-area-inset-left))] sm:[padding-right:max(1rem,env(safe-area-inset-right))]">
       <div
         className="absolute inset-0 bg-black/55 backdrop-blur-[2px] animate-fade-in"
         onMouseDown={onCancel}
@@ -103,7 +103,7 @@ export function ConfirmDialog({
         tabIndex={-1}
         className="grain-modal relative w-[440px] max-w-full animate-modal-in outline-none"
       >
-        <div className="flex items-center gap-4 px-6 pt-6 pb-5">
+        <div className="flex items-start gap-3.5 px-5 pb-5 pt-5 sm:items-center sm:gap-4 sm:px-6 sm:pt-6">
           <span className="w-10 h-10 rounded-full bg-danger-muted border border-danger/30 flex items-center justify-center shrink-0">
             <AlertTriangleFilled size={20} className="text-danger" />
           </span>
@@ -120,15 +120,15 @@ export function ConfirmDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-border-subtle">
+        <div className="flex flex-col gap-2 border-t border-border-subtle px-5 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-6">
           <button
             ref={cancelRef}
             type="button"
             onClick={onCancel}
             className={cn(
-              'h-9 px-3.5 rounded-lg text-[14px] font-medium text-foreground',
+              'h-11 w-full touch-manipulation rounded-lg px-3.5 text-[14px] font-medium text-foreground sm:h-9 sm:w-auto',
               'border border-foreground/15 hover:border-foreground/30 hover:bg-surface-raised',
-              'transition-colors'
+              'transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/35'
             )}
           >
             {cancelLabel ?? t.common.cancel}
@@ -137,10 +137,10 @@ export function ConfirmDialog({
             type="button"
             onClick={onConfirm}
             className={cn(
-              'h-9 px-4 rounded-lg text-[14px] font-medium text-white',
+              'h-11 w-full touch-manipulation rounded-lg px-4 text-[14px] font-medium text-white sm:h-9 sm:w-auto',
               'bg-danger hover:brightness-110',
               'shadow-[0_0_0_0_var(--danger-muted)] hover:shadow-[0_0_18px_-2px_var(--danger)]',
-              'transition-[filter,box-shadow] duration-150'
+              'transition-[filter,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/55'
             )}
           >
             {confirmLabel}

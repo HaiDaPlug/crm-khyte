@@ -1,11 +1,16 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-08-21
+**Date:** 2026-08-24
 **Phase:** MVP + persistence (Supabase live, no auth yet)
 
 The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
 (eu-north-1); schema and seed applied; reads and writes verified end to end
 against the live API.
+
+**One migration is pending.** `npm run db:status` reports
+`20260824170000_task_archive` as not yet pushed — it adds `tasks.archived_at`,
+which the task archive UI already writes to. Until it is applied, archiving
+works against the local store but the write fails on the remote.
 
 ---
 
@@ -16,7 +21,8 @@ against the live API.
 - React 19
 - TypeScript 5
 - Tailwind CSS 4
-- Supabase (`@supabase/supabase-js`) — hosted Postgres; schema in `supabase/migrations/`, setup in `docs/database.md`
+- Supabase (`@supabase/supabase-js`) — hosted Postgres; schema in `supabase/migrations/`, setup in `docs/database.md`. Writes go through PostgREST; reads bypass it entirely (see Data Layer)
+- `postgres` (postgres.js) — direct Postgres client for `loadSnapshot()`'s reads, over `SUPABASE_DB_URL`
 - Supabase CLI 2.115 (devDependency) — migrations via `npm run db:push`. Auth is sourced from `.env.local`, never `~/.supabase`, so the CLI cannot drift to a second Supabase account
 - Zustand — global state management (one store per request, built with the database snapshot; writes through Server Actions)
 - @dnd-kit/core + sortable + utilities — drag/drop
@@ -31,13 +37,13 @@ against the live API.
 |---|---|---|
 | `/` | Done | Redirects to `/dashboard` |
 | `/dashboard` | Functional | Command-center home, fits the viewport with no scrolling. Left: Pipeline (total value) and This Week (open task count) stacked as grainy burnt-orange cards, vertically centered. Right: card-less assistant chat column — time-aware greeting ("Good morning/afternoon/evening / It's late-night, Hai.", no icon, thin Source Serif 4 headline, trailing period), solid rounded composer with a hairline separator between the textarea and the keybind-hint/mic/send row (Enter to send, autosize, mic dictation via Web Speech API), icon quick-prompt pills, mock assistant replies keyed off lead names. |
-| `/leads` | Functional | TanStack Table + sorting + filter bar (wired) + board view (grouped by stage) + detail drawer. Search filters data via Zustand. "New Lead" capture modal (top right) with company/contact autofill comboboxes; selecting a pipeline stage is what adds the lead to the board (no stage = off board). Table shows "On board" pipeline indicator. |
-| `/pipeline` | Functional | dnd-kit kanban, 9 stages, drag between columns syncs to Zustand store. Active pipeline total value in header. Drop target feedback. Only shows leads with `inPipeline: true`; "Add Leads" popover (top right) lists off-board leads and adds them at stage "New". |
-| `/strategy` | Functional | Opportunity selector dropdown + 6-column strategy board with inline add-card forms. Cards sync to Zustand. |
+| `/leads` | Functional | TanStack Table + sorting + filter bar (wired) + board view (grouped by stage) + detail drawer. Search filters data via Zustand. "New Lead" capture modal (top right) with company/contact autofill comboboxes; selecting a pipeline stage is what adds the lead to the board (no stage = off board). Table shows "On board" pipeline indicator. Zebra-striped rows (`even:` uses `--surface-raised`, plain element+pseudo selector so it can never outrank the hover class). Table and board both pan/wheel-scroll via `useBoardPan` — see Pipeline board interaction. |
+| `/pipeline` | Functional | dnd-kit kanban, 9 stages, drag between columns syncs to Zustand store. Active pipeline total value in header. Drop target feedback. Only shows leads with `inPipeline: true`; "Add Leads" popover (top right) lists off-board leads and adds them at stage "New". Each column's empty slot also opens that same off-board-leads picker, scoped to drop straight into that column's stage. The board can be panned without a card in hand — drag the background, or roll a vertical wheel over it (skipped over card content, only empty space) — and auto-scrolls at the edges while dragging. See **Pipeline board interaction** below. |
+| `/strategy` | Functional | Opportunity selector dropdown + strategy board whose headlines are written per deal — add, rename inline, delete (two-step confirm, cards cascade). A new deal opens on an empty board with a single "add the first headline" prompt. Inline add-card forms; headlines and cards sync to Zustand and Supabase. |
 | `/companies` | Functional | Card grid with deal count, contact count, total value. Search/filter input. Click-to-open detail drawer with company info, contacts, opportunities. "New Company" essentials modal (top right). |
 | `/contacts` | Functional | List view with search/filter. Click-to-open drawer with contact info, email/LinkedIn links, company card, related opportunities. "New Contact" essentials modal (top right) with company autofill combobox. |
-| `/tasks` | Functional | Grouped checklist (Overdue/Today/Upcoming/Completed). Checkbox toggle. Inline add-task form with priority selection. 8 realistic mock tasks. |
-| `/settings` | Functional | Display preferences: theme (dark/light), interface language (Swedish/English), regional format, currency, date format, compact numbers, reset-to-defaults, plus a live preview row showing a sample amount and date under the current settings. Swedish UI and `sv-SE` formatting are the fresh-session defaults. Persisted to `localStorage`, applied app-wide. |
+| `/tasks` | Functional | Three columns — **On pace / Late / Completed** — derived from the data, not stored. Checking a task off strikes the title, chimes, and flies the row across to Completed. "Add Task" opens `AddTaskModal` (title, description, priority `ColorSlider`, due date, colleague assignee). Pencil opens an inline editor with the same priority/assignee controls. Archive is the only way off the board; delete lives inside the archive drawer beneath the columns. See **Tasks** below. |
+| `/settings` | Functional | Display preferences: theme (dark/light), interface language (Swedish/English), regional format, currency, date format, compact numbers, **sounds**, reset-to-defaults, plus a live preview row showing a sample amount and date under the current settings. Swedish UI and `sv-SE` formatting are the fresh-session defaults. Persisted to `localStorage`, applied app-wide. |
 
 ### Components
 ```
@@ -49,10 +55,10 @@ components/
   crm/
     CaptureBox.tsx     — textarea input, Cmd+Enter submit, simulated AI extraction (800ms delay) — orphaned since /inbox was removed
     SuggestionPreviewCard.tsx — AI extraction card with Apply (updates matching opportunity) / Dismiss — orphaned since /inbox was removed
-    CRMTable.tsx       — sortable TanStack table, priority dots, stage badges, dark theme
-    PipelineBoard.tsx  — dnd-kit kanban board, drag overlay, drop target feedback, stage dot indicators
-    LeadCard.tsx       — kanban card: company, contact, priority, deal value, amber hover glow
-    StrategyBoard.tsx  — 6-column dnd-kit board with sortable text cards, inline add forms
+    CRMTable.tsx       — sortable TanStack table, priority dots, stage badges, dark theme. Zebra-striped rows (`.data-table tbody tr:nth-child(even)`, scoped in globals.css). Horizontal scroll wrapper uses the shared `useBoardPan` (`panExcludeSelector: 'tr, th'` so click-drag panning doesn't fight a row/header click)
+    PipelineBoard.tsx  — dnd-kit kanban board, drag overlay, drop target feedback. Column headers use the shared stage pill; per-stage border tints only. Uses the shared `useBoardPan` (`lib/hooks/`; wheel + background-drag panning, also used by `CRMTable`) and its own `useEdgeAutoScroll` (edge scroll while dragging) — see Pipeline board interaction. Empty column slots open an off-board-leads picker scoped to that stage, not the lead-creation modal
+    LeadCard.tsx       — kanban card: company, contact, priority, deal value, amber hover glow. Same card definition as the leads board's kanban card by design
+    StrategyBoard.tsx  — dnd-kit board over per-opportunity headlines (store-derived, no local copy), sortable text cards, inline add/rename forms, positional lane colours
     DetailDrawer.tsx   — portaled slide-in drawer (translate-x animation), company/contact/deal/notes. Shares the modal's material (`grain-modal grain-drawer`), type scale and `data-theme="dark"`; `role="dialog"` + focus trap via `useDialogBehavior`; `inert` while closed. Retains the last row it rendered so the panel slides out with its content instead of emptying first. **Notes are editable in place** — click the note or "Edit"/"Add note", ⌘↵ saves, Esc cancels; writes through `updateOpportunity`. Dirty-checked: dismissing with unsaved text raises `ConfirmDialog` on all four exit paths (Esc, Cancel, backdrop, X), and confirming from a *drawer-closing* path also closes the drawer while confirming from Cancel does not
     NotesTimeline.tsx  — chronological notes with AI-extracted indicator
     FilterBar.tsx      — stage + priority filters, active pills, animated panel toggle
@@ -60,10 +66,13 @@ components/
     EmptyState.tsx     — centered empty state with icon + message
     Modal.tsx          — centered modal shell, **portaled to `document.body` and unmounted when closed** (previously always-mounted inside the page tree, where an ancestor `transform`/`overflow` could clip it and the hidden subtree stayed in the a11y tree); dialog behaviour shared with the drawer via `useDialogBehavior` (grain-modal treatment, overlay, Esc, ⌘↵ submit shortcut, footer slot); `role="dialog"` + `aria-modal` + labelled by its title; accepts `suspended` so a stacked `ConfirmDialog` can take the keyboard; designed to fit without scrolling; panel forces `data-theme="dark"` so all capture modals render dark regardless of the page's active theme, matching the sidebar
     ConfirmDialog.tsx  — `role="alertdialog"` confirmation for unrecoverable actions, stacked above the dialog that raised it (which stands down via `suspended`). Replaces `window.confirm`, which renders in browser chrome and blocks the main thread. Focus opens on the safe choice
-    FormFields.tsx     — shared form primitives: inputClass, Field, Combobox, ColorSlider. `Combobox` is `memo`-wrapped with full keyboard support (↑/↓ wrap, Home/End, Enter select, Esc dismiss), `role="combobox"`/`listbox` + `aria-activedescendant`, and closes on outside-pointerdown rather than blur so the list can be drag-scrolled. `ColorSlider` is a generic discrete slider that reads by colour and position instead of text — drag (pointer capture), click-anywhere, arrows/Home/End
+    FormFields.tsx     — shared form primitives: inputClass, Field, Combobox, ColorSlider, DateStepper, AssigneePicker. `Combobox` is `memo`-wrapped with full keyboard support (↑/↓ wrap, Home/End, Enter select, Esc dismiss), `role="combobox"`/`listbox` + `aria-activedescendant`, and closes on outside-pointerdown rather than blur so the list can be drag-scrolled. `ColorSlider` is a generic discrete slider that reads by colour and position instead of text — drag (pointer capture), click-anywhere, arrows/Home/End. `DateStepper` pairs the native calendar with ▲▼ day nudges; its arithmetic runs on the date parts in UTC (see Tasks). `AssigneePicker` renders the fixed colleague roster (see Tasks) as pills plus an explicit "unassigned" option — shared by `AddTaskModal` and the inline task editor
     AddLeadModal.tsx   — full lead capture: company/contact comboboxes with two-way autofill, stage pill row (picking a stage = joins the pipeline; default off board), priority (ColorSlider)/deal/next step/follow-up/tags/notes. Validates deal value and email inline and blocks submit on either; unsaved-changes confirmation on dismiss
     AddContactModal.tsx — contact essentials: name, role, company (combobox, creates if new), email, phone, LinkedIn
     AddCompanyModal.tsx — company essentials: name, domain, industry, size, location, tags
+    AddTaskModal.tsx   — task capture as a proper modal (title, description, priority via `ColorSlider`, due date, assignee via `AssigneePicker`) — replaces the old inline "show/hide form" that had no date control and plain priority pills. See Tasks
+    Button.tsx         — shared button (`variant`: primary/danger/success get the `.btn-grain` material below, secondary/ghost stay flat; `size`: sm/md). Rolled out to every solid action button app-wide (page-header CTAs, modal submit buttons, drawer save, capture submit) — see Design System → Grain buttons
+    ButtonGrainPatchy.tsx — byte-for-byte snapshot of an earlier, mottled grain treatment (`.btn-grain-patchy` in globals.css), kept for reference/reuse; not wired into any page
 ```
 
 ### Shared Config (lib/stage-config.ts)
@@ -76,14 +85,17 @@ components/
 ### Display Settings and localization (`lib/settings.ts` + `lib/i18n/` + hooks)
 
 Read-time formatting only — **never** what is stored. Amounts stay plain numbers
-and dates stay ISO strings in Postgres; switching currency *relabels* 48000 as
-`SEK 48,000`, it does not convert. There is no FX rate anywhere in the app.
+and dates stay ISO strings in Postgres. Every stored `deal_value` is denominated
+in `BASE_CURRENCY` (**SEK**); switching currency converts for display, so 48000
+reads as `48 000 kr` under SEK and `5 tn US$` under USD. Rates live in the
+static `FX_RATES` table in `lib/settings.ts` — hand-maintained, no network call
+on render — and are dated in a comment there.
 
 | File | Role |
 |---|---|
 | `lib/settings.ts` | `DEFAULT_SETTINGS`, the `CURRENCIES` / `LOCALES` / `DATE_FORMATS` catalogs, and the formatters: `formatCurrency`, `formatDate`, `formatDateTime`, `formatNumber`, `currencySymbol` |
 | `lib/hooks/useFormat.ts` | `useFormat()` — the formatters bound to the current settings. Every amount and date on screen goes through this |
-| `lib/i18n/translations.ts` | Shape-checked Swedish and English dictionaries, including app-owned copy plus presentation labels for stages, priorities and strategy columns |
+| `lib/i18n/translations.ts` | Shape-checked Swedish and English dictionaries, including app-owned copy plus presentation labels for stages and priorities |
 | `lib/hooks/useTranslations.ts` | `useTranslations()` — returns the active interface language and dictionary from the settings store |
 
 - Currencies: **SEK, EUR, USD, GBP** (deliberately trimmed from a longer list)
@@ -91,16 +103,27 @@ and dates stay ISO strings in Postgres; switching currency *relabels* 48000 as
   is independent of the eight regional formats spanning en/de/fr/es/nl/sv/ja
 - Swedish is also the default regional format (`sv-SE`). Existing currency
   choices are preserved when pre-localization settings migrate; currency remains
-  a separate user choice and values are never converted
-- Database stages, priorities and strategy columns keep their canonical English
-  enum values. Only their display labels are localized, so filtering, drag/drop
-  and persistence contracts do not change
+  a separate user choice from interface language
+- `convertFromBase` / `convertToBase` bracket the FX boundary. Display goes
+  through `formatCurrency`, which converts on the way out; the one money input
+  (`AddLeadModal`'s deal value) converts on the way in via `fmt.toBase`, because
+  the field is prefixed with the *display* currency's symbol. Any new money
+  input has to do the same, or it writes a figure that is off by the FX rate
+- Compaction is applied to the **converted** amount, not the stored one: the
+  `>= 1000` threshold and the 1-decimal rounding both see the display figure
+- Database stages and priorities keep their canonical English enum values. Only
+  their display labels are localized, so filtering, drag/drop and persistence
+  contracts do not change. Strategy headlines are user-written text and are
+  never translated — they read back exactly as typed, in any interface language
 - `currencySymbol()` reads the symbol out of `Intl.formatToParts` rather than the
   `CURRENCIES` table, because the right symbol depends on locale *and* currency —
   SEK is `kr` under sv-SE but `SEK` under en-US. A hardcoded table would let an
   input prefix disagree with the formatted value beside it
 - Every `Intl` call is wrapped: an unsupported locale/currency pair falls back to
   the raw number rather than throwing, so a bad preference can't blank a deal value
+- `sounds` (default on) gates the interface chimes. Only the task check-off uses
+  it today; anything audible added later should read the same flag rather than
+  growing a second preference
 - `AddLeadModal`'s deal-value prefix is text, not a `DollarSign` icon, and the
   input's left padding comes from a length lookup (`pl-7`/`pl-9`/`pl-12`) — Tailwind
   needs whole class names at build time, so it can't be interpolated
@@ -109,6 +132,123 @@ and dates stay ISO strings in Postgres; switching currency *relabels* 48000 as
 app.** Three `DollarSign` icons were removed along the way; left in place they
 would have printed `$` next to `517 000 kr`.
 
+### Pipeline board interaction (components/crm/PipelineBoard.tsx)
+
+Three separate mechanisms, deliberately kept apart because they answer different
+gestures:
+
+- **`useBoardPan`** (`lib/hooks/useBoardPan.ts`) — panning with no card in
+  hand. A vertical wheel over the board becomes horizontal travel, and the
+  background can be grabbed and thrown sideways. Extracted from a
+  pipeline-only inline hook into a shared one: `CRMTable`'s horizontal scroll
+  (the leads table) and the leads page's board view now use it too, not just
+  the pipeline kanban. Two independent, separately-configurable exclusion
+  selectors, because click-drag panning and wheel-to-horizontal answer
+  different problems:
+  - `panExcludeSelector` — presses that shouldn't start a drag-pan because
+    they belong to a control instead (a card, a button, a table row/header).
+    `CRMTable` passes `'tr, th'` so panning never fights a row click or a
+    header sort click.
+  - `wheelExcludeSelector` — targets the wheel conversion itself should skip,
+    left alone by default. The pipeline board passes
+    `'[aria-roledescription="sortable"]'` (what dnd-kit tags every `LeadCard`
+    with) so a normal two-finger scroll *over a card* still scrolls the page
+    instead of yanking the whole board sideways — only empty column space and
+    the gaps between columns convert to a pan. Without this the "genius
+    scrolling" from the pipeline board felt like it hijacked scrolling
+    anywhere on the page, when the actual bug was card content inside the
+    board intercepting it; the listeners were always scoped to the board
+    element only and never reached the sidebar or rest of the page.
+  - The wheel handler only calls `preventDefault()` when the board actually
+    has somewhere left to go, so at either end the page scrolls normally
+    instead of the board swallowing the event. Shift-wheel and ctrl-wheel
+    (zoom) are left to the browser, as is a real horizontal trackpad gesture —
+    that one already worked through `overflow-x: auto`
+- **`useEdgeAutoScroll`** — scrolling *while* a card is being dragged. Pointer
+  position is tracked continuously rather than only once a drag starts: a drag
+  can begin and then hold still at an edge, and a listener attached on
+  activation would never learn where the pointer is. dnd-kit's own `autoScroll`
+  is left enabled underneath as a floor — both read the same pointer and scroll
+  the same container in the same direction, so they add rather than fight
+- **`.board-scroll`** (globals.css) — the one place a scrollbar is wayfinding
+  rather than chrome. 10px with a visible track and an accent hover, against the
+  4px hairline everywhere else
+
+`onDragCancel` is wired. Without it, cancelling a drag with Escape left
+`activeId` set forever: the column stayed highlighted, and once panning existed
+the board also stayed permanently un-pannable. This predated the panning work
+and was only visible as a stuck highlight.
+
+**Empty column slots open a picker of off-board leads, not the "add lead"
+modal.** A lightly-tinted, empty card silhouette (`bg-white/[0.04]`, dotted
+border) rather than a "Tomt"/"Empty" label — the tint alone signals a card
+belongs there, and clicking it opens the same off-board-leads list as the
+top-right "Add Leads" button, scoped to drop the pick directly into that
+column's stage (`addToPipeline(id, stage)`) rather than always landing in
+"New". The picker button sits at `z-50`, above the click-outside overlay's
+`z-30`, so a second press on it reliably toggles the picker closed — with no
+explicit stacking the overlay could end up front of the button and swallow
+the second click.
+
+### Tasks (app/tasks/page.tsx)
+
+**Columns are derived, not stored.** `onPace` is everything open and not past
+due — today's work and what is ahead of it — so the middle column only ever
+holds what actually slipped. Editing a due date re-buckets the task for free.
+
+**Check-off** runs in three beats: a 1.5px line sweeps the title via `scaleX`
+on a `transform-origin: left` overlay (320ms), the chime plays, and only then
+does the store move the task, at which point a shared `layoutId` inside a
+`LayoutGroup` flies the row across to Completed (700ms). The list container
+**must not** carry `overflow-hidden` or the row is sliced off at the column edge
+the moment it leaves; `z-index: 30` while in flight keeps it over the borders.
+
+The completed *resting* look (`opacity-40`, `line-through`) is plain CSS, never
+a Framer target. Animated values only exist once the animation loop has ticked,
+so a row that mounts straight into Completed — reload, reduced motion, a
+backgrounded tab — rendered at full opacity with no strike, reading as
+un-completed. Framer owns the transition; CSS owns the state.
+
+**Archiving is the only way off the board.** Delete exists but is reachable only
+from inside the archive drawer, behind a `ConfirmDialog` — two deliberate steps.
+Archived tasks stay in the store and still resolve by id, so anything
+referencing a task keeps working; that is the whole reason to prefer archive
+over delete. `Rensa` on the Completed header archives the column in one go.
+
+`lib/sound.ts` synthesises the chime rather than shipping an audio file — no
+binary in the repo, no fetch, no decode before it can sound. Two sine partials,
+C6 (1046.5 Hz) plus G6 entering 35ms later and decaying faster, which is what
+makes a bell read bright at the strike and warm as it rings out. The
+`AudioContext` is built lazily inside the click handler, never at import, so
+autoplay policy never blocks it. Gated on the `sounds` setting.
+
+`DateStepper` (in `FormFields`) is used by both the inline editor and the add
+modal. Its day arithmetic runs on the date parts **in UTC** — a local-midnight
+`Date` sent back through `toISOString()` lands on the previous day anywhere east
+of UTC, so a nudge in Stockholm would silently subtract a day. Verified stepping
+through the 29 March 2026 DST boundary in `Europe/Stockholm`.
+
+**Add Task is a modal (`AddTaskModal.tsx`), not an inline show/hide form.** The
+old form had no due-date control at all (silently hardcoded to +7 days) and
+plain pill buttons for priority. The modal has title, description, priority via
+the shared `ColorSlider`, an actual due-date input, and an assignee picker —
+same material and field layout as `AddLeadModal`/`AddCompanyModal`. The inline
+pencil-editor kept its existing row-morphs-in-place interaction (not converted
+to a modal) but picked up the same `ColorSlider` for priority and the same
+`AssigneePicker` for assignee, so both entry points now agree on controls.
+
+**Assignment (`lib/colleagues.ts`).** The app has no real accounts yet (see
+Auth under What does NOT exist), so `Task.assignee?: ColleagueId` is a fixed
+three-person roster — `'erik' | 'abdi' | 'hai'` — not a foreign key to a users
+table. Each colleague has a name and a fixed avatar hex (same reasoning as
+`priorityDot`: an avatar has to read as the same color in both themes).
+`AssigneePicker` (in `FormFields`) renders the roster as pills with an explicit
+"unassigned" option, shared by `AddTaskModal` and the inline editor; `TaskItem`
+shows a small initial-avatar next to the due date when a task has an assignee.
+Persisted via `supabase/migrations/20260824120000_task_assignee.sql` (new
+`crm_colleague` enum, nullable `tasks.assignee` column) — applied to
+`wmnobqhypkocirfybqsj`, verified directly against `information_schema.columns`.
+
 ### Error handling (lib/db/retry.ts + app/global-error.tsx)
 
 Two layers, because the database read happens in the root layout and a failure
@@ -116,8 +256,8 @@ there has nothing above it to catch it:
 
 | Layer | Handles |
 |---|---|
-| `lib/db/retry.ts` | Transient faults, absorbed silently. 6 attempts with 250ms–4s exponential waits (7.75s total budget) |
-| `app/global-error.tsx` | Everything the retry can't — renders a themed screen with a working retry button |
+| `lib/db/retry.ts` | Transient faults on **writes** only now (`app/actions/crm.ts`, via PostgREST). Bounded by *elapsed time*, not attempt count: 2.5s for auth-timing faults, waiting 250ms → 500ms → 1s → then a flat 750ms. Reads no longer go through this — see Data Layer and the clock-skew entry under Known issues |
+| `app/global-error.tsx` | Everything a write's retry can't, plus any read failure — renders a themed screen with a working retry button |
 
 **`global-error.tsx` is the only boundary in the app.** A segment `error.tsx`
 does not wrap the layout above it, and `loadSnapshot()` runs in
@@ -142,7 +282,7 @@ Verified 2026-08-21 by booting with a deliberately invalid `SUPABASE_SECRET_KEY`
 as an env override (`.env.local` untouched): the page rendered with its digest,
 and "Try again" re-ran the render. That also exercised the retry's fast path —
 `Invalid API key` is non-transient, so it failed on the first attempt rather than
-spending 600ms on three.
+spending the whole budget on a fault that was never going to clear.
 
 ### Dialog behaviour (lib/hooks/useDialog.ts)
 
@@ -171,15 +311,18 @@ Full detail in `docs/database.md`. Shape of it:
 
 | File | Role |
 |---|---|
-| `supabase/migrations/20260819120000_init.sql` | 6 tables, 3 enums, indexes, `updated_at` triggers, RLS enabled with owner-scoped policies |
+| `supabase/migrations/20260819120000_init.sql` | 6 tables, 3 enums, indexes, `updated_at` triggers, RLS enabled with owner-scoped policies. One of those enums, `crm_strategy_column`, is dropped again by the migration below |
+| `supabase/migrations/20260821120000_strategy_headlines.sql` | `strategy_columns` table; backfills the six enum lanes into per-opportunity headlines, repoints `strategy_cards.column_name` → `column_id`, drops the `crm_strategy_column` enum |
+| `supabase/migrations/20260824120000_task_assignee.sql` | `crm_colleague` enum (`erik`/`abdi`/`hai`), nullable `tasks.assignee` column — plain enum, not a foreign key, same reasoning as `crm_priority` (no real accounts yet, see Tasks) |
 | `supabase/seed.sql` | the former mock data as real rows, fixed UUIDs, re-runnable |
 | `supabase/config.toml` | local CLI config from `supabase init`; not a project link |
 | `scripts/supabase.mjs` | `npm run supabase -- <cmd>` — runs any CLI command with `SUPABASE_ACCESS_TOKEN` taken from `.env.local`, which overrides the machine-global `~/.supabase/access-token` |
 | `scripts/db-push.mjs` | `npm run db:push` — pushes to the linked project if `supabase/.temp/project-ref` exists, else falls back to `SUPABASE_DB_URL`. Validates the connection string and echoes the target host before writing |
-| `lib/supabase/server.ts` | secret-key (`sb_secret_…`) client, `server-only` guarded; `isSupabaseConfigured` flag, legacy-key warning |
+| `lib/supabase/server.ts` | secret-key (`sb_secret_…`) client, `server-only` guarded; `isSupabaseConfigured` flag, legacy-key warning. Used for writes only — see below |
+| `lib/db/pg.ts` | `getDb()` — direct Postgres client (`postgres.js`) over `SUPABASE_DB_URL`, for reads only. Cached on `globalThis`, not a module-level singleton — see Known issues |
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
-| `lib/db/queries.ts` | `loadSnapshot()` — reads all six tables in one pass; calls `connection()` to stay per-request; falls back to mock data when unconfigured |
+| `lib/db/queries.ts` | `loadSnapshot()` — reads all seven tables in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing |
 | `app/actions/crm.ts` | 10 Server Actions (create + update per entity), returning `{ ok }` rather than throwing |
 | `lib/store/provider.tsx` | `CRMStoreProvider` — builds one store per request **containing** the snapshot, so the server HTML and the hydration pass both render real rows; `useCRMStore` resolves it from context |
 
@@ -204,6 +347,16 @@ and writes that no-op. The UI is identical either way.
 | `npm run db:push` | applies pending migrations (`-- --include-seed` also runs `seed.sql`) |
 | `npm run db:link -- --project-ref <ref>` | links the CLI to a project |
 | `npm run supabase -- <cmd>` | any other CLI command, same scoped auth |
+
+Four migration files exist; three are applied to `wmnobqhypkocirfybqsj`
+(`init`, `strategy_headlines`, `task_assignee`). `20260824170000_task_archive`
+is **pending** — run `npm run db:push`. The headline migration was pushed
+through the `SUPABASE_DB_URL` path while the access token was stale, which is
+exactly the fallback that path exists for — schema changes never need a
+Management API token. `task_assignee` reached the database the same way; its
+`--yes` push was blocked client-side by the assistant's own permission
+classifier before returning a result, so it was verified by querying
+`information_schema.columns` directly rather than trusting the CLI's exit code.
 
 Migration files **must** be named `<14-digit-timestamp>_<name>.sql` — that is how
 the CLI orders them and matches them against `supabase_migrations.schema_migrations`
@@ -247,7 +400,8 @@ Actions:
 - `addToPipeline` — sets `inPipeline: true` and resets stage to `'New'`
 - `moveOpportunityStage` — drag/drop pipeline updates
 - `addNote`, `dismissNote`, `applyNote` — inbox note management; apply updates matching opportunity
-- `moveStrategyCard`, `addStrategyCard` — strategy board management
+- `addStrategyColumn`, `renameStrategyColumn`, `removeStrategyColumn` — strategy headlines (removing one prunes its cards locally; the database cascades)
+- `moveStrategyCard`, `addStrategyCard` — strategy card management; a move resequences the destination lane so `order` stays dense
 - `addTask`, `toggleTaskComplete` — task management
 - `syncError` / `clearSyncError` — last failed write (set and logged, not yet rendered)
 - `toggleSidebar`, `setSearchQuery` — UI state
@@ -264,14 +418,21 @@ from.
 | `contacts.ts` | 6 contacts, one per company |
 | `opportunities.ts` | 7 opportunities across various pipeline stages; all seeded `inPipeline: true` except `o5` and `o7` (off board, so the pipeline "Add Leads" picker has content) |
 | `notes.ts` | 3 raw capture notes, 2 with AI extraction |
-| `strategy.ts` | 10 strategy cards for Nordvik Capital opportunity |
+| `strategy.ts` | 6 headlines + 10 strategy cards for the Nordvik Capital opportunity; every other demo deal opens empty |
 | `tasks.ts` | 8 realistic tasks linked to opportunities/companies, mix of overdue/today/upcoming/completed |
+
+### Sound (lib/sound.ts)
+
+`playCheckChime()` — the only audible thing in the app. Synthesised through Web
+Audio rather than shipped as a file; lazy `AudioContext`, wrapped so a blocked
+or exhausted context can never take the interaction down with it. Callers gate
+on the `sounds` setting; the module itself does not read settings.
 
 ### Types (lib/types/index.ts)
 - `Priority` — `'low' | 'medium' | 'high' | 'critical'`
 - `Stage` — 9 pipeline stages
-- `Company`, `Contact`, `Opportunity` (with `inPipeline` — leads only appear on the pipeline board once explicitly added), `Note` (with `dismissed`/`applied` fields), `StrategyCard`, `Task`
-- `StrategyColumn` — 6 columns
+- `ColleagueId` — `'erik' | 'abdi' | 'hai'`, the fixed assignment roster (see Tasks); metadata (name, avatar color) lives in `lib/colleagues.ts`, not this file
+- `Company`, `Contact`, `Opportunity` (with `inPipeline` — leads only appear on the pipeline board once explicitly added), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
 - `PipelineStage`
 - `Settings` — display preferences (`theme`, `currency`, `locale`, `dateFormat`, `compactNumbers`), plus `CurrencyCode`, `LocaleCode`, `DateFormat`
 
@@ -305,12 +466,86 @@ Palette philosophy: primary text is pure white (dark) / pure black (light) — n
   - `.grain-modal > *` lifts section content above the grain `::before`, but giving every direct child `position: relative` + `z-index` **makes each section its own stacking context** — a popover inside one section cannot stack above a later sibling no matter its `z-index`, so combobox dropdowns rendered *behind* the sections below them. `.grain-modal > [data-layer-raised]` is the opt-out; `Combobox` flags its own enclosing section while its list is open and clears it on close
   - The `::before` noise tile carries `transform: translateZ(0)` + `will-change` + `contain: strict`, and `body::before` the same promotion. Rasterizing `feTurbulence` is expensive, and unpromoted these forced a repaint of the whole grain surface (and, for `body::before` at `z-index: 9999`, the whole viewport) on every keystroke in a modal field
 
+**Grain buttons (`.btn-grain` in globals.css, driving `Button.tsx`).** A matte,
+tinted-per-variant material for every solid action button, distinct from the
+`.grain-card`/`.grain-modal` family above (those are static surfaces; this one
+also carries hover/active/disabled states):
+- **Matte, not glossy.** No specular glint, no hover sheen sweep — those were
+  tried and read as polished-plastic. The fill is a lit-object gradient
+  instead: an off-centre warm light pool (cream, not pure white), a soft
+  shadow pool opposite it, and a faint directional undertone beneath both —
+  deliberately asymmetric, since a perfectly centred gradient reads as
+  "generated" rather than considered. A slight diagonal tilt (128deg) keeps
+  the undertone from running dead horizontal across a short, wide button.
+- **Grain is a single fine `feTurbulence` layer**, `soft-light` blended so it
+  reads as dry texture rather than a graphic overlay. An earlier pass blended
+  a second, coarse turbulence layer under it for more "character" — at button
+  scale that read as uneven blotches muddying the color rather than grain, so
+  it was pulled back out. That version is preserved as `.btn-grain-patchy` /
+  `ButtonGrainPatchy.tsx`, in case the mottled look is wanted on a larger
+  surface where it wouldn't just look like blotches.
+- **Primary's hue leans past the muted brand `--accent`** toward a more
+  saturated, less brown true orange (`color-mix` weighted toward `#C85510`) —
+  deliberately bolder than the accent used for text/badges elsewhere, which
+  stays as-is.
+- A soft outer white glow (`0 0 14px rgba(255,255,255,0.1)`, brightening on
+  hover) sits alongside the color-tinted ambient shadow, not replacing it.
+- Rolled out globally: every solid `bg-accent`/`bg-accent-hover` action button
+  across the app now renders through `Button`/`.btn-grain` — page-header CTAs,
+  every modal's submit button, the drawer's notes-save button, capture submit.
+  Toggle/filter pills were deliberately left alone (different interaction
+  pattern, not a one-off action).
+
+**Type scale (the leads page is the reference).** Every tab was brought onto
+one scale; before this, `/tasks`, `/companies`, `/contacts` and `/strategy` sat a
+full tier below `/leads` and the table — 13px primaries against 15px, 11px
+secondaries against 13.5px, 10px labels — which is what read as timid rather
+than deliberate.
+
+| Role | Size |
+|---|---|
+| Page title | 30px `font-jakarta` semibold, `tracking-[-0.02em] leading-none` |
+| Page subtitle | 15px `text-foreground/60` mono tabular |
+| Section / drawer heading | 17px |
+| Primary (row title, card title, setting label) | 15px |
+| Body (next step, notes, control text) | 14.5px |
+| Secondary (role, industry, meta) | 13.5px |
+| Tag / chip | 12.5px mono |
+| `label-mono` | 11.5px (13px inside `.grain-modal`) |
+
+**Secondary text is an opacity ramp, not a token.** `text-foreground/NN` rather
+than `text-muted` / `text-foreground-dim` / `text-muted-foreground`:
+`/85` body · `/80` tag · `/70` card body · `/65` mono meta · `/60` secondary ·
+`/45` placeholder · `/40` null. The named tokens still exist and still render
+fine in both themes — the ramp is a convention, not a correctness fix — but
+mixing the two is what made pages look like different products. Remaining
+`text-muted` usage is confined to `AppSidebar`, `PageHeader`, `NotesTimeline`,
+`CaptureBox`, `SuggestionPreviewCard` and `global-error`.
+
+**Controls.** `Button`'s `md` is the page-level primary action
+(`h-[38px] px-[18px] text-[14px]`) and `sm` sits with the filter bar and in-form
+controls (`h-9 px-4 text-[13.5px]`). That size used to live as a one-off
+`className` override on `/leads` while other tabs took smaller defaults, and two
+pages used `size="sm"` for a page-level action. Header action icons are 15px.
+
+**Shared surfaces.** Both boards use the same card definition — `bg-surface
+border border-border rounded-xl p-3.5 card-glow` — and the same stage pill
+(`h-7 px-2.5 rounded-md text-[14px]` + `stageColors`). The pipeline column well
+sits at `bg-background/60` so a `bg-surface` card separates from it the way the
+leads board's cards separate from the page.
+
 **Typography:**
 - Display: Instrument Serif (page headings, empty states — warm, editorial) via `.font-display`
 - Dialog titles: Plus Jakarta Sans semibold at `tracking-[-0.02em]` via `.font-jakarta` (`Modal`, `DetailDrawer`, `ConfirmDialog`). Sized 20px rather than the serif's 21px — a semibold geometric sans carries more visual weight than 400-weight Instrument Serif at the same size, and held at 21px it competed with the section headers below it
 - Dashboard chat greeting only: Source Serif 4 at weight 380 (`.font-headline`) — thinner, cleaner serif scoped to this one headline, not a global type-scale change. Chosen as a licensable stand-in for Anthropic's proprietary "Anthropic Serif" (can't embed that font without a license)
 - Body: Geist Sans; dashboard uses Satoshi (loaded from Fontshare in `layout.tsx`)
 - Headline/numeric: Barlow (dashboard card headers, deal values)
+- The dashboard is a **deliberate exception** to the scale above only in its
+  chrome — the 50px greeting, the 17px composer and the Barlow uppercase card
+  labels are the surface's signature and stay. Its two card *lists* were brought
+  onto the shared 15 / 13.5 / 15 values, and its colours onto the ramp. The
+  vh-clamp compression and `justify-center-safe` that keep those cards from ever
+  clipping are untouched — see Layout
 - Data/Labels: Geist Mono (uppercase, tracked, 10px — via `.label-mono` utility)
 
 **Effects:**
@@ -324,6 +559,13 @@ Palette philosophy: primary text is pure white (dark) / pure black (light) — n
 - `color-scheme: dark` / `light` set per theme on the root — native widgets (date picker icon, scrollbars) match the active theme
 
 **Layout:**
+- Dashboard cards never clip. The column is `overflow-y-auto` with
+  `justify-center-safe` (`justify-content: safe center`), so when the stack
+  outgrows the viewport it falls back to start-alignment and scrolls rather than
+  spilling past both edges and being cut by `overflow-hidden`. Every vertical
+  value scales with viewport height via `clamp()` with the max pinned to the
+  desktop figure, so tall screens are unchanged and short ones compress instead
+  of overflowing
 - Sidebar: 232px expanded → 64px collapsed
 - Topbar: 52px sticky with backdrop blur
 - Drawers: always-mounted, slide via translate-x with `cubic-bezier(0.16, 1, 0.3, 1)`
@@ -336,14 +578,19 @@ Palette philosophy: primary text is pure white (dark) / pure black (light) — n
 - Authentication — the Server Actions in `app/actions/crm.ts` are therefore
   unauthenticated write endpoints, reachable by direct POST. Keep the app local
   or access-controlled until this lands.
-- Delete flows (the data layer covers create + update, matching what the UI does)
+- Delete flows, except tasks — `deleteTask` exists end to end (store → action →
+  `delete().eq('id', …)`) and is reachable only from the task archive. Every
+  other entity is still create + update only
 - Realtime — two open tabs do not see each other's changes until reload
 - Surfacing failed writes in the UI (`syncError` is set and logged, nothing renders it)
 - Real AI extraction (mocked — picks random extraction for notes > 30 chars)
 - Email / calendar sync
 - Notifications
 - Advanced cell editing in table
-- Edit flows for companies, contacts, opportunities (add modals exist). The one exception is **opportunity notes**, editable inline in `DetailDrawer`; every other field is still read-only once created
+- Edit flows for companies, contacts, opportunities (add modals exist). Two
+  exceptions: **opportunity notes**, editable inline in `DetailDrawer`, and
+  **tasks**, fully editable inline behind the pencil. Every other field is still
+  read-only once created
 - Mobile optimization beyond basic responsive layout
 - Loading states, and per-route `error.tsx` boundaries (only the root `global-error.tsx` exists)
 
@@ -358,7 +605,10 @@ Palette philosophy: primary text is pure white (dark) / pure black (light) — n
 3. **AI extraction** — hook CaptureBox submit to Claude API via server action
 4. **Edit flows** — edit drawers for companies, contacts, opportunities (add modals done)
 5. **Real-time** — Supabase realtime subscriptions for pipeline updates
-6. **Motion library integration** — replace CSS animations with motion for richer interactions
+6. **Motion library integration** — `motion` v12 is now used for the task
+   check-off (shared-layout flight between columns). The rest of the app is
+   still CSS keyframes; migrate the drawers and modals next if the richer
+   interactions are wanted
 
 ---
 
@@ -415,7 +665,7 @@ Palette philosophy: primary text is pure white (dark) / pure black (light) — n
 - No mobile optimization beyond basic responsive layout
 - Dashboard chat is mock-only (canned replies matched on keywords); mic dictation depends on the browser's Web Speech API (works in Chrome/Edge, silent no-op elsewhere)
 - `CaptureBox` / `SuggestionPreviewCard` are orphaned since `/inbox` was removed — reuse or delete when the capture flow finds a new home
-- ~~Capture modals (lead/contact/company) are a functional first pass — a hand polish pass on the design comes later~~ — **`AddLeadModal` has now had that pass** (2026-08-21): transparency fix, portal + focus trap, keyboard-complete combobox, priority `ColorSlider`, Jakarta title, +2px type scale, inline validation. `AddContactModal` / `AddCompanyModal` inherit the shared `Modal` and `FormFields` improvements but have **not** had their own layout pass
+- ~~Capture modals (lead/contact/company) are a functional first pass — a hand polish pass on the design comes later~~ — **`AddLeadModal` has now had that pass** (2026-08-21): transparency fix, portal + focus trap, keyboard-complete combobox, priority `ColorSlider`, Jakarta title, +2px type scale, inline validation. `AddContactModal` / `AddCompanyModal` inherit the shared `Modal` and `FormFields` improvements, and were brought onto the same control scale on 2026-08-21 (36px buttons, 14px labels, `⌘↵` beside the buttons instead of stranded bottom-left at 10px), but have **not** had their own layout pass
 - **Settings are per-browser, not per-account.** They live in `localStorage`
   (`khyte-settings`), so they do not follow the operator to another machine and
   there is no server-side record of them. Revisit when auth lands
@@ -429,28 +679,72 @@ Palette philosophy: primary text is pure white (dark) / pure black (light) — n
   popup with OS chrome that ignores the page palette, which came out white-on-white
   in dark mode. `/settings` uses a custom dropdown built on the `Combobox` popover
   pattern instead. Worth remembering before reaching for a native select elsewhere
-- ~~**Supabase intermittently rejects reads with `JWT issued at future`**, taking
-  the whole page down via the loud-failure path~~ — mitigated 2026-08-21 with a
-  bounded retry (`lib/db/retry.ts`), wired into `loadSnapshot()` and the `run()`
-  write funnel. **The earlier "fix your system clock" diagnosis was wrong**: this
-  machine and the API `Date` header agree to within ~2s, and six consecutive
-  direct reads all succeeded. The app never mints a token — the secret key is an
-  opaque `sb_secret_…` that the gateway exchanges for a short-lived JWT per
-  request — so the skew is between Supabase's own services and is not fixable
-  here. Reads retry the full transient set; writes retry auth-timing faults only,
-  because a dropped connection may mean the write landed and only the response
-  was lost. Follow-up probes observed roughly four-second fault windows, so six
-  attempts now wait 250ms, 500ms, 1s, 2s, and 4s before the final try at 7.75s;
-  anything non-transient still fails immediately. A longer fault still surfaces,
-  but `app/global-error.tsx` catches it with a retry button instead of a blank page
+- ~~Supabase intermittently rejects reads with `PGRST303 / JWT issued at future`~~
+  — **fixed 2026-08-24, not just mitigated.** `loadSnapshot()` (`lib/db/queries.ts`)
+  no longer goes through PostgREST at all: `readSnapshot()` now runs seven plain
+  `SELECT`s over a direct Postgres connection (`lib/db/pg.ts`, `postgres.js`, via
+  `SUPABASE_DB_URL`). That connection mints no JWT, so there is nothing for
+  `PGRST303` to reject — the fault is structurally impossible on this path, not
+  retried-around. This was the "real exit" the retry docs below had already
+  named; the 8s skew budget in `lib/db/retry.ts` was extended once (2026-08-21)
+  and hit its ceiling again, which is what prompted actually taking the exit
+  instead of extending it further.
+
+  Writes are unchanged — `app/actions/crm.ts` still goes through PostgREST via
+  `getSupabase()`, and `lib/db/retry.ts` still retries auth-timing faults there
+  (2.5s budget). A write-side recurrence of this fault is still possible in
+  principle; only the read path (the one that takes the whole app down on
+  failure, per the "no fallback to demo data" policy above) was made immune.
+
+  Verified by hand: typecheck clean, `/companies` / `/leads` / `/pipeline` all
+  load real rows with no console errors, and repeated Turbopack hot-reloads (see
+  below) kept working throughout.
+
+  Historical detail on the fault itself — not the local clock (the API's `Date`
+  header ran ~2s *ahead* of this machine; every part of the exchange is
+  validated server-side), self-clearing, ~4s observed duration, trigger never
+  identified — is preserved in `lib/db/retry.ts`'s header comment and in git
+  history (`9c9cd60`, `8fc1933`'s predecessor) rather than duplicated here.
+
+- **New from the fix above: `postgres.js` must be cached on `globalThis`, not a
+  module-level singleton.** Supabase's Session pooler caps concurrent clients per
+  project (`pool_size: 15`). Every other client in this codebase (Supabase,
+  PostgREST) is stateless HTTP, so a plain module-level `let cached = ...` was
+  fine for it. A real connection pool is not: Next's dev server re-evaluates
+  route modules on every hot reload, and a module-level cache re-runs that
+  initializer each time, opening a fresh pool while the previous one's
+  connections are still held open server-side. Hit this firsthand mid-session —
+  a handful of edits to `lib/db/queries.ts` was enough to exhaust 15 connections
+  and take the page down with `(EMAXCONNSESSION) max clients reached in session
+  mode`, ironically the same "whole app fails loud" symptom as the fault just
+  fixed. `lib/db/pg.ts` caches the pool on `globalThis` instead (survives module
+  re-evaluation, one pool per server process) and caps it at `max: 5` so it can
+  never approach the ceiling even under reload churn. Confirmed holding steady
+  through 8 forced hot-reloads with zero errors after the fix.
+
+  Worth remembering if a second direct-Postgres client is ever added anywhere
+  else in this codebase — the module-level pattern every other singleton here
+  uses (`lib/supabase/server.ts`) is wrong for anything that holds a real
+  connection.
+- **Only `AddLeadModal` guards against discarding a half-filled form.** It tracks
+  dirtiness and raises `ConfirmDialog`; `AddContactModal` and `AddCompanyModal`
+  throw typed input away silently on Esc, backdrop click, or Cancel. The dialog is
+  generic and the wiring is a few lines each — left undone deliberately, because it
+  changes those modals' close behaviour and that was not the task at hand
+- **`LeadCard` is the last component on the old type scale.** The leads table and
+  its board view were lifted to match `DetailDrawer` on 2026-08-21 (14px names,
+  12.5px secondary, 13px stage pills, `foreground/60–85` instead of `muted`), but
+  the pipeline board's card still runs 13px/11px/9px. Visible when moving between
+  `/leads` in board mode and `/pipeline`, which show near-identical cards at
+  different sizes
 - Adding a lead from the pipeline "Add Leads" picker resets its stage to "New" even if it was further along — intentional per spec, revisit if it feels wrong in use
-- **Seven call sites still call `crypto.randomUUID()` directly** instead of
+- **Five call sites still call `crypto.randomUUID()` directly** instead of
   `newId()` — `AddCompanyModal`, `AddContactModal` (×2), `CaptureBox`,
-  `StrategyBoard`, `dashboard/page` (×2), `tasks/page`. They mint `id: undefined`
+  `dashboard/page` (×2), `tasks/page`. They mint `id: undefined`
   when the app is opened over plain HTTP on a LAN address rather than
   `localhost`. Harmless on localhost and in production over HTTPS; a one-line
   swap each when someone is in those files
-- Strategy board cards state is duplicated (local + Zustand) — needs reconciliation
+- ~~Strategy board cards state is duplicated (local + Zustand)~~ — fixed: the board derives headlines and cards straight from the store, so switching deals re-renders it
 - ~~Pipeline board also duplicates opportunity state locally for drag/drop~~ — fixed: board now derives cards straight from store-backed props
 - `layout.tsx`'s `Source_Serif_4` font config has no `weight` set, which Turbopack rejects ("Unknown weight 200 900 for font Source Serif 4") — shows as a dev-overlay build issue; needs an explicit `weight` array to resolve
 - Sidebar and capture modals are now permanently dark-styled regardless of the page theme (see Design System note above); Topbar and regular content cards still switch with the theme toggle — revisit if the split ever feels inconsistent

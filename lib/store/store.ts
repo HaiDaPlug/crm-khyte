@@ -5,9 +5,9 @@ import {
   Contact,
   Note,
   StrategyCard,
+  StrategyColumn,
   Task,
   Stage,
-  StrategyColumn,
   CRMSnapshot,
   Settings,
   AppLanguage,
@@ -55,6 +55,7 @@ export interface CRMStore {
   companies: Company[]
   contacts: Contact[]
   notes: Note[]
+  strategyColumns: StrategyColumn[]
   strategyCards: StrategyCard[]
   tasks: Task[]
 
@@ -71,7 +72,7 @@ export interface CRMStore {
   addOpportunity: (opportunity: Opportunity) => void
   moveOpportunityStage: (opportunityId: string, newStage: Stage) => void
   updateOpportunity: (opportunityId: string, updates: Partial<Opportunity>) => void
-  addToPipeline: (opportunityId: string) => void
+  addToPipeline: (opportunityId: string, stage?: Stage) => void
 
   // Actions — Notes
   addNote: (note: Note) => void
@@ -79,17 +80,35 @@ export interface CRMStore {
   applyNote: (noteId: string) => void
 
   // Actions — Strategy
-  moveStrategyCard: (cardId: string, newColumn: StrategyColumn) => void
+  addStrategyColumn: (column: StrategyColumn) => void
+  renameStrategyColumn: (columnId: string, title: string) => void
+  /** Removes the headline and every card filed under it. */
+  removeStrategyColumn: (columnId: string) => void
+  /**
+   * Files a card under `newColumnId`, at `targetIndex` in that lane or at the
+   * end when the index is omitted.
+   */
+  moveStrategyCard: (
+    cardId: string,
+    newColumnId: string,
+    targetIndex?: number
+  ) => void
   addStrategyCard: (card: StrategyCard) => void
 
   // Actions — Tasks
   addTask: (task: Task) => void
   toggleTaskComplete: (taskId: string) => void
   updateTask: (taskId: string, updates: Partial<Task>) => void
+  /** Files a task away without removing it. Pass `false` to restore. */
+  archiveTask: (taskId: string, archived?: boolean) => void
+  /** Permanent — for tasks created in error. Prefer archiveTask. */
+  deleteTask: (taskId: string) => void
 
   // Actions — Companies & Contacts
   addCompany: (company: Company) => void
+  updateCompany: (companyId: string, updates: Partial<Company>) => void
   addContact: (contact: Contact) => void
+  updateContact: (contactId: string, updates: Partial<Contact>) => void
 
   // Actions — UI
   toggleSidebar: () => void
@@ -240,6 +259,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       contacts: snapshot.contacts,
       opportunities: snapshot.opportunities,
       notes: snapshot.notes,
+      strategyColumns: snapshot.strategyColumns,
       strategyCards: snapshot.strategyCards,
       tasks: snapshot.tasks,
 
@@ -258,15 +278,16 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist('Save lead', () => api.createOpportunity(opportunity))
       },
 
-      // Leads enter the board at 'New' regardless of their current stage
-      addToPipeline: (opportunityId) => {
+      // Leads enter the board at 'New' by default — or straight into a given
+      // stage, when added from that stage's column rather than the generic picker.
+      addToPipeline: (opportunityId, stage = 'New') => {
         set((state) => ({
           opportunities: state.opportunities.map((o) =>
-            o.id === opportunityId ? { ...o, inPipeline: true, stage: 'New' } : o
+            o.id === opportunityId ? { ...o, inPipeline: true, stage } : o
           ),
         }))
         persist('Add to pipeline', () =>
-          api.updateOpportunity(opportunityId, { inPipeline: true, stage: 'New' })
+          api.updateOpportunity(opportunityId, { inPipeline: true, stage })
         )
       },
 
@@ -354,15 +375,61 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       },
 
       // Strategy
-      moveStrategyCard: (cardId, newColumn) => {
+      addStrategyColumn: (column) => {
+        set((state) => ({ strategyColumns: [...state.strategyColumns, column] }))
+        persist('Save headline', () => api.createStrategyColumn(column))
+      },
+
+      renameStrategyColumn: (columnId, title) => {
         set((state) => ({
-          strategyCards: state.strategyCards.map((c) =>
-            c.id === cardId ? { ...c, column: newColumn } : c
+          strategyColumns: state.strategyColumns.map((k) =>
+            k.id === columnId ? { ...k, title } : k
           ),
         }))
-        persist('Move strategy card', () =>
-          api.updateStrategyCard(cardId, { column: newColumn })
+        persist('Rename headline', () =>
+          api.updateStrategyColumn(columnId, { title })
         )
+      },
+
+      removeStrategyColumn: (columnId) => {
+        // The database cascades the cards; the local set has to be pruned by
+        // hand or they would linger as cards with no lane to render in.
+        set((state) => ({
+          strategyColumns: state.strategyColumns.filter((k) => k.id !== columnId),
+          strategyCards: state.strategyCards.filter((c) => c.columnId !== columnId),
+        }))
+        persist('Delete headline', () => api.deleteStrategyColumn(columnId))
+      },
+
+      moveStrategyCard: (cardId, newColumnId, targetIndex) => {
+        const card = get().strategyCards.find((c) => c.id === cardId)
+        if (!card) return
+
+        // Rebuild the destination lane around the drop so `order` stays a
+        // dense 0..n-1 sequence. Writing only the dragged card would leave two
+        // cards sharing an order, and the tie would be broken differently
+        // after a reload than it was on screen.
+        const lane = get()
+          .strategyCards.filter(
+            (c) => c.columnId === newColumnId && c.id !== cardId
+          )
+          .sort((a, b) => a.order - b.order)
+        lane.splice(targetIndex ?? lane.length, 0, { ...card, columnId: newColumnId })
+
+        const moved = lane
+          .map((c, order) => (c.order === order && c.id !== cardId ? null : { ...c, order }))
+          .filter((c): c is StrategyCard => c !== null)
+        const byId = new Map(moved.map((c) => [c.id, c]))
+
+        set((state) => ({
+          strategyCards: state.strategyCards.map((c) => byId.get(c.id) ?? c),
+        }))
+
+        for (const c of moved) {
+          persist('Move strategy card', () =>
+            api.updateStrategyCard(c.id, { columnId: c.columnId, order: c.order })
+          )
+        }
       },
 
       addStrategyCard: (card) => {
@@ -396,15 +463,46 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist('Update task', () => api.updateTask(taskId, updates))
       },
 
+      archiveTask: (taskId, archived = true) => {
+        const archivedAt = archived ? new Date().toISOString() : undefined
+        set((state) => ({
+          tasks: state.tasks.map((t) => (t.id === taskId ? { ...t, archivedAt } : t)),
+        }))
+        persist('Archive task', () => api.updateTask(taskId, { archivedAt }))
+      },
+
+      deleteTask: (taskId) => {
+        set((state) => ({ tasks: state.tasks.filter((t) => t.id !== taskId) }))
+        persist('Delete task', () => api.deleteTask(taskId))
+      },
+
       // Companies & Contacts
       addCompany: (company) => {
         set((state) => ({ companies: [...state.companies, company] }))
         persist('Save company', () => api.createCompany(company))
       },
 
+      updateCompany: (companyId, updates) => {
+        set((state) => ({
+          companies: state.companies.map((c) =>
+            c.id === companyId ? { ...c, ...updates } : c
+          ),
+        }))
+        persist('Update company', () => api.updateCompany(companyId, updates))
+      },
+
       addContact: (contact) => {
         set((state) => ({ contacts: [...state.contacts, contact] }))
         persist('Save contact', () => api.createContact(contact))
+      },
+
+      updateContact: (contactId, updates) => {
+        set((state) => ({
+          contacts: state.contacts.map((c) =>
+            c.id === contactId ? { ...c, ...updates } : c
+          ),
+        }))
+        persist('Update contact', () => api.updateContact(contactId, updates))
       },
 
       // UI

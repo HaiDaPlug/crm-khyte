@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { Topbar } from '@/components/layout/Topbar'
+import { Button } from '@/components/crm/Button'
 import { PipelineBoard, PipelineRow } from '@/components/crm/PipelineBoard'
 import { DetailDrawer } from '@/components/crm/DetailDrawer'
 import { useCRMStore } from '@/lib/store'
@@ -64,47 +65,44 @@ export default function PipelinePage() {
 
   return (
     <>
-      <Topbar title={t.pipeline.title} />
-      <main className="px-6 py-6 overflow-hidden flex-1 animate-fade-in-up">
-        <div className="flex items-end justify-between mb-5">
+      <Topbar />
+      <main className="min-w-0 flex-1 overflow-visible px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:overflow-hidden lg:px-8 lg:py-8">
+        <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-[22px] font-display text-foreground tracking-tight">{t.pipeline.title}</h2>
-            <p className="text-[13px] text-muted mt-0.5">
+            <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.pipeline.title}</h2>
+            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
               {t.pipeline.description}
             </p>
           </div>
-          <div className="flex items-end gap-5">
-            <div className="text-right">
+          <div className="flex items-end justify-between gap-4 sm:justify-end sm:gap-5">
+            <div className="text-left sm:text-right">
               <p className="label-mono">{t.pipeline.activePipeline}</p>
               <p className="text-[18px] font-semibold text-accent tabular-nums font-mono mt-0.5">
                 {fmt.currency(totalValue)}
               </p>
             </div>
             <div className="relative">
-              <button
-                onClick={() => setPickerOpen(v => !v)}
-                className="flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-accent text-background text-[12px] font-medium hover:bg-accent-hover transition-colors"
-              >
-                <Plus size={13} />
+              <Button onClick={() => setPickerOpen(v => !v)}>
+                <Plus size={15} />
                 {t.pipeline.addLeads}
                 {availableLeads.length > 0 && (
                   <span className="ml-0.5 text-[10px] font-mono bg-background/20 px-1.5 py-px rounded-md">
                     {availableLeads.length}
                   </span>
                 )}
-              </button>
+              </Button>
 
               {pickerOpen && (
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setPickerOpen(false)} />
-                  <div className="absolute right-0 top-full mt-2 w-[300px] bg-surface border border-border rounded-xl shadow-xl z-40 animate-scale-in overflow-hidden">
+                  <div className="absolute right-0 top-full z-40 mt-2 w-[min(340px,calc(100vw-2rem))] overflow-hidden rounded-xl border border-border bg-surface shadow-xl animate-scale-in">
                     <div className="px-3.5 py-2.5 border-b border-border-subtle bg-surface-raised/50">
-                      <p className="label-mono">{t.pipeline.offBoard}</p>
-                      <p className="text-[10.5px] text-muted mt-0.5">{t.pipeline.startsNew}</p>
+                      <p className="label-mono !text-white">{t.pipeline.offBoard}</p>
+                      <p className="text-[13px] text-foreground/60 mt-1">{t.pipeline.startsNew}</p>
                     </div>
                     <div className="max-h-[320px] overflow-y-auto p-1.5">
                       {availableLeads.length === 0 ? (
-                        <p className="text-[12px] text-muted text-center py-6">
+                        <p className="text-[13.5px] text-foreground/60 text-center py-6">
                           {t.pipeline.allOnBoard}
                         </p>
                       ) : (
@@ -115,15 +113,15 @@ export default function PipelinePage() {
                             className="w-full text-left px-2.5 py-2 rounded-lg hover:bg-accent-light transition-colors group"
                           >
                             <div className="flex items-center justify-between gap-2">
-                              <p className="text-[12.5px] font-medium text-foreground truncate">
+                              <p className="text-[14.5px] font-medium text-foreground truncate">
                                 {row.company.name}
                               </p>
                               <span className="flex items-center gap-1.5 shrink-0">
                                 <span className="w-1.5 h-1.5 rounded-full" style={{ background: priorityDot[row.opportunity.priority] }} />
-                                <Plus size={12} className="text-muted group-hover:text-accent transition-colors" />
+                                <Plus size={13} className="text-foreground/60 group-hover:text-accent transition-colors" />
                               </span>
                             </div>
-                            <p className="text-[10.5px] text-muted truncate">
+                            <p className="text-[13px] text-foreground/60 truncate">
                               {row.contact.name}
                               {row.opportunity.dealValue && (
                                 <span className="font-mono"> · {fmt.currency(row.opportunity.dealValue)}</span>
@@ -144,6 +142,8 @@ export default function PipelinePage() {
           rows={rows}
           onCardClick={(row) => setSelectedRow(row)}
           onStageChange={moveOpportunityStage}
+          availableLeads={availableLeads}
+          onAddToStage={addToPipeline}
         />
       </main>
 

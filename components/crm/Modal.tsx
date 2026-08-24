@@ -61,7 +61,15 @@ export function Modal({
         aria-hidden="true"
       />
 
-      <div className="relative h-full overflow-y-auto overscroll-contain flex py-6 px-4 pointer-events-none">
+      <div
+        className={cn(
+          'relative flex h-full overflow-y-auto overscroll-contain py-2 pointer-events-none',
+          '[padding-left:max(0.5rem,env(safe-area-inset-left))] [padding-right:max(0.5rem,env(safe-area-inset-right))]',
+          '[padding-top:max(0.5rem,env(safe-area-inset-top))] [padding-bottom:max(0.5rem,env(safe-area-inset-bottom))]',
+          'sm:py-6 sm:[padding-top:1.5rem] sm:[padding-bottom:1.5rem]',
+          'sm:[padding-left:max(1rem,env(safe-area-inset-left))] sm:[padding-right:max(1rem,env(safe-area-inset-right))]'
+        )}
+      >
         <div
           ref={panelRef}
           data-theme="dark"
@@ -77,16 +85,16 @@ export function Modal({
             width
           )}
         >
-          <div className="flex items-start justify-between px-6 pt-5 pb-4 border-b border-border-subtle">
-            <div>
+          <div className="flex items-start justify-between gap-4 border-b border-border-subtle px-4 pb-4 pt-5 sm:px-7 sm:pb-5 sm:pt-6">
+            <div className="min-w-0">
               <h2
                 id={titleId}
-                className="text-[20px] font-jakarta font-semibold text-foreground tracking-[-0.02em]"
+                className="text-[20px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-tight sm:text-[22px] sm:leading-none"
               >
                 {title}
               </h2>
               {subtitle && (
-                <p id={subtitleId} className="text-[14px] text-foreground/80 mt-0.5">
+                <p id={subtitleId} className="mt-1.5 text-[14px] leading-relaxed text-foreground/65 sm:text-[14.5px]">
                   {subtitle}
                 </p>
               )}
@@ -95,7 +103,7 @@ export function Modal({
               type="button"
               onClick={onClose}
               aria-label={t.crm.modal.closeDialog}
-              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-surface-raised text-foreground/70 hover:text-foreground transition-colors shrink-0"
+              className="-mr-2 -mt-2 flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-lg text-foreground/60 transition-colors hover:bg-surface-raised hover:text-foreground sm:mr-0 sm:mt-0 sm:h-9 sm:w-9"
             >
               <X size={17} />
             </button>
@@ -104,7 +112,7 @@ export function Modal({
           {children}
 
           {footer && (
-            <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-border-subtle">
+            <div className="flex flex-col items-stretch gap-3 border-t border-border-subtle px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-7 sm:py-5">
               {footer}
             </div>
           )}

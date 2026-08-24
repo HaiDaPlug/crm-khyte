@@ -1,6 +1,7 @@
 'use client'
 
 import { Sparkles, ArrowRight, Calendar, ChevronRight, Check } from 'lucide-react'
+import { Button } from './Button'
 import { Note } from '@/lib/types'
 import { useCRMStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
@@ -105,12 +106,13 @@ export function SuggestionPreviewCard({ note }: SuggestionPreviewCardProps) {
 
         {!isApplied && (
           <div className="mt-3.5 flex items-center gap-2">
-            <button
+            <Button
+              size="sm"
+              className="h-7 px-3 text-[11px] gap-0"
               onClick={() => applyNote(note.id)}
-              className="h-7 px-3 rounded-lg text-[11px] font-medium bg-accent text-background hover:bg-accent-hover transition-colors"
             >
               {copy.apply}
-            </button>
+            </Button>
             <button
               onClick={() => dismissNote(note.id)}
               className="h-7 px-3 rounded-lg text-[11px] font-medium text-muted hover:text-foreground transition-colors"

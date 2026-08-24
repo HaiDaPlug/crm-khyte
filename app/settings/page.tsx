@@ -3,6 +3,7 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, RotateCcw } from 'lucide-react'
 import { Topbar } from '@/components/layout/Topbar'
+import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import {
   CURRENCIES,
@@ -94,7 +95,7 @@ function Select<T extends string>({
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative w-full sm:w-auto">
       <button
         type="button"
         role="combobox"
@@ -104,8 +105,8 @@ function Select<T extends string>({
         onClick={() => setOpen((o) => !o)}
         onKeyDown={handleKeyDown}
         className={cn(
-          'flex items-center justify-between gap-2 h-9 w-[230px] px-3',
-          'bg-background-raised border rounded-lg text-[13px] text-foreground',
+          'flex h-11 w-full items-center justify-between gap-2 px-3 sm:h-9 sm:w-[230px]',
+          'bg-background-raised border rounded-lg text-[14.5px] text-foreground',
           'outline-none transition-colors',
           open ? 'border-accent/40' : 'border-border-subtle hover:border-border'
         )}
@@ -113,12 +114,12 @@ function Select<T extends string>({
         <span className="truncate">{selected?.label ?? value}</span>
         <ChevronDown
           size={14}
-          className={cn('shrink-0 text-muted transition-transform duration-150', open && 'rotate-180')}
+          className={cn('shrink-0 text-foreground/60 transition-transform duration-150', open && 'rotate-180')}
         />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 z-20 w-[230px] bg-surface-raised border border-border rounded-lg shadow-[0_12px_32px_-8px_rgba(0,0,0,0.75)] overflow-hidden animate-popover-in">
+        <div className="absolute inset-x-0 top-full z-20 mt-1.5 w-full overflow-hidden rounded-lg border border-border bg-surface-raised shadow-[0_12px_32px_-8px_rgba(0,0,0,0.75)] animate-popover-in sm:left-auto sm:right-0 sm:w-[230px]">
           <div role="listbox" aria-label={label} className="max-h-[260px] overflow-y-auto py-1">
             {options.map((option, i) => (
               <button
@@ -129,8 +130,8 @@ function Select<T extends string>({
                 onMouseEnter={() => setActiveIndex(i)}
                 onClick={() => commit(i)}
                 className={cn(
-                  'w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-[13px] transition-colors',
-                  i === activeIndex ? 'bg-accent-light text-foreground' : 'text-muted-foreground'
+                  'flex min-h-11 w-full items-center justify-between gap-3 px-3 py-2.5 text-left text-[14.5px] transition-colors',
+                  i === activeIndex ? 'bg-accent-light text-foreground' : 'text-foreground/80'
                 )}
               >
                 <span className="truncate">{option.label}</span>
@@ -146,8 +147,8 @@ function Select<T extends string>({
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="mb-6">
-      <h3 className="label-mono mb-2.5">{title}</h3>
+    <section className="mb-6 sm:mb-7">
+      <h3 className="label-mono mb-3">{title}</h3>
       <div className="bg-surface border border-border rounded-xl divide-y divide-border-subtle overflow-hidden">
         {children}
       </div>
@@ -167,14 +168,14 @@ function Row({
   children: ReactNode
 }) {
   return (
-    <div className="flex items-center justify-between gap-6 px-4 py-3.5">
+    <div className="flex flex-col items-stretch gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-6 sm:px-5">
       <div className="min-w-0">
-        <label htmlFor={htmlFor} className="text-[13px] font-medium text-foreground">
+        <label htmlFor={htmlFor} className="text-[15px] font-medium text-foreground">
           {label}
         </label>
-        {description && <p className="text-[12px] text-muted mt-0.5">{description}</p>}
+        {description && <p className="text-[13.5px] text-foreground/60 mt-1 leading-snug">{description}</p>}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div className="flex w-full justify-end sm:w-auto sm:shrink-0">{children}</div>
     </div>
   )
 }
@@ -194,7 +195,7 @@ function Segmented<T extends string>({
     <div
       role="radiogroup"
       aria-label={label}
-      className="flex bg-background-raised border border-border-subtle rounded-lg p-0.5"
+      className="flex w-full rounded-lg border border-border-subtle bg-background-raised p-0.5 sm:w-auto"
     >
       {options.map((option) => (
         <button
@@ -204,10 +205,10 @@ function Segmented<T extends string>({
           aria-checked={value === option.value}
           onClick={() => onChange(option.value)}
           className={cn(
-            'h-8 px-3 rounded-md text-[12.5px] font-medium transition-all duration-150',
+            'min-h-11 flex-1 rounded-md px-2.5 text-[13.5px] font-medium transition-all duration-150 sm:h-8 sm:min-h-0 sm:flex-none sm:px-3.5',
             value === option.value
               ? 'bg-surface-raised text-foreground'
-              : 'text-muted hover:text-foreground'
+              : 'text-foreground/60 hover:text-foreground'
           )}
         >
           {option.label}
@@ -233,18 +234,21 @@ function Switch({
       aria-checked={checked}
       aria-label={label}
       onClick={() => onChange(!checked)}
-      className={cn(
-        'relative w-11 h-6 rounded-full transition-colors duration-200 shrink-0',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-        checked ? 'bg-accent' : 'bg-border-subtle'
-      )}
+      className="relative h-11 w-11 shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 sm:h-6"
     >
       <span
         className={cn(
-          'absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-background transition-transform duration-200',
-          checked && 'translate-x-5'
+          'absolute inset-x-0 top-2.5 h-6 rounded-full transition-colors duration-200 sm:top-0',
+          checked ? 'bg-accent' : 'bg-border-subtle'
         )}
-      />
+      >
+        <span
+          className={cn(
+            'absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-background transition-transform duration-200',
+            checked && 'translate-x-5'
+          )}
+        />
+      </span>
     </button>
   )
 }
@@ -261,29 +265,24 @@ export default function SettingsPage() {
 
   return (
     <>
-      <Topbar title={t.settings.title} />
-      <main className="px-8 py-8 flex-1 max-w-3xl animate-fade-in-up">
-        <div className="flex items-start justify-between mb-6">
+      <Topbar />
+      <main className="w-full max-w-3xl flex-1 animate-fade-in-up px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+        <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h2 className="text-[22px] font-display text-foreground tracking-tight">{t.settings.title}</h2>
-            <p className="text-[13px] text-muted mt-0.5 font-mono">
+            <h2 className="text-[28px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.settings.title}</h2>
+            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
               {t.settings.description}
             </p>
           </div>
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={resetSettings}
             disabled={isDefault}
-            className={cn(
-              'flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-medium transition-colors',
-              isDefault
-                ? 'text-muted/50 cursor-not-allowed'
-                : 'text-muted hover:text-foreground hover:bg-surface-raised'
-            )}
+            className="h-11 w-full text-foreground/60 hover:text-foreground sm:h-[38px] sm:w-auto"
           >
-            <RotateCcw size={13} />
+            <RotateCcw size={15} />
             {t.settings.reset}
-          </button>
+          </Button>
         </div>
 
         <Section title={t.settings.appearance}>
@@ -365,28 +364,36 @@ export default function SettingsPage() {
               onChange={(v) => setSetting('compactNumbers', v)}
             />
           </Row>
+
+          <Row label={t.settings.sounds} description={t.settings.soundsDescription}>
+            <Switch
+              label={t.settings.sounds}
+              checked={settings.sounds}
+              onChange={(v) => setSetting('sounds', v)}
+            />
+          </Row>
         </Section>
 
         {/* These options are abstract until you see them applied. */}
         <section>
-          <h3 className="label-mono mb-2.5">{t.settings.preview}</h3>
-          <div className="bg-surface border border-border rounded-xl px-4 py-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div>
+          <h3 className="label-mono mb-3">{t.settings.preview}</h3>
+          <div className="rounded-xl border border-border bg-surface p-4 sm:px-5 sm:py-5">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div className="min-w-0">
                 <p className="label-mono mb-1.5">{t.settings.dealValue}</p>
-                <p className="text-[16px] font-semibold text-foreground tabular-nums">
+                <p className="break-words text-[17px] font-semibold text-foreground tabular-nums">
                   {formatCurrency(SAMPLE_VALUE, settings)}
                 </p>
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="label-mono mb-1.5">{t.settings.fullFigure}</p>
-                <p className="text-[16px] font-semibold text-foreground tabular-nums">
+                <p className="break-words text-[17px] font-semibold text-foreground tabular-nums">
                   {formatCurrency(SAMPLE_VALUE, settings, { compact: false })}
                 </p>
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="label-mono mb-1.5">{t.settings.followUpDate}</p>
-                <p className="text-[16px] font-semibold text-foreground tabular-nums">
+                <p className="break-words text-[17px] font-semibold text-foreground tabular-nums">
                   {formatDate(SAMPLE_DATE, settings)}
                 </p>
               </div>

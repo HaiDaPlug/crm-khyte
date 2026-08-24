@@ -1,14 +1,16 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
 import { AddCompanyModal } from '@/components/crm/AddCompanyModal'
+import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { Building2, Search, MapPin, X, Plus } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Company, Opportunity, Contact } from '@/lib/types'
 import { useTranslations } from '@/lib/hooks/useTranslations'
+import { useDialogBehavior } from '@/lib/hooks/useDialog'
 
 interface CompanyDrawerProps {
   company: Company | null
@@ -21,6 +23,14 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
   const { t } = useTranslations()
   const fmt = useFormat()
   const isOpen = !!company
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+
+  useDialogBehavior({ open: isOpen, onClose, panelRef })
+
+  useEffect(() => {
+    if (isOpen) panelRef.current?.focus()
+  }, [isOpen])
 
   return (
     <>
@@ -29,57 +39,66 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
           'fixed inset-0 bg-black/40 backdrop-blur-[3px] z-40 transition-opacity duration-250',
           isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
         )}
-        onClick={onClose}
+        onMouseDown={onClose}
+        aria-hidden="true"
       />
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-hidden={!isOpen}
+        tabIndex={-1}
+        inert={!isOpen}
         className={cn(
-          'fixed top-0 right-0 h-full w-[480px] max-w-[90vw] bg-surface z-50',
-          'flex flex-col border-l border-border',
+          'fixed inset-y-0 right-0 h-dvh w-full max-w-none bg-surface z-50 sm:h-full sm:w-[480px] sm:max-w-[90vw]',
+          'flex flex-col border-border outline-none pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] sm:border-l sm:pl-0',
           'transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
           isOpen ? 'translate-x-0' : 'translate-x-full'
         )}
       >
         {company && (
           <>
-            <div className="flex items-start justify-between p-5 border-b border-border shrink-0">
-              <div className="flex items-start gap-3">
+            <div className="flex items-start justify-between gap-3 border-b border-border px-4 pb-4 pt-[calc(1rem+env(safe-area-inset-top))] shrink-0 sm:p-5">
+              <div className="flex min-w-0 items-start gap-3">
                 <div className="w-10 h-10 rounded-xl bg-accent-light flex items-center justify-center shrink-0">
                   <Building2 size={18} className="text-accent" />
                 </div>
-                <div>
-                  <h2 className="text-[16px] font-semibold text-foreground font-display">{company.name}</h2>
-                  <p className="text-[11px] text-muted font-mono mt-0.5">{company.domain}</p>
+                <div className="min-w-0">
+                  <h2 id={titleId} className="break-words text-[17px] font-semibold text-foreground font-display">{company.name}</h2>
+                  <p className="mt-1 break-all text-[13.5px] text-foreground/60 font-mono">{company.domain}</p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={onClose}
                 aria-label={t.crm.modal.closeDetails}
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-surface-raised text-muted hover:text-foreground transition-colors"
+                className="-mr-1 -mt-1 flex size-11 shrink-0 items-center justify-center rounded-xl text-foreground/60 transition-colors hover:bg-surface-raised hover:text-foreground sm:mr-0 sm:mt-0 sm:size-9 sm:rounded-lg"
               >
                 <X size={15} />
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
-              <div className="px-5 py-4 border-b border-border-subtle">
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="bg-background-raised rounded-lg px-3 py-2.5">
-                <p className="label-mono mb-1">{t.companies.industry}</p>
-                    <p className="text-[12px] font-medium text-foreground">{company.industry}</p>
+            <div className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
+              <div className="border-b border-border-subtle px-4 py-4 sm:px-5">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                    <p className="label-mono mb-1">{t.companies.industry}</p>
+                    <p className="break-words text-[14.5px] font-medium text-foreground">{company.industry}</p>
                   </div>
-                  <div className="bg-background-raised rounded-lg px-3 py-2.5">
-                <p className="label-mono mb-1">{t.companies.size}</p>
-                    <p className="text-[12px] font-medium text-foreground">{company.size}</p>
+                  <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                    <p className="label-mono mb-1">{t.companies.size}</p>
+                    <p className="break-words text-[14.5px] font-medium text-foreground">{company.size}</p>
                   </div>
-                  <div className="bg-background-raised rounded-lg px-3 py-2.5">
-                <p className="label-mono mb-1">{t.companies.location}</p>
-                    <p className="text-[12px] font-medium text-foreground">{company.location}</p>
+                  <div className="col-span-2 min-w-0 rounded-lg bg-background-raised px-3 py-2.5 sm:col-span-1">
+                    <p className="label-mono mb-1">{t.companies.location}</p>
+                    <p className="break-words text-[14.5px] font-medium text-foreground">{company.location}</p>
                   </div>
                 </div>
                 {company.tags.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-1.5">
                     {company.tags.map(tag => (
-                      <span key={tag} className="text-[10px] font-mono px-2 py-0.5 bg-accent-light text-accent rounded-md">
+                      <span key={tag} className="text-[12.5px] font-mono px-2 py-0.5 bg-accent-light text-accent rounded-md">
                         {tag}
                       </span>
                     ))}
@@ -87,48 +106,48 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
                 )}
               </div>
 
-              <div className="px-5 py-4 border-b border-border-subtle">
+              <div className="border-b border-border-subtle px-4 py-4 sm:px-5">
                 <p className="label-mono mb-3">{t.companies.contacts}</p>
                 {contacts.length === 0 ? (
-                  <p className="text-[12px] text-muted">{t.companies.noContacts}</p>
+                  <p className="text-[13.5px] text-foreground/60">{t.companies.noContacts}</p>
                 ) : (
                   <div className="space-y-2.5">
                     {contacts.map(c => (
                       <div key={c.id} className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-full bg-accent-light flex items-center justify-center shrink-0">
-                          <span className="text-[11px] font-semibold text-accent">{c.name.charAt(0)}</span>
+                          <span className="text-[13.5px] font-semibold text-accent">{c.name.charAt(0)}</span>
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className="text-[13px] font-medium text-foreground">{c.name}</p>
-                          <p className="text-[11px] text-muted">{c.role}</p>
+                          <p className="text-[15px] font-medium text-foreground truncate">{c.name}</p>
+                          <p className="text-[13.5px] text-foreground/60 truncate">{c.role}</p>
                         </div>
-                        <p className="text-[10px] text-muted font-mono hidden sm:block">{c.email}</p>
+                        <p className="text-[13.5px] text-foreground/65 font-mono hidden sm:block truncate">{c.email}</p>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
 
-              <div className="px-5 py-4">
+              <div className="px-4 py-4 sm:px-5">
                 <p className="label-mono mb-3">{t.companies.opportunities}</p>
                 {opportunities.length === 0 ? (
-                  <p className="text-[12px] text-muted">{t.companies.noOpportunities}</p>
+                  <p className="text-[13.5px] text-foreground/60">{t.companies.noOpportunities}</p>
                 ) : (
                   <div className="space-y-2">
                     {opportunities.map(opp => (
                       <div key={opp.id} className="bg-background-raised border border-border-subtle rounded-lg p-3">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] font-medium px-2 py-0.5 bg-surface-raised rounded-md text-muted-foreground border border-border-subtle">
+                        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[12.5px] font-medium px-2 py-0.5 bg-surface-raised rounded-md text-foreground/80 border border-border-subtle">
                             {t.stages[opp.stage]}
                           </span>
                           {opp.dealValue && (
-                            <span className="text-[12px] font-medium text-foreground tabular-nums font-mono">
+                            <span className="text-[15px] font-semibold text-foreground tabular-nums">
                               {fmt.currency(opp.dealValue)}
                             </span>
                           )}
                         </div>
-                        <p className="text-[12px] text-foreground mt-1.5">{opp.nextStep}</p>
-                        <p className="text-[10px] text-muted font-mono mt-1">{t.companies.followUp} {fmt.date(opp.followUpDate)}</p>
+                        <p className="text-[14.5px] text-foreground/85 mt-2 leading-snug">{opp.nextStep}</p>
+                        <p className="text-[13.5px] text-foreground/65 font-mono mt-1.5">{t.companies.followUp} {fmt.date(opp.followUpDate)}</p>
                       </div>
                     ))}
                   </div>
@@ -149,6 +168,7 @@ export default function CompaniesPage() {
   const opportunities = useCRMStore((s) => s.opportunities)
   const contacts = useCRMStore((s) => s.contacts)
   const searchQuery = useCRMStore((s) => s.searchQuery)
+  const setSearchQuery = useCRMStore((s) => s.setSearchQuery)
 
   const [localSearch, setLocalSearch] = useState('')
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null)
@@ -173,36 +193,50 @@ export default function CompaniesPage() {
 
   return (
     <>
-      <Topbar title={t.companies.title} />
-      <main className="px-8 py-8 flex-1 animate-fade-in-up">
-        <div className="flex items-center justify-between mb-6">
+      <Topbar />
+      <main className="flex-1 animate-fade-in-up px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+        <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-[22px] font-display text-foreground tracking-tight">{t.companies.title}</h2>
-            <p className="text-[13px] text-muted mt-0.5 font-mono">{t.companies.tracked(filtered.length)}</p>
+            <h2 className="text-[28px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.companies.title}</h2>
+            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">{t.companies.tracked(filtered.length)}</p>
           </div>
-          <div className="flex items-center gap-2.5">
-            <div className="relative flex items-center">
-              <Search size={13} className="absolute left-2.5 text-muted pointer-events-none" />
+          <div className="flex w-full flex-col gap-2.5 sm:w-auto sm:flex-row sm:items-center">
+            <div className="relative flex w-full items-center sm:w-auto">
+              <Search size={14} className="pointer-events-none absolute left-3 text-foreground/60 sm:left-2.5" />
               <input
                 type="text"
                 value={localSearch}
                 onChange={(e) => setLocalSearch(e.target.value)}
                 placeholder={t.companies.filter}
-                className="h-8 pl-8 pr-3 text-[13px] bg-surface border border-border rounded-lg text-foreground placeholder:text-muted outline-none focus:border-accent/40 transition-all w-52"
+                className="h-11 w-full rounded-xl border border-border bg-surface pl-9 pr-3 text-[16px] text-foreground outline-none transition-all placeholder:text-foreground/45 focus:border-accent/40 sm:h-9 sm:w-52 sm:rounded-lg sm:pl-8 sm:text-[14px]"
               />
             </div>
-            <button
-              onClick={() => setAddCompanyOpen(true)}
-              className="flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-accent text-background text-[12px] font-medium hover:bg-accent-hover transition-colors"
-            >
-              <Plus size={13} />
+            <Button onClick={() => setAddCompanyOpen(true)} className="h-11 w-full sm:h-[38px] sm:w-auto">
+              <Plus size={15} />
               {t.companies.newCompany}
-            </button>
+            </Button>
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 stagger-children">
-          {filtered.map(company => {
+          {filtered.length === 0 ? (
+            <div className="col-span-full flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-8 text-center">
+              <Search size={20} className="mb-3 text-muted" aria-hidden="true" />
+              <p className="text-[15px] text-foreground/70">{t.companies.empty}</p>
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLocalSearch('')
+                    setSearchQuery('')
+                  }}
+                  className="mt-3 min-h-11 rounded-lg px-4 text-[14px] font-medium text-accent transition-colors hover:bg-accent-light"
+                >
+                  {t.common.clearFilters}
+                </button>
+              )}
+            </div>
+          ) : filtered.map(company => {
             const oppCount = opportunities.filter(o => o.companyId === company.id).length
             const contactCount = contacts.filter(c => c.companyId === company.id).length
             const totalValue = opportunities
@@ -224,35 +258,39 @@ export default function CompaniesPage() {
                     <Building2 size={16} className="text-accent" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[14px] font-semibold text-foreground truncate">{company.name}</p>
-                    <p className="text-[11px] text-muted mt-0.5 font-mono">{company.domain}</p>
+                    <p className="text-[15px] font-semibold text-foreground truncate">{company.name}</p>
+                    <p className="text-[13.5px] text-foreground/60 mt-0.5 font-mono truncate">{company.domain}</p>
                   </div>
                 </div>
 
-                <div className="mt-3 flex items-center gap-3 text-[11px] text-muted">
-                  <span className="flex items-center gap-1">
-                    <MapPin size={10} />
-                    {company.location}
+                <div className="mt-3.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13.5px] text-foreground/60">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <MapPin size={12} className="shrink-0" />
+                    <span className="break-words">{company.location}</span>
                   </span>
-                  <span className="text-border">·</span>
-                  <span>{company.industry}</span>
-                  <span className="text-border">·</span>
-                  <span>{company.size}</span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="text-border">·</span>
+                    <span className="break-words">{company.industry}</span>
+                  </span>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="text-border">·</span>
+                    <span className="break-words">{company.size}</span>
+                  </span>
                 </div>
 
-                <div className="mt-3 flex items-center gap-4">
-                  <div className="flex items-center gap-1 text-[11px]">
-                    <span className="text-muted">{t.companies.deals}</span>
-                    <span className="font-medium text-foreground">{oppCount}</span>
+                <div className="mt-3.5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border-subtle pt-3.5">
+                  <div className="flex items-baseline gap-1.5 text-[13.5px]">
+                    <span className="text-foreground/60">{t.companies.deals}</span>
+                    <span className="font-semibold text-foreground tabular-nums">{oppCount}</span>
                   </div>
-                  <div className="flex items-center gap-1 text-[11px]">
-                    <span className="text-muted">{t.companies.contacts}:</span>
-                    <span className="font-medium text-foreground">{contactCount}</span>
+                  <div className="flex items-baseline gap-1.5 text-[13.5px]">
+                    <span className="text-foreground/60">{t.companies.contacts}:</span>
+                    <span className="font-semibold text-foreground tabular-nums">{contactCount}</span>
                   </div>
                   {totalValue > 0 && (
-                    <div className="flex items-center gap-1 text-[11px] ml-auto">
-                      <span className="font-medium text-accent tabular-nums font-mono">{fmt.currency(totalValue)}</span>
-                    </div>
+                    <span className="ml-auto text-[15px] font-semibold text-accent tabular-nums">
+                      {fmt.currency(totalValue)}
+                    </span>
                   )}
                 </div>
 
@@ -261,7 +299,7 @@ export default function CompaniesPage() {
                     {company.tags.map(tag => (
                       <span
                         key={tag}
-                        className="text-[9.5px] font-mono px-1.5 py-0.5 bg-accent-light text-accent rounded-md"
+                        className="text-[12.5px] font-mono px-2 py-0.5 bg-accent-light text-accent rounded-md"
                       >
                         {tag}
                       </span>

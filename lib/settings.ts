@@ -2,9 +2,10 @@ import type { CurrencyCode, DateFormat, LocaleCode, Settings } from '@/lib/types
 
 /**
  * Display preferences. These change how existing data is rendered — never what
- * is stored. Amounts are persisted as plain numbers and dates as ISO strings;
- * everything here is a read-time formatting decision, so switching currency
- * relabels the same figures rather than converting them.
+ * is stored. Amounts are persisted as plain numbers in `BASE_CURRENCY` and
+ * dates as ISO strings; everything here is a read-time decision, so switching
+ * currency converts the stored figure for display and leaves the stored value
+ * untouched.
  */
 export const DEFAULT_SETTINGS: Settings = {
   theme: 'dark',
@@ -13,6 +14,7 @@ export const DEFAULT_SETTINGS: Settings = {
   locale: 'sv-SE',
   dateFormat: 'locale',
   compactNumbers: true,
+  sounds: true,
 }
 
 export const CURRENCIES: { code: CurrencyCode; label: string; symbol: string }[] = [
@@ -41,6 +43,47 @@ export const DATE_FORMATS: { value: DateFormat; label: string; hint: string }[] 
 ]
 
 /**
+ * Every `dealValue` in the database is stored in this currency. Nothing reads
+ * a per-row currency, so the base has to be a constant — the seed data, the
+ * pipeline totals and the deal-value input all speak SEK.
+ */
+export const BASE_CURRENCY: CurrencyCode = 'SEK'
+
+/**
+ * Units of each currency per 1 SEK. Static, hand-maintained figures rounded to
+ * the nearest sensible published rate — deal values are estimates to begin
+ * with, so a display figure that is right to within a percent or two is worth
+ * far more than a live FX dependency on every render.
+ *
+ * Last reviewed 2026-08-24. Implied crosses: 1 USD ≈ 9.52 SEK,
+ * 1 EUR ≈ 11.24 SEK, 1 GBP ≈ 12.82 SEK.
+ */
+export const FX_RATES: Record<CurrencyCode, number> = {
+  SEK: 1,
+  USD: 0.105,
+  EUR: 0.089,
+  GBP: 0.078,
+}
+
+/**
+ * A stored (base-currency) amount as it reads in the chosen currency.
+ * An unknown code passes the figure through rather than zeroing it.
+ */
+export function convertFromBase(value: number, currency: CurrencyCode): number {
+  return value * (FX_RATES[currency] ?? 1)
+}
+
+/**
+ * The inverse, for the deal-value input — what the user types is denominated
+ * in whatever currency the field's prefix shows, and the store only ever holds
+ * base. Rounded to a whole unit: deal values are round numbers, and letting
+ * 21000 USD land as 199999.99999 SEK would be a worse lie than the FX rate.
+ */
+export function convertToBase(value: number, currency: CurrencyCode): number {
+  return Math.round(value / (FX_RATES[currency] ?? 1))
+}
+
+/**
  * `Intl` throws on an unsupported currency/locale pair rather than degrading,
  * and a settings page is exactly where an unexpected combination arrives. Any
  * failure falls back to the raw number so a bad preference can never blank out
@@ -57,10 +100,16 @@ function safeFormat(run: () => string, fallback: string): string {
 /**
  * Money, in the user's chosen currency and regional number style.
  *
+ * `value` arrives in `BASE_CURRENCY` and is converted here, so callers can pass
+ * a stored figure — or a sum of them — straight through without knowing the
+ * display currency.
+ *
  * `compact` collapses large sums to 517K rather than 517,000 — used for the
  * dashboard tiles and pipeline totals, where the magnitude matters more than
  * the exact figure. Explicit `compact: false` overrides the preference for
- * places that must always show the full number.
+ * places that must always show the full number. Note the threshold and the
+ * rounding both apply to the converted amount: 48 000 SEK is compacted, the
+ * 5 040 USD it converts to is not.
  */
 export function formatCurrency(
   value: number,
@@ -68,15 +117,16 @@ export function formatCurrency(
   options?: { compact?: boolean }
 ): string {
   const compact = options?.compact ?? settings.compactNumbers
+  const amount = convertFromBase(value, settings.currency)
   return safeFormat(
     () =>
       new Intl.NumberFormat(settings.locale, {
         style: 'currency',
         currency: settings.currency,
-        notation: compact && Math.abs(value) >= 1000 ? 'compact' : 'standard',
-        maximumFractionDigits: compact && Math.abs(value) >= 1000 ? 1 : 0,
-      }).format(value),
-    `${value}`
+        notation: compact && Math.abs(amount) >= 1000 ? 'compact' : 'standard',
+        maximumFractionDigits: compact && Math.abs(amount) >= 1000 ? 1 : 0,
+      }).format(amount),
+    `${Math.round(amount)}`
   )
 }
 

@@ -1,9 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Building2, Plus, User } from 'lucide-react'
 import { Modal } from './Modal'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Button } from './Button'
 import { ColorSlider, ComboHint, Combobox, Field, comboStatus, inputClass } from './FormFields'
 import { useCRMStore } from '@/lib/store'
 import { Priority, Stage } from '@/lib/types'
@@ -50,6 +51,7 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
   const fmt = useFormat()
 
   const companyInputRef = useRef<HTMLInputElement>(null)
+  const formId = useId()
 
   const [companyQuery, setCompanyQuery] = useState('')
   const [companyId, setCompanyId] = useState<string | null>(null)
@@ -262,7 +264,10 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
       addContact(contact)
     }
 
-    const parsedValue = Number(dealValue.replace(/[^0-9.]/g, ''))
+    // The field is prefixed with `fmt.symbol`, so what was typed is in the
+    // display currency — store it as base.
+    const typedValue = Number(dealValue.replace(/[^0-9.]/g, ''))
+    const parsedValue = Number.isFinite(typedValue) ? fmt.toBase(typedValue) : NaN
 
     addOpportunity({
       id: newId(),
@@ -289,54 +294,45 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
       onClose={handleClose}
       title={copy.title}
       subtitle={copy.subtitle}
-      width="w-[680px]"
+      width="w-[860px]"
       onSubmitShortcut={handleSubmit}
       suspended={discardOpen}
       footer={
         <>
           {/* Only validation errors surface here — the stage status line was
               noise, since the stage pills already show what's selected. */}
-          <p aria-live="polite" className="text-[13px] text-danger">
+          <p aria-live="polite" className="text-[13.5px] text-danger empty:hidden">
             {blockedReason}
           </p>
-          <div className="flex items-center gap-2">
-            <span className="text-[12px] text-foreground font-mono opacity-60 hidden sm:block">⌘↵</span>
-            <button
-              type="button"
-              onClick={handleClose}
-              className="h-9 px-3.5 rounded-lg text-[14px] font-medium text-foreground hover:bg-surface-raised transition-colors"
-            >
+          <div className="flex w-full items-center gap-2 sm:w-auto">
+            <span className="text-[13px] text-foreground/60 font-mono hidden sm:block">⌘↵</span>
+            <Button variant="ghost" onClick={handleClose} className="flex-1 sm:flex-none">
               {t.common.cancel}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
               onClick={handleSubmit}
               disabled={!canSubmit}
               title={canSubmit ? undefined : blockedReason}
-              className={cn(
-                'flex items-center gap-1.5 h-9 px-4 rounded-lg text-[14px] font-medium transition-all duration-150',
-                canSubmit
-                  ? 'bg-accent text-background hover:bg-accent-hover'
-                  : 'bg-border text-foreground/70 cursor-not-allowed'
-              )}
+              className="flex-1 sm:flex-none"
             >
-              <Plus size={14} />
+              <Plus size={15} />
               {copy.add}
-            </button>
+            </Button>
           </div>
         </>
       }
     >
       {/* Who */}
-      <div className="px-6 pt-5 pb-6 border-b border-border-subtle">
+      <div className="border-b border-border-subtle px-4 pb-5 pt-5 sm:px-7 sm:pb-7 sm:pt-6">
         <p className="label-mono mb-3.5">{copy.who}</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+        <div className="grid grid-cols-1 gap-x-7 gap-y-5 sm:grid-cols-2 sm:gap-y-6">
           <div>
-            <Field label={copy.company} required hint={<ComboHint status={companyStatus} />}>
+            <Field label={copy.company} required htmlFor={`${formId}-company`} hint={<ComboHint status={companyStatus} />}>
               <Combobox
+                id={`${formId}-company`}
                 inputRef={companyInputRef}
                 icon={COMPANY_ICON}
-                placeholder={copy.searchOrCreate}
+                placeholder=""
                 query={companyQuery}
                 onQueryChange={handleCompanyQueryChange}
                 options={companyOptions}
@@ -345,22 +341,23 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
               />
             </Field>
             {!selectedCompany && companyQuery.trim() && (
-              <div className="grid grid-cols-2 gap-3 mt-4">
-                <Field label={copy.industry}>
-                  <input value={industry} onChange={(e) => setIndustry(e.target.value)} placeholder="SaaS" className={inputClass} />
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label={copy.industry} htmlFor={`${formId}-industry`}>
+                  <input id={`${formId}-industry`} value={industry} onChange={(e) => setIndustry(e.target.value)} className={inputClass} />
                 </Field>
-                <Field label={copy.location}>
-                  <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Berlin, DE" className={inputClass} />
+                <Field label={copy.location} htmlFor={`${formId}-location`}>
+                  <input id={`${formId}-location`} value={location} onChange={(e) => setLocation(e.target.value)} className={inputClass} />
                 </Field>
               </div>
             )}
           </div>
 
           <div>
-            <Field label={copy.contact} required hint={<ComboHint status={contactStatus} />}>
+            <Field label={copy.contact} required htmlFor={`${formId}-contact`} hint={<ComboHint status={contactStatus} />}>
               <Combobox
+                id={`${formId}-contact`}
                 icon={CONTACT_ICON}
-                placeholder={copy.searchOrCreate}
+                placeholder=""
                 query={contactQuery}
                 onQueryChange={handleContactQueryChange}
                 options={contactOptions}
@@ -369,22 +366,22 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
               />
             </Field>
             {!selectedContact && contactQuery.trim() && (
-              <div className="grid grid-cols-2 gap-3 mt-4">
-                <Field label={copy.role}>
-                  <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="VP of Growth" className={inputClass} />
+              <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label={copy.role} htmlFor={`${formId}-role`}>
+                  <input id={`${formId}-role`} value={role} onChange={(e) => setRole(e.target.value)} className={inputClass} />
                 </Field>
-                <Field label={copy.email}>
+                <Field label={copy.email} htmlFor={`${formId}-email`}>
                   <input
+                    id={`${formId}-email`}
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@work.com"
                     aria-invalid={!!emailError}
-                    aria-describedby={emailError ? 'contact-email-error' : undefined}
+                    aria-describedby={emailError ? `${formId}-email-error` : undefined}
                     className={cn(inputClass, emailError && 'border-danger/60 focus:border-danger/60')}
                   />
                   {emailError && (
-                    <p id="contact-email-error" className="mt-1 text-[12.5px] text-danger">
+                    <p id={`${formId}-email-error`} className="mt-1 text-[12.5px] text-danger">
                       {emailError}
                     </p>
                   )}
@@ -396,10 +393,10 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
       </div>
 
       {/* Pipeline — selecting a stage is what puts the lead on the board */}
-      <div className="px-6 py-5 border-b border-border-subtle">
-        <div className="flex items-baseline justify-between mb-3.5">
+      <div className="border-b border-border-subtle px-4 py-5 sm:px-7 sm:py-6">
+        <div className="mb-3.5 flex flex-col items-start gap-1 sm:flex-row sm:items-baseline sm:justify-between">
           <p className="label-mono">{copy.pipelineStage}</p>
-          <p className="text-[12.5px] text-foreground/80">{copy.leaveOffBoard}</p>
+          <p className="text-[13.5px] text-foreground/60">{copy.leaveOffBoard}</p>
         </div>
         <div role="radiogroup" aria-label={copy.pipelineStage} className="flex flex-wrap gap-2">
           <button
@@ -408,7 +405,7 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
             aria-checked={stage === null}
             onClick={() => setStage(null)}
             className={cn(
-              'h-8 px-3 rounded-md text-[12.5px] font-medium border transition-all duration-150',
+              'h-11 touch-manipulation rounded-md border px-3.5 text-[14px] font-medium transition-all duration-150 sm:h-9',
               stage === null
                 ? 'bg-surface-raised text-foreground border-border'
                 : 'text-foreground/80 border-border-subtle hover:text-foreground hover:border-border'
@@ -424,7 +421,7 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
               aria-checked={stage === s}
               onClick={() => setStage(stage === s ? null : s)}
               className={cn(
-                'h-8 px-3 rounded-md text-[12.5px] font-medium border transition-all duration-150',
+                'h-11 touch-manipulation rounded-md border px-3.5 text-[14px] font-medium transition-all duration-150 sm:h-9',
                 stage === s
                   ? cn(stageColors[s], 'border-transparent ring-1 ring-accent/30')
                   : 'text-foreground/80 border-border-subtle hover:text-foreground hover:border-border'
@@ -437,8 +434,8 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
       </div>
 
       {/* Deal */}
-      <div className="px-6 py-5">
-        <div className="grid grid-cols-1 sm:grid-cols-[1.35fr_1fr_1fr] gap-4">
+      <div className="px-4 py-5 sm:px-7 sm:py-6">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1.35fr_1fr_1fr] sm:gap-5">
           <Field label={copy.priority}>
             <ColorSlider
               steps={PRIORITIES}
@@ -449,7 +446,7 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
               valueLabels={t.priorities}
             />
           </Field>
-          <Field label={copy.dealValue}>
+          <Field label={copy.dealValue} htmlFor={`${formId}-deal-value`}>
             <div className="relative">
               {/* Text, not an icon: the symbol follows the currency setting and
                   can be "kr" or "SEK", so the field pads to fit whatever it is.
@@ -459,11 +456,12 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
                 <span className="w-px h-[18px] bg-border-subtle" />
               </span>
               <input
+                id={`${formId}-deal-value`}
                 inputMode="decimal"
                 value={dealValue}
                 onChange={(e) => setDealValue(e.target.value)}
                 aria-invalid={!!dealValueError}
-                aria-describedby={dealValueError ? 'deal-value-error' : undefined}
+                aria-describedby={dealValueError ? `${formId}-deal-value-error` : undefined}
                 className={cn(
                   inputClass,
                   'tabular-nums',
@@ -473,31 +471,34 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
               />
             </div>
             {dealValueError && (
-              <p id="deal-value-error" className="mt-1 text-[12.5px] text-danger">
+              <p id={`${formId}-deal-value-error`} className="mt-1 text-[12.5px] text-danger">
                 {dealValueError}
               </p>
             )}
           </Field>
-          <Field label={copy.followUp}>
+          <Field label={copy.followUp} htmlFor={`${formId}-follow-up`}>
             <input
+              id={`${formId}-follow-up`}
               type="date"
               value={followUpDate}
               onChange={(e) => setFollowUpDate(e.target.value)}
-              className={cn(inputClass, 'font-mono text-[14px]')}
+              className={cn(inputClass, 'font-mono text-[16px] sm:text-[14px]')}
             />
           </Field>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-[1.35fr_1fr] gap-4 mt-5">
-          <Field label={copy.nextStep}>
+        <div className="mt-5 grid grid-cols-1 gap-4 sm:mt-6 sm:grid-cols-[1.35fr_1fr] sm:gap-5">
+          <Field label={copy.nextStep} htmlFor={`${formId}-next-step`}>
             <input
+              id={`${formId}-next-step`}
               value={nextStep}
               onChange={(e) => setNextStep(e.target.value)}
               className={inputClass}
             />
           </Field>
-          <Field label={copy.tags}>
+          <Field label={copy.tags} htmlFor={`${formId}-tags`}>
             <input
+              id={`${formId}-tags`}
               value={tags}
               onChange={(e) => setTags(e.target.value)}
               placeholder={copy.tagsPlaceholder}
@@ -507,8 +508,9 @@ export function AddLeadModal({ open, onClose }: AddLeadModalProps) {
         </div>
 
         <div className="mt-5">
-          <Field label={copy.notes}>
+          <Field label={copy.notes} htmlFor={`${formId}-notes`}>
             <textarea
+              id={`${formId}-notes`}
               value={notesText}
               onChange={(e) => setNotesText(e.target.value)}
               rows={2}

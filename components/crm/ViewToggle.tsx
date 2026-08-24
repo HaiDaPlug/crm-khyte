@@ -14,11 +14,17 @@ interface ViewToggleProps {
 export function ViewToggle({ view, onChange }: ViewToggleProps) {
   const { t } = useTranslations()
   return (
-    <div className="flex items-center bg-surface rounded-lg p-0.5 border border-border">
+    <div
+      role="group"
+      aria-label={`${t.crm.view.table} / ${t.crm.view.board}`}
+      className="flex w-full items-center rounded-lg border border-border bg-surface p-0.5 sm:w-auto"
+    >
       <button
+        type="button"
         onClick={() => onChange('table')}
+        aria-pressed={view === 'table'}
         className={cn(
-          'flex items-center gap-1.5 h-8 px-3.5 rounded-md text-[13px] font-medium transition-all duration-150',
+          'flex h-11 min-w-0 flex-1 touch-manipulation items-center justify-center gap-1.5 rounded-md px-3.5 text-[14px] font-medium transition-all duration-150 sm:h-8 sm:flex-none',
           view === 'table'
             ? 'bg-surface-raised text-foreground border border-border-accent'
             : 'text-foreground/60 hover:text-foreground border border-transparent'
@@ -28,9 +34,11 @@ export function ViewToggle({ view, onChange }: ViewToggleProps) {
         {t.crm.view.table}
       </button>
       <button
+        type="button"
         onClick={() => onChange('board')}
+        aria-pressed={view === 'board'}
         className={cn(
-          'flex items-center gap-1.5 h-8 px-3.5 rounded-md text-[13px] font-medium transition-all duration-150',
+          'flex h-11 min-w-0 flex-1 touch-manipulation items-center justify-center gap-1.5 rounded-md px-3.5 text-[14px] font-medium transition-all duration-150 sm:h-8 sm:flex-none',
           view === 'board'
             ? 'bg-surface-raised text-foreground border border-border-accent'
             : 'text-foreground/60 hover:text-foreground border border-transparent'

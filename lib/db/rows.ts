@@ -1,4 +1,4 @@
-import type { Priority, Stage, StrategyColumn } from '@/lib/types'
+import type { ColleagueId, Priority, Stage } from '@/lib/types'
 
 /**
  * The wire shape of each table, exactly as PostgREST returns it — snake_case,
@@ -66,11 +66,21 @@ export interface NoteRow {
   updated_at: string
 }
 
+export interface StrategyColumnRow {
+  id: string
+  owner_id: string | null
+  opportunity_id: string
+  title: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
 export interface StrategyCardRow {
   id: string
   owner_id: string | null
   opportunity_id: string
-  column_name: StrategyColumn
+  column_id: string
   content: string
   sort_order: number
   created_at: string
@@ -87,6 +97,8 @@ export interface TaskRow {
   due_date: string | null
   completed: boolean
   priority: Priority
+  assignee: ColleagueId | null
+  archived_at: string | null
   created_at: string
   updated_at: string
 }

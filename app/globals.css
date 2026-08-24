@@ -8,6 +8,8 @@
   --sidebar-width: 232px;
   --sidebar-collapsed-width: 64px;
   --topbar-height: 52px;
+  --mobile-topbar-height: calc(60px + env(safe-area-inset-top));
+  --mobile-bottomnav-height: calc(68px + env(safe-area-inset-bottom));
   --accent: #D4943C;
   --accent-hover: #E0A554;
   --accent-muted: #D4943C33;
@@ -132,12 +134,24 @@
   box-sizing: border-box;
 }
 
+html {
+  background: var(--background);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
+  min-width: 0;
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Noise texture overlay — adds film grain to the entire app */
@@ -171,6 +185,31 @@ body::before {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
+}
+
+/* The pipeline board is the one place where a scrollbar is wayfinding rather
+   than chrome: nine columns run well past the viewport, so the bar has to say
+   "there is more this way" at a glance. Taller, with a visible track, and it
+   picks up the accent on hover — everywhere else keeps the 4px hairline. */
+.board-scroll {
+  scrollbar-width: auto;
+  scrollbar-color: var(--border) var(--background-raised);
+}
+.board-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+.board-scroll::-webkit-scrollbar-track {
+  background: var(--background-raised);
+  border-radius: 999px;
+}
+.board-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+  /* Inset the thumb inside its track so the bar reads as a rail, not a slab. */
+  border: 2px solid var(--background-raised);
+}
+.board-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
 }
 
 /* Selection */
@@ -274,9 +313,21 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   .animate-modal-in,
   .animate-fade-in,
+  .animate-fade-in-up,
+  .animate-slide-in-right,
+  .animate-slide-in-down,
   .animate-scale-in,
-  .animate-popover-in {
-    animation-duration: 0.01ms;
+  .animate-popover-in,
+  .animate-glow-pulse,
+  .stagger-children > * {
+    animation: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
@@ -476,10 +527,16 @@ a, button, [role="button"] {
 /* A matte, tinted-per-variant version of the .grain-card material: a flat,
    low-contrast fill (no specular glint, no glossy sheen) so it reads as a
    dry, coated surface — like powder coat or matte lacquer — rather than
-   polished plastic; a single fine-turbulence layer adds an even film-grain
-   texture; a soft single-edge top highlight suggests a slight curve without
-   the glossy two-tone bevel. Layout (size, padding, radius) stays with
-   Tailwind utilities on the element — this class only owns the material.
+   polished plastic. The fill is lit like a lacquered object catching light
+   unevenly rather than a mechanical stripe: an off-centre warm light pool,
+   a soft shadow pool opposite it, and a faint directional undertone beneath
+   both — asymmetric on purpose, since a perfectly centred/symmetric gradient
+   is what reads as "generated" rather than considered. A single fine-
+   turbulence layer adds an even film-grain texture on top; the box-shadow
+   bevel is warmed to match rather than neutral black/white, so the whole
+   thing reads as one material instead of a tint plus a generic highlight.
+   Layout (size, padding, radius) stays with Tailwind utilities on the
+   element — this class only owns the material.
    (An earlier, glossier pass — bright specular glint, 4-stop gradient,
    hover sheen sweep — is kept as .btn-grain-patchy / ButtonGrainPatchy.tsx
    below, in case that finish is wanted elsewhere.) */
@@ -490,16 +547,18 @@ a, button, [role="button"] {
   border: 1px solid color-mix(in srgb, black 22%, var(--btn-hue));
   color: var(--btn-fg, var(--background));
   background:
-    radial-gradient(140% 120% at 30% -30%, color-mix(in srgb, white 8%, transparent) 0%, transparent 60%),
-    linear-gradient(175deg,
-      color-mix(in srgb, white 4%, var(--btn-hue)) 0%,
-      var(--btn-hue) 45%,
-      color-mix(in srgb, black 14%, var(--btn-hue)) 100%);
+    radial-gradient(78% 130% at 28% 12%, color-mix(in srgb, #FFE7C6 34%, var(--btn-hue)) 0%, transparent 60%),
+    radial-gradient(65% 95% at 86% 104%, color-mix(in srgb, black 26%, var(--btn-hue)) 0%, transparent 62%),
+    linear-gradient(128deg,
+      var(--btn-hue) 6%,
+      color-mix(in srgb, white 8%, var(--btn-hue)) 48%,
+      var(--btn-hue) 94%);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.14),
-    inset 0 -1px 0 0 rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 0 rgba(255, 232, 200, 0.16),
+    inset 0 -1px 0 0 rgba(40, 16, 4, 0.22),
     0 1px 2px rgba(0, 0, 0, 0.22),
-    0 5px 14px -8px color-mix(in srgb, var(--btn-hue) 50%, transparent);
+    0 5px 14px -8px color-mix(in srgb, var(--btn-hue) 50%, transparent),
+    0 0 14px 0 rgba(255, 255, 255, 0.1);
   transition: filter 0.15s ease, box-shadow 0.15s ease;
 }
 /* Grain: a single fine turbulence layer, soft-light blended so it reads as
@@ -510,9 +569,9 @@ a, button, [role="button"] {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.4;
+  opacity: 0.65;
   mix-blend-mode: soft-light;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' seed='7'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' seed='7'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   background-repeat: repeat;
   background-size: 48px 48px;
 }
@@ -523,15 +582,16 @@ a, button, [role="button"] {
 .btn-grain:hover:not(:disabled) {
   filter: brightness(1.05);
   box-shadow:
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
-    inset 0 -1px 0 0 rgba(0, 0, 0, 0.16),
+    inset 0 1px 0 0 rgba(255, 232, 200, 0.2),
+    inset 0 -1px 0 0 rgba(40, 16, 4, 0.22),
     0 1px 2px rgba(0, 0, 0, 0.22),
-    0 6px 16px -8px color-mix(in srgb, var(--btn-hue) 55%, transparent);
+    0 6px 16px -8px color-mix(in srgb, var(--btn-hue) 55%, transparent),
+    0 0 16px 0 rgba(255, 255, 255, 0.14);
 }
 .btn-grain:active:not(:disabled) {
   filter: brightness(0.94);
   box-shadow:
-    inset 0 1px 2px 0 rgba(0, 0, 0, 0.2),
+    inset 0 1px 2px 0 rgba(40, 16, 4, 0.26),
     0 1px 1px rgba(0, 0, 0, 0.2);
 }
 .btn-grain:disabled {
@@ -543,7 +603,7 @@ a, button, [role="button"] {
 
 /* Leans past the muted brand --accent toward a more saturated, true orange —
    deliberately a bolder tint than the accent used for text/badges elsewhere. */
-.btn-grain-primary { --btn-hue: color-mix(in srgb, var(--accent) 40%, #E06618 60%); --btn-fg: var(--background); }
+.btn-grain-primary { --btn-hue: color-mix(in srgb, var(--accent) 30%, #C85510 70%); --btn-fg: #fff; }
 .btn-grain-danger  { --btn-hue: var(--danger); --btn-fg: #fff; }
 .btn-grain-success { --btn-hue: var(--success); --btn-fg: #fff; }
 
@@ -659,7 +719,7 @@ a, button, [role="button"] {
 /* Mono accent — for labels and data */
 .label-mono {
   font-family: var(--font-geist-mono), monospace;
-  font-size: 10px;
+  font-size: 11.5px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
@@ -668,15 +728,24 @@ a, button, [role="button"] {
 /* Modal type scale — labels run 2px larger and white inside a modal panel,
    without disturbing the same class elsewhere in the app. */
 .grain-modal .label-mono {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--foreground);
 }
 
 /* Data-grid type scale — a dense table has to stay as readable as the detail
    panels, so column headers sit a step above the app-wide 10px label. */
 .data-table .label-mono {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--foreground-dim);
+}
+
+/* Zebra striping — alternating rows on the leads table read faster across
+   nine wide columns than a flat surface with only hover feedback. Plain
+   element+pseudo-class selector (no class) so its specificity stays below
+   the hover utility's class+pseudo-class, guaranteeing hover always wins
+   regardless of source order. */
+.data-table tbody tr:nth-child(even) {
+  background-color: var(--surface-raised);
 }
 
 /* Barlow headline font */
@@ -692,4 +761,35 @@ a, button, [role="button"] {
 /* Subtle inner glow for inputs */
 input:focus, textarea:focus {
   box-shadow: inset 0 0 0 1px var(--accent-muted);
+}
+
+@media (max-width: 639px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  .label-mono {
+    font-size: 12px;
+  }
+
+  .grain-card {
+    border-radius: 18px;
+  }
+
+  .grain-drawer {
+    border-width: 0;
+    border-radius: 0;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  body::before {
+    opacity: 0.014;
+  }
+
+  .card-glow:hover {
+    box-shadow: none;
+  }
 }

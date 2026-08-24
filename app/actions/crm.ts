@@ -6,19 +6,24 @@ import type {
   Note,
   Opportunity,
   StrategyCard,
+  StrategyColumn,
   Task,
 } from '@/lib/types'
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase/server'
 import { isRetryableWrite, withRetry } from '@/lib/db/retry'
 import {
   toCompanyInsert,
+  toCompanyUpdate,
   toContactInsert,
+  toContactUpdate,
   toNoteInsert,
   toNoteUpdate,
   toOpportunityInsert,
   toOpportunityUpdate,
   toStrategyCardInsert,
   toStrategyCardUpdate,
+  toStrategyColumnInsert,
+  toStrategyColumnUpdate,
   toTaskInsert,
   toTaskUpdate,
 } from '@/lib/db/mappers'
@@ -90,12 +95,36 @@ export async function createCompany(company: Company): Promise<ActionResult> {
   )
 }
 
+export async function updateCompany(
+  id: string,
+  updates: Partial<Company>
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  const payload = toCompanyUpdate(updates)
+  if (Object.keys(payload).length === 0) return OK
+  return run('companies', async () =>
+    getSupabase().from('companies').update(payload).eq('id', id)
+  )
+}
+
 // --- contacts --------------------------------------------------------------
 
 export async function createContact(contact: Contact): Promise<ActionResult> {
   if (skipUnconfigured()) return OK
   return run('contacts', async () =>
     getSupabase().from('contacts').insert(toContactInsert(contact))
+  )
+}
+
+export async function updateContact(
+  id: string,
+  updates: Partial<Contact>
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  const payload = toContactUpdate(updates)
+  if (Object.keys(payload).length === 0) return OK
+  return run('contacts', async () =>
+    getSupabase().from('contacts').update(payload).eq('id', id)
   )
 }
 
@@ -143,6 +172,37 @@ export async function updateNote(
   )
 }
 
+// --- strategy headlines ----------------------------------------------------
+
+export async function createStrategyColumn(
+  column: StrategyColumn
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  return run('strategy_columns', async () =>
+    getSupabase().from('strategy_columns').insert(toStrategyColumnInsert(column))
+  )
+}
+
+export async function updateStrategyColumn(
+  id: string,
+  updates: Partial<StrategyColumn>
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  const payload = toStrategyColumnUpdate(updates)
+  if (Object.keys(payload).length === 0) return OK
+  return run('strategy_columns', async () =>
+    getSupabase().from('strategy_columns').update(payload).eq('id', id)
+  )
+}
+
+/** The deal's cards under this headline go with it (`on delete cascade`). */
+export async function deleteStrategyColumn(id: string): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  return run('strategy_columns', async () =>
+    getSupabase().from('strategy_columns').delete().eq('id', id)
+  )
+}
+
 // --- strategy cards --------------------------------------------------------
 
 export async function createStrategyCard(
@@ -184,5 +244,16 @@ export async function updateTask(
   if (Object.keys(payload).length === 0) return OK
   return run('tasks', async () =>
     getSupabase().from('tasks').update(payload).eq('id', id)
+  )
+}
+
+/**
+ * Permanent. Reserved for tasks created in error — anything worth keeping in
+ * the record should be archived instead.
+ */
+export async function deleteTask(id: string): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  return run('tasks', async () =>
+    getSupabase().from('tasks').delete().eq('id', id)
   )
 }

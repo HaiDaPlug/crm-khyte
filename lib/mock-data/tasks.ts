@@ -10,6 +10,7 @@ export const mockTasks: Task[] = [
     dueDate: '2026-03-26',
     completed: false,
     priority: 'high',
+    assignee: 'hai',
     createdAt: '2026-03-24T10:00:00Z',
   },
   {
@@ -21,6 +22,7 @@ export const mockTasks: Task[] = [
     dueDate: '2026-03-27',
     completed: false,
     priority: 'high',
+    assignee: 'erik',
     createdAt: '2026-03-22T15:00:00Z',
   },
   {
@@ -32,6 +34,7 @@ export const mockTasks: Task[] = [
     dueDate: '2026-03-28',
     completed: false,
     priority: 'medium',
+    assignee: 'abdi',
     createdAt: '2026-03-18T09:00:00Z',
   },
   {

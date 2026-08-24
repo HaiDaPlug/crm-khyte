@@ -65,23 +65,33 @@ export interface Note {
   applied?: boolean
 }
 
+/**
+ * A headline on the strategy board — one lane of cards for one deal.
+ *
+ * Headlines are user-written and scoped to a single opportunity: two deals
+ * never share a lane, and a new deal starts with an empty board. That is why
+ * the title is free text rather than a fixed set — what matters about a
+ * public-sector tender is not what matters about a renewal.
+ */
+export interface StrategyColumn {
+  id: string
+  opportunityId: string
+  title: string
+  order: number
+}
+
 export interface StrategyCard {
   id: string
   opportunityId: string
-  column: StrategyColumn
+  columnId: string
   content: string
   order: number
 }
 
-export type StrategyColumn =
-  | 'Pain Points'
-  | 'Stakeholders'
-  | 'Objections'
-  | 'Offer Angle'
-  | 'Proof'
-  | 'Next Actions'
-
 export type PipelineStage = Stage
+
+/** Fixed roster — the app has no real accounts/auth yet (see Settings). */
+export type ColleagueId = 'erik' | 'abdi' | 'hai'
 
 export interface Task {
   id: string
@@ -92,7 +102,15 @@ export interface Task {
   dueDate: string
   completed: boolean
   priority: Priority
+  /** Who it's assigned to, from the fixed colleague roster. Unset = unassigned. */
+  assignee?: ColleagueId
   createdAt: string
+  /**
+   * Set when the task is filed away. Archived tasks are still loaded and
+   * still resolve by id for anything referencing them — they are simply
+   * hidden from the board.
+   */
+  archivedAt?: string
 }
 
 /**
@@ -104,6 +122,7 @@ export interface CRMSnapshot {
   contacts: Contact[]
   opportunities: Opportunity[]
   notes: Note[]
+  strategyColumns: StrategyColumn[]
   strategyCards: StrategyCard[]
   tasks: Task[]
 }
@@ -134,4 +153,6 @@ export interface Settings {
   dateFormat: DateFormat
   /** Collapse large sums to 517K in tiles and totals. */
   compactNumbers: boolean
+  /** Play the interface chimes, e.g. checking a task off. */
+  sounds: boolean
 }

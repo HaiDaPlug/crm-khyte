@@ -1,11 +1,11 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Building2, Plus } from 'lucide-react'
 import { Modal } from './Modal'
+import { Button } from './Button'
 import { ComboHint, Combobox, Field, comboStatus, inputClass } from './FormFields'
 import { useCRMStore } from '@/lib/store'
-import { cn } from '@/lib/utils'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 interface AddContactModalProps {
@@ -21,6 +21,7 @@ export function AddContactModal({ open, onClose }: AddContactModalProps) {
   const addContact = useCRMStore((s) => s.addContact)
 
   const nameInputRef = useRef<HTMLInputElement>(null)
+  const formId = useId()
 
   const [name, setName] = useState('')
   const [role, setRole] = useState('')
@@ -95,38 +96,29 @@ export function AddContactModal({ open, onClose }: AddContactModalProps) {
       onSubmitShortcut={handleSubmit}
       footer={
         <>
-          <span aria-hidden="true" />
-          <div className="flex items-center gap-2">
+          <span aria-hidden="true" className="hidden sm:block" />
+          <div className="flex w-full items-center gap-2 sm:w-auto">
             <span className="text-[12px] text-foreground font-mono opacity-60 hidden sm:block">⌘↵</span>
             <button
               type="button"
               onClick={onClose}
-              className="h-9 px-3.5 rounded-lg text-[14px] font-medium text-foreground hover:bg-surface-raised transition-colors"
+              className="h-11 flex-1 touch-manipulation rounded-lg px-3.5 text-[14px] font-medium text-foreground transition-colors hover:bg-surface-raised sm:h-9 sm:flex-none"
             >
               {t.common.cancel}
             </button>
-            <button
-              type="button"
-              onClick={handleSubmit}
-              disabled={!canSubmit}
-              className={cn(
-                'flex items-center gap-1.5 h-9 px-4 rounded-lg text-[14px] font-medium transition-all duration-150',
-                canSubmit
-                  ? 'bg-accent text-background hover:bg-accent-hover'
-                  : 'bg-border text-foreground/70 cursor-not-allowed'
-              )}
-            >
+            <Button onClick={handleSubmit} disabled={!canSubmit} className="flex-1 sm:flex-none">
               <Plus size={14} />
               {copy.add}
-            </button>
+            </Button>
           </div>
         </>
       }
     >
-      <div className="px-6 py-5 space-y-5">
-        <div className="grid grid-cols-2 gap-4">
-          <Field label={copy.name} required>
+      <div className="space-y-4 px-4 py-5 sm:space-y-5 sm:px-7 sm:py-6">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label={copy.name} required htmlFor={`${formId}-name`}>
             <input
+              id={`${formId}-name`}
               ref={nameInputRef}
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -134,17 +126,19 @@ export function AddContactModal({ open, onClose }: AddContactModalProps) {
               className={inputClass}
             />
           </Field>
-          <Field label={copy.role}>
-            <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="VP of Growth" className={inputClass} />
+          <Field label={copy.role} htmlFor={`${formId}-role`}>
+            <input id={`${formId}-role`} value={role} onChange={(e) => setRole(e.target.value)} placeholder="VP of Growth" className={inputClass} />
           </Field>
         </div>
 
         <Field
           label={copy.company}
           required
+          htmlFor={`${formId}-company`}
           hint={<ComboHint status={comboStatus(companyQuery, companyOptions, companyId)} />}
         >
           <Combobox
+            id={`${formId}-company`}
             icon={<Building2 size={15} />}
             placeholder={copy.searchOrCreate}
             query={companyQuery}
@@ -160,16 +154,16 @@ export function AddContactModal({ open, onClose }: AddContactModalProps) {
           />
         </Field>
 
-        <Field label={copy.email}>
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" className={inputClass} />
+        <Field label={copy.email} htmlFor={`${formId}-email`}>
+          <input id={`${formId}-email`} type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@company.com" className={inputClass} />
         </Field>
 
-        <div className="grid grid-cols-2 gap-4">
-          <Field label={copy.phone}>
-            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+49 160 000 0000" className={inputClass} />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label={copy.phone} htmlFor={`${formId}-phone`}>
+            <input id={`${formId}-phone`} type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+49 160 000 0000" className={inputClass} />
           </Field>
-          <Field label={copy.linkedin}>
-            <input value={linkedin} onChange={(e) => setLinkedin(e.target.value)} placeholder="linkedin.com/in/..." className={inputClass} />
+          <Field label={copy.linkedin} htmlFor={`${formId}-linkedin`}>
+            <input id={`${formId}-linkedin`} inputMode="url" value={linkedin} onChange={(e) => setLinkedin(e.target.value)} placeholder="linkedin.com/in/..." className={inputClass} />
           </Field>
         </div>
       </div>

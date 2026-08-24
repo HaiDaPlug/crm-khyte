@@ -4,6 +4,7 @@ import type {
   Note,
   Opportunity,
   StrategyCard,
+  StrategyColumn,
   Task,
 } from '@/lib/types'
 import type {
@@ -12,6 +13,7 @@ import type {
   NoteRow,
   OpportunityRow,
   StrategyCardRow,
+  StrategyColumnRow,
   TaskRow,
 } from './rows'
 
@@ -225,13 +227,40 @@ export function toNoteUpdate(updates: Partial<Note>) {
   ])
 }
 
+// --- strategy headlines ----------------------------------------------------
+
+export function fromStrategyColumnRow(row: StrategyColumnRow): StrategyColumn {
+  return {
+    id: row.id,
+    opportunityId: row.opportunity_id,
+    title: row.title,
+    order: row.sort_order,
+  }
+}
+
+export function toStrategyColumnInsert(column: StrategyColumn) {
+  return {
+    id: column.id,
+    opportunity_id: column.opportunityId,
+    title: column.title,
+    sort_order: column.order,
+  }
+}
+
+export function toStrategyColumnUpdate(updates: Partial<StrategyColumn>) {
+  return pickDefined<StrategyColumnRow>([
+    ['title', updates.title],
+    ['sort_order', updates.order],
+  ])
+}
+
 // --- strategy cards --------------------------------------------------------
 
 export function fromStrategyCardRow(row: StrategyCardRow): StrategyCard {
   return {
     id: row.id,
     opportunityId: row.opportunity_id,
-    column: row.column_name,
+    columnId: row.column_id,
     content: row.content,
     order: row.sort_order,
   }
@@ -241,7 +270,7 @@ export function toStrategyCardInsert(card: StrategyCard) {
   return {
     id: card.id,
     opportunity_id: card.opportunityId,
-    column_name: card.column,
+    column_id: card.columnId,
     content: card.content,
     sort_order: card.order,
   }
@@ -250,7 +279,7 @@ export function toStrategyCardInsert(card: StrategyCard) {
 export function toStrategyCardUpdate(updates: Partial<StrategyCard>) {
   return pickDefined<StrategyCardRow>([
     ['opportunity_id', updates.opportunityId],
-    ['column_name', updates.column],
+    ['column_id', updates.columnId],
     ['content', updates.content],
     ['sort_order', updates.order],
   ])
@@ -272,6 +301,8 @@ export function fromTaskRow(row: TaskRow): Task {
     dueDate: dateOrEmpty(row.due_date),
     completed: row.completed,
     priority: row.priority,
+    ...(row.assignee ? { assignee: row.assignee } : {}),
+    ...(row.archived_at ? { archivedAt: isoOrEmpty(row.archived_at) } : {}),
     createdAt: isoOrEmpty(row.created_at),
   }
 }
@@ -286,6 +317,7 @@ export function toTaskInsert(task: Task) {
     due_date: nullIfBlank(task.dueDate),
     completed: task.completed,
     priority: task.priority,
+    assignee: task.assignee ?? null,
     created_at: task.createdAt,
   }
 }
@@ -302,5 +334,12 @@ export function toTaskUpdate(updates: Partial<Task>) {
     ['due_date', updates.dueDate === undefined ? undefined : nullIfBlank(updates.dueDate)],
     ['completed', updates.completed],
     ['priority', updates.priority],
+    // `in` rather than `=== undefined`: a caller clearing the assignee passes
+    // `{ assignee: undefined }`, which must still reach the DB as `null` —
+    // an equality check would read that identically to the key being absent.
+    ['assignee', 'assignee' in updates ? (updates.assignee ?? null) : undefined],
+    // Same `in` treatment as assignee: un-archiving passes
+    // `{ archivedAt: undefined }`, which must still reach the DB as null.
+    ['archived_at', 'archivedAt' in updates ? (updates.archivedAt ?? null) : undefined],
   ])
 }

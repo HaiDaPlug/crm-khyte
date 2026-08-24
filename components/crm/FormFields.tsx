@@ -11,13 +11,15 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Check, Plus, Sparkles } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Plus, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTranslations } from '@/lib/hooks/useTranslations'
+import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
+import { ColleagueId } from '@/lib/types'
 
 export const inputClass = cn(
-  'w-full h-10 px-3 bg-background-raised border border-border-subtle rounded-lg',
-  'text-[15px] text-foreground placeholder:text-foreground/50 outline-none',
+  'w-full h-11 px-3 bg-background-raised border border-border-subtle rounded-lg sm:h-10',
+  'text-[16px] text-foreground placeholder:text-foreground/50 outline-none sm:text-[15px]',
   // Only border-color actually changes on hover/focus. Transitioning just that
   // property (rather than every color) keeps the response crisp instead of
   // retargeting a 150ms multi-property tween on each pointer move.
@@ -50,7 +52,7 @@ export function Field({
   const { t } = useTranslations()
   return (
     <div>
-      <label htmlFor={htmlFor} className="label-mono mb-2 flex items-center gap-1 whitespace-nowrap">
+      <label htmlFor={htmlFor} className="label-mono mb-2 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 sm:flex-nowrap sm:whitespace-nowrap">
         {label}
         {required && (
           <>
@@ -60,7 +62,7 @@ export function Field({
         )}
         {/* Inherits the label's mono/uppercase/tracking, a step smaller — the
             status reads as part of the label row rather than prose beside it. */}
-        {hint && <span className="ml-auto text-[11px]">{hint}</span>}
+        {hint && <span className="ml-auto shrink-0 text-[11px]">{hint}</span>}
       </label>
       {children}
     </div>
@@ -219,7 +221,7 @@ export function ColorSlider<T extends string>({
       onKeyDown={handleKeyDown}
       className={cn(
         // A single contained pill: the thumb rides inside it, never past its edge.
-        'group relative h-10 w-full rounded-full cursor-pointer select-none touch-none overflow-hidden',
+        'group relative h-11 w-full rounded-full cursor-pointer select-none touch-none overflow-hidden sm:h-10',
         'bg-background-raised border border-border-subtle outline-none',
         'shadow-[inset_0_1px_3px_rgba(0,0,0,0.35)]',
         'hover:border-border focus-visible:border-accent/50',
@@ -286,6 +288,72 @@ export function ColorSlider<T extends string>({
           boxShadow: `0 2px 8px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.22)`,
         }}
       />
+    </div>
+  )
+}
+
+/**
+ * Who a task is assigned to — a fixed colleague roster (no real accounts
+ * yet, see lib/colleagues) plus an explicit "unassigned" pill rather than
+ * requiring a pick.
+ */
+export function AssigneePicker({
+  value,
+  onChange,
+  label,
+  unassignedLabel,
+}: {
+  value: ColleagueId | undefined
+  onChange: (next: ColleagueId | undefined) => void
+  label?: string
+  unassignedLabel: string
+}) {
+  return (
+    <div
+      role={label ? 'group' : undefined}
+      aria-label={label}
+      className="flex flex-wrap gap-1.5"
+    >
+      <button
+        type="button"
+        onClick={() => onChange(undefined)}
+        aria-pressed={value === undefined}
+        className={cn(
+          'h-8 pl-2 pr-3 rounded-lg text-[13.5px] font-medium border transition-all flex items-center gap-1.5',
+          value === undefined
+            ? 'bg-surface-raised text-foreground border-border'
+            : 'text-foreground/60 border-border-subtle hover:border-border hover:text-foreground'
+        )}
+      >
+        <span className="w-5 h-5 rounded-full border border-dashed border-current opacity-50 shrink-0" />
+        {unassignedLabel}
+      </button>
+      {COLLEAGUE_IDS.map((id) => {
+        const person = colleagues[id]
+        const active = value === id
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onChange(id)}
+            aria-pressed={active}
+            className={cn(
+              'h-8 pl-1.5 pr-3 rounded-lg text-[13.5px] font-medium border transition-all flex items-center gap-1.5',
+              active
+                ? 'bg-surface-raised text-foreground border-border'
+                : 'text-foreground/60 border-border-subtle hover:border-border hover:text-foreground'
+            )}
+          >
+            <span
+              className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-semibold text-white shrink-0"
+              style={{ background: person.color }}
+            >
+              {person.name.charAt(0)}
+            </span>
+            {person.name}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -482,7 +550,7 @@ function ComboboxImpl({
             ref={listRef}
             id={listId}
             role="listbox"
-            className="max-h-[216px] overflow-y-auto overscroll-contain p-1"
+            className="max-h-[min(216px,40dvh)] overflow-y-auto overscroll-contain p-1"
           >
             {filtered.map((o, i) => (
               <button
@@ -502,7 +570,7 @@ function ComboboxImpl({
                 className={cn(
                   // No transition: the highlight tracks the cursor and arrow
                   // keys, so any tween reads as the list lagging behind input.
-                  'w-full text-left px-2.5 py-2 rounded-md',
+                  'min-h-11 w-full touch-manipulation rounded-md px-2.5 py-2 text-left sm:min-h-0',
                   i === activeIndex && 'bg-accent/15'
                 )}
               >
@@ -521,3 +589,168 @@ function ComboboxImpl({
    re-render the comboboxes and their option lists. Callers must pass stable
    `options` / `onSelect` / `onQueryChange` references for this to bite. */
 export const Combobox = memo(ComboboxImpl)
+
+interface InlineSelectOption<T extends string> {
+  value: T
+  label: string
+}
+
+interface InlineSelectProps<T extends string> {
+  value: T
+  options: InlineSelectOption<T>[]
+  onChange: (next: T) => void
+  /** The closed-state trigger content — a stage pill, a priority dot, etc.
+   * Rendered without its own click handling; the wrapping button owns that. */
+  renderValue: (option: InlineSelectOption<T>) => ReactNode
+  'aria-label': string
+}
+
+/**
+ * A small dark popover list standing in for a native `<select>`.
+ *
+ * The platform control looks right for a form but renders its option list in
+ * the OS's own (usually light) chrome, which reads as a bug in an otherwise
+ * fully dark UI. This swaps in the same button-plus-absolute-list pattern the
+ * strategy page's opportunity picker already uses, so the open state matches
+ * the rest of the app instead of the browser.
+ */
+export function InlineSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  renderValue,
+  'aria-label': ariaLabel,
+}: InlineSelectProps<T>) {
+  const [open, setOpen] = useState(false)
+  const current = options.find((o) => o.value === value) ?? options[0]
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex items-center h-7 -mx-1 px-1 rounded-md hover:bg-surface-raised transition-colors"
+      >
+        {renderValue(current)}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div
+            role="listbox"
+            aria-label={ariaLabel}
+            className="absolute left-0 top-full z-20 mt-1.5 min-w-[160px] bg-surface-raised border border-border rounded-lg shadow-[0_12px_32px_-8px_rgba(0,0,0,0.75)] overflow-hidden py-1 animate-popover-in"
+          >
+            {options.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={o.value === value}
+                onClick={() => {
+                  onChange(o.value)
+                  setOpen(false)
+                }}
+                className={cn(
+                  'w-full flex items-center px-3 py-2 text-left text-[13.5px] transition-colors',
+                  o.value === value
+                    ? 'bg-accent-light text-foreground'
+                    : 'text-foreground/80 hover:bg-surface hover:text-foreground'
+                )}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** Today as `YYYY-MM-DD`, read in the viewer's own timezone. */
+function todayISO(): string {
+  const now = new Date()
+  return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()))
+    .toISOString()
+    .slice(0, 10)
+}
+
+/**
+ * Steps a `YYYY-MM-DD` string by whole days.
+ *
+ * Deliberately arithmetic on the date parts in UTC rather than
+ * `new Date(value)` + `setDate`: a local-midnight Date converted back through
+ * `toISOString()` lands on the previous day for any timezone east of UTC, so
+ * a nudge in Stockholm would silently subtract a day.
+ */
+function shiftISODate(value: string, days: number): string {
+  const [y, m, d] = (value || todayISO()).split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d))
+  dt.setUTCDate(dt.getUTCDate() + days)
+  return dt.toISOString().slice(0, 10)
+}
+
+/**
+ * A date field with the platform calendar plus a day nudge, so the common case
+ * — push it out one more day — costs a click instead of a trip through the
+ * picker.
+ */
+export function DateStepper({
+  value,
+  onChange,
+  className,
+  inputClassName,
+  id,
+}: {
+  value: string
+  onChange: (value: string) => void
+  className?: string
+  /** Lets a host match its own field styling; the nudge stays constant. */
+  inputClassName?: string
+  id?: string
+}) {
+  const { t } = useTranslations()
+
+  return (
+    <div className={cn('flex items-stretch gap-1', className)}>
+      <input
+        id={id}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={cn(
+          'h-11 min-w-0 flex-1 px-2.5 rounded-lg bg-background-raised border border-border-subtle sm:h-8',
+          'text-[13.5px] font-mono tabular-nums text-foreground/85',
+          'outline-none focus:border-accent/50 transition-[border-color] duration-100',
+          inputClassName
+        )}
+      />
+      <div className="flex flex-col shrink-0">
+        {[
+          { dir: 1, Icon: ChevronUp, label: t.tasks.nextDay },
+          { dir: -1, Icon: ChevronDown, label: t.tasks.previousDay },
+        ].map(({ dir, Icon, label }) => (
+          <button
+            key={dir}
+            type="button"
+            aria-label={label}
+            onClick={() => onChange(shiftISODate(value, dir))}
+            className={cn(
+              'flex h-1/2 w-7 items-center justify-center border border-border-subtle',
+              'text-foreground/50 hover:text-foreground hover:bg-surface-raised',
+              'transition-colors duration-100',
+              dir === 1 ? 'rounded-t-md' : 'rounded-b-md border-t-0'
+            )}
+          >
+            <Icon size={11} />
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}

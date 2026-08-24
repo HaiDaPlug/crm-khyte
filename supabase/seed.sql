@@ -74,19 +74,31 @@ insert into notes (id, company_id, opportunity_id, raw, created_at, ai_extracted
   )
 on conflict (id) do nothing;
 
--- Strategy cards (all for the Nordvik Capital opportunity) -------------------
+-- Strategy headlines and cards (all for the Nordvik Capital opportunity) -----
+--
+-- Headlines are per-opportunity free text, so these are just this deal's
+-- lanes. Another deal starts with an empty board.
 
-insert into strategy_cards (id, opportunity_id, column_name, content, sort_order) values
-  ('55555555-5555-4555-8555-000000000001', '33333333-3333-4333-8333-000000000002', 'Pain Points',  'Manual vendor evaluation process taking 2 months',   0),
-  ('55555555-5555-4555-8555-000000000002', '33333333-3333-4333-8333-000000000002', 'Pain Points',  'No unified view of spend across subsidiaries',      1),
-  ('55555555-5555-4555-8555-000000000003', '33333333-3333-4333-8333-000000000002', 'Stakeholders', 'Marcus Lindqvist — CFO (decision maker)',           0),
-  ('55555555-5555-4555-8555-000000000004', '33333333-3333-4333-8333-000000000002', 'Stakeholders', 'Anna Berg — VP Ops (influencer, daily user)',       1),
-  ('55555555-5555-4555-8555-000000000005', '33333333-3333-4333-8333-000000000002', 'Objections',   'Price is 20% above current solution',               0),
-  ('55555555-5555-4555-8555-000000000006', '33333333-3333-4333-8333-000000000002', 'Objections',   'Concerned about migration timeline',                1),
-  ('55555555-5555-4555-8555-000000000007', '33333333-3333-4333-8333-000000000002', 'Offer Angle',  'ROI on ops time savings: 40hrs/month recovered',    0),
-  ('55555555-5555-4555-8555-000000000008', '33333333-3333-4333-8333-000000000002', 'Proof',        'Fenwick case study — similar size, same industry',  0),
-  ('55555555-5555-4555-8555-000000000009', '33333333-3333-4333-8333-000000000002', 'Next Actions', 'Send SOC2 certificate and data portability doc',    0),
-  ('55555555-5555-4555-8555-00000000000a', '33333333-3333-4333-8333-000000000002', 'Next Actions', 'Book discovery call for Thursday',                  1)
+insert into strategy_columns (id, opportunity_id, title, sort_order) values
+  ('77777777-7777-4777-8777-000000000001', '33333333-3333-4333-8333-000000000002', 'Pain Points',  0),
+  ('77777777-7777-4777-8777-000000000002', '33333333-3333-4333-8333-000000000002', 'Stakeholders', 1),
+  ('77777777-7777-4777-8777-000000000003', '33333333-3333-4333-8333-000000000002', 'Objections',   2),
+  ('77777777-7777-4777-8777-000000000004', '33333333-3333-4333-8333-000000000002', 'Offer Angle',  3),
+  ('77777777-7777-4777-8777-000000000005', '33333333-3333-4333-8333-000000000002', 'Proof',        4),
+  ('77777777-7777-4777-8777-000000000006', '33333333-3333-4333-8333-000000000002', 'Next Actions', 5)
+on conflict (id) do nothing;
+
+insert into strategy_cards (id, opportunity_id, column_id, content, sort_order) values
+  ('55555555-5555-4555-8555-000000000001', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000001', 'Manual vendor evaluation process taking 2 months',   0),
+  ('55555555-5555-4555-8555-000000000002', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000001', 'No unified view of spend across subsidiaries',      1),
+  ('55555555-5555-4555-8555-000000000003', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000002', 'Marcus Lindqvist — CFO (decision maker)',           0),
+  ('55555555-5555-4555-8555-000000000004', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000002', 'Anna Berg — VP Ops (influencer, daily user)',       1),
+  ('55555555-5555-4555-8555-000000000005', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000003', 'Price is 20% above current solution',               0),
+  ('55555555-5555-4555-8555-000000000006', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000003', 'Concerned about migration timeline',                1),
+  ('55555555-5555-4555-8555-000000000007', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000004', 'ROI on ops time savings: 40hrs/month recovered',    0),
+  ('55555555-5555-4555-8555-000000000008', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000005', 'Fenwick case study — similar size, same industry',  0),
+  ('55555555-5555-4555-8555-000000000009', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000006', 'Send SOC2 certificate and data portability doc',    0),
+  ('55555555-5555-4555-8555-00000000000a', '33333333-3333-4333-8333-000000000002', '77777777-7777-4777-8777-000000000006', 'Book discovery call for Thursday',                  1)
 on conflict (id) do nothing;
 
 -- Tasks ---------------------------------------------------------------------

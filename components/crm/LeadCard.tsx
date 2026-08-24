@@ -38,34 +38,39 @@ export function LeadCard({ opportunity, company, contact, onClick }: LeadCardPro
       {...listeners}
       onClick={onClick}
       className={cn(
-        'bg-surface border border-border rounded-lg p-3 cursor-pointer',
-        'hover:border-border-accent hover:shadow-[0_0_16px_-4px_var(--accent-glow)] transition-all duration-150',
+        // Same card definition as the leads board — the column well below is
+        // darkened to match that page's background so this reads as an object
+        // on the board rather than a block of text printed on it.
+        'min-h-11 touch-manipulation select-none rounded-xl border border-border bg-surface p-3.5 cursor-pointer [-webkit-touch-callout:none]',
+        'card-glow transition-all duration-150 active:border-border-accent focus-visible:border-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:hover:border-border-accent',
         isDragging && 'opacity-30 shadow-lg border-accent scale-[1.02]'
       )}
     >
-      <div className="flex items-start justify-between gap-2 mb-1.5">
-        <p className="text-[13px] font-semibold text-foreground leading-snug">{company.name}</p>
-        <span className="w-2 h-2 rounded-full mt-1 shrink-0" style={{ background: priorityDot[opportunity.priority] }} />
+      {/* Identity — name and contact are one unit, so they sit tight together
+          and the grouping is carried by the larger gaps below. */}
+      <div className="flex items-start justify-between gap-2.5">
+        <p className="text-[15px] font-semibold text-foreground leading-snug">{company.name}</p>
+        {/* Optically centred on the first line of a 15px/1.375 title. */}
+        <span className="w-2 h-2 rounded-full mt-[6px] shrink-0" style={{ background: priorityDot[opportunity.priority] }} />
       </div>
 
-      <p className="text-[11px] text-muted mb-2">{contact.name} · {contact.role}</p>
+      <p className="mt-1 text-[13.5px] text-foreground/60 leading-snug">{contact.name} · {contact.role}</p>
 
       {opportunity.dealValue && (
-        <div className="flex items-center gap-1 mb-2">
-          <span className="text-[12px] font-medium text-muted-foreground tabular-nums">
-            {fmt.currency(opportunity.dealValue)}
-          </span>
-        </div>
+        <p className="mt-3 text-[15px] font-semibold text-foreground tabular-nums leading-none">
+          {fmt.currency(opportunity.dealValue)}
+        </p>
       )}
 
-      <p className="text-[11px] text-muted line-clamp-2 leading-relaxed">
+      {/* Brighter than the contact line: this is the actionable half of the card. */}
+      <p className="mt-2.5 text-[13.5px] text-foreground/70 line-clamp-2 leading-[1.45]">
         {opportunity.nextStep}
       </p>
 
       {opportunity.tags.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1">
+        <div className="mt-3 flex flex-wrap gap-1.5">
           {opportunity.tags.slice(0, 2).map(tag => (
-            <span key={tag} className="text-[9px] font-mono px-1.5 py-0.5 bg-surface-raised text-muted border border-border-subtle rounded-md">
+            <span key={tag} className="text-[12.5px] font-mono px-2 py-0.5 bg-surface-raised text-foreground/80 border border-border-subtle rounded-md">
               {tag}
             </span>
           ))}

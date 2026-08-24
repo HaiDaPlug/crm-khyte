@@ -22,7 +22,7 @@ import { useCRMStore } from '@/lib/store'
 import khyteLogo from '@/public/khyte-logo-text-png.png'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
-const navItems = [
+export const navItems = [
   { href: '/dashboard', label: 'dashboard', icon: LayoutDashboard },
   { href: '/leads', label: 'leads', icon: Table2 },
   { href: '/pipeline', label: 'pipeline', icon: Kanban },
@@ -45,7 +45,7 @@ export function AppSidebar() {
     <aside
       data-theme="dark"
       className={cn(
-        'fixed top-0 left-0 h-screen grain-nav flex flex-col z-30',
+        'fixed top-0 left-0 h-dvh grain-nav hidden lg:flex flex-col z-30',
         'transition-[width] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
         collapsed ? 'w-16' : 'w-[232px]'
       )}
@@ -82,6 +82,7 @@ export function AppSidebar() {
                 key={href}
                 href={href}
                 title={collapsed ? translatedLabel : undefined}
+                aria-current={isActive ? 'page' : undefined}
                 className={cn(
                   'flex items-center gap-2.5 rounded-lg text-[15px] font-medium transition-all duration-150 relative group',
                   collapsed ? 'px-0 py-2.5 justify-center' : 'px-3 py-2',
@@ -134,6 +135,7 @@ export function AppSidebar() {
       {/* Collapse toggle */}
       <button
         onClick={toggleSidebar}
+        aria-expanded={!collapsed}
         className={cn(
           'mx-2 mb-2 flex items-center gap-2 rounded-lg text-[14px] text-muted hover:text-foreground hover:bg-surface-raised transition-all',
           collapsed ? 'px-0 py-2 justify-center' : 'px-3 py-2'

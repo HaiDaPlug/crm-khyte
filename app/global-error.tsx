@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { AlertTriangle, RotateCcw } from 'lucide-react'
+import { Button } from '@/components/crm/Button'
 import './globals.css'
 import { getDictionary } from '@/lib/i18n/translations'
 import type { AppLanguage } from '@/lib/types'
@@ -68,8 +69,8 @@ export default function GlobalError({
       <body className="h-full antialiased">
         <title>{t.pageTitle}</title>
 
-        <main className="min-h-full flex items-center justify-center px-6 py-12">
-          <div className="grain-modal w-full max-w-[460px] px-7 py-7">
+        <main className="flex min-h-dvh items-center justify-center pb-[calc(2rem+env(safe-area-inset-bottom))] pt-[calc(2rem+env(safe-area-inset-top))] [padding-left:max(1rem,env(safe-area-inset-left))] [padding-right:max(1rem,env(safe-area-inset-right))] sm:py-12 sm:[padding-left:max(1.5rem,env(safe-area-inset-left))] sm:[padding-right:max(1.5rem,env(safe-area-inset-right))]">
+          <div className="grain-modal w-full max-w-[460px] px-5 py-6 sm:px-7 sm:py-7">
             <div className="w-10 h-10 rounded-lg bg-danger-muted flex items-center justify-center mb-4">
               <AlertTriangle size={19} className="text-danger" />
             </div>
@@ -89,23 +90,19 @@ export default function GlobalError({
             </p>
 
             {error.digest && (
-              <p className="mt-4 text-[12px] font-mono text-muted">
+              <p className="mt-4 break-all text-[12px] font-mono text-muted">
                 {t.reference} <span className="text-foreground/80">{error.digest}</span>
               </p>
             )}
 
-            <div className="flex items-center gap-2 mt-6">
-              <button
-                type="button"
-                onClick={retry}
-                className="flex items-center gap-1.5 h-9 px-4 rounded-lg text-[14px] font-medium bg-accent text-background hover:bg-accent-hover transition-colors"
-              >
+            <div className="mt-6 flex flex-wrap items-center gap-2">
+              <Button onClick={retry}>
                 <RotateCcw size={14} />
                 {t.retry}
-              </button>
+              </Button>
               <a
                 href="/dashboard"
-                className="h-9 px-3.5 flex items-center rounded-lg text-[14px] font-medium text-foreground hover:bg-surface-raised transition-colors"
+                className="flex min-h-11 items-center rounded-lg px-3.5 text-[14px] font-medium text-foreground transition-colors hover:bg-surface-raised sm:min-h-9"
               >
                 {t.dashboard}
               </a>

@@ -3,7 +3,6 @@ import type {
   CurrencyCode,
   Priority,
   Stage,
-  StrategyColumn,
 } from '@/lib/types'
 
 const sv = {
@@ -19,6 +18,7 @@ const sv = {
     autofilled: 'Automatiskt ifyllt',
     willBeCreated: 'Kommer att skapas',
     search: 'Sök...',
+    clearFilters: 'Rensa filter',
   },
   nav: {
     dashboard: 'Översikt',
@@ -35,6 +35,10 @@ const sv = {
     darkMode: 'Mörkt läge',
     collapse: 'Fäll ihop',
     workspace: 'Arbetsyta',
+    more: 'Mer',
+    menu: 'Meny',
+    closeMenu: 'Stäng menyn',
+    primaryNavigation: 'Huvudnavigering',
   },
   metadata: {
     description: 'Ett lugnt, skarpt och förstklassigt CRM för operatörer',
@@ -54,11 +58,13 @@ const sv = {
     regionalFormat: 'Regionalt format',
     regionalFormatDescription: 'Styr hur datum, siffror och valuta skrivs.',
     currency: 'Valuta',
-    currencyDescription: 'Befintliga belopp får en ny valutaetikett – de konverteras inte.',
+    currencyDescription: 'Belopp lagras i SEK och räknas om till vald valuta.',
     dateFormat: 'Datumformat',
     dateFormatDescription: 'Åsidosätter det regionala standardformatet.',
     compactNumbers: 'Kompakta tal',
     compactNumbersDescription: 'Visa stora belopp som 517 tn i stället för hela talet.',
+    sounds: 'Ljud',
+    soundsDescription: 'Spela upp en signal när du bockar av en uppgift.',
     preview: 'Förhandsvisning',
     dealValue: 'Affärsvärde',
     fullFigure: 'Hela beloppet',
@@ -125,7 +131,15 @@ const sv = {
     nextStep: 'Nästa steg',
     followUp: 'Uppföljning',
     priority: 'Prioritet',
-    empty: 'Det finns inga strategikort ännu – lägg till några nedan.',
+    addHeadline: 'Lägg till rubrik',
+    headlinePlaceholder: 'Namnge rubriken...',
+    renameHeadline: 'Byt namn på rubrik',
+    deleteHeadline: 'Ta bort rubrik',
+    confirmDelete: 'Ta bort?',
+    emptyBoardTitle: 'Inga rubriker ännu',
+    emptyBoardBody:
+      'Bygg tavlan för den här affären. Lägg till rubrikerna som betyder något här – utmaningar, intressenter, vad som helst.',
+    addFirstHeadline: 'Lägg till första rubriken',
   },
   companies: {
     title: 'Företag',
@@ -141,6 +155,7 @@ const sv = {
     noOpportunities: 'Inga aktiva affärsmöjligheter.',
     followUp: 'Uppföljning:',
     deals: 'Affärer:',
+    empty: 'Inga företag matchar den här sökningen.',
   },
   contacts: {
     title: 'Kontakter',
@@ -153,6 +168,7 @@ const sv = {
     relatedOpportunities: 'Relaterade affärsmöjligheter',
     noOpportunities: 'Inga affärsmöjligheter är kopplade.',
     deals: (count: number) => `${count} ${count === 1 ? 'affär' : 'affärer'}`,
+    empty: 'Inga kontakter matchar den här sökningen.',
   },
   tasks: {
     title: 'Uppgifter',
@@ -163,6 +179,21 @@ const sv = {
     today: 'I dag',
     upcoming: 'Kommande',
     completed: 'Slutförda',
+    onPace: 'I tid',
+    noTasks: 'Inga uppgifter',
+    descriptionPlaceholder: 'Lägg till en beskrivning …',
+    archive: 'Arkivera',
+    remove: 'Ta bort',
+    removeTitle: 'Ta bort uppgiften?',
+    removeDescription: 'Uppgiften tas bort permanent och går inte att återställa.',
+    clearCompleted: 'Rensa',
+    nextDay: 'Nästa dag',
+    previousDay: 'Föregående dag',
+    archiveLabel: 'Arkiv',
+    restore: 'Återställ',
+    archiveEmpty: 'Arkivet är tomt',
+    markComplete: (title: string) => `Markera som slutförd: ${title}`,
+    markIncomplete: (title: string) => `Markera som aktiv: ${title}`,
   },
   crm: {
     modal: {
@@ -221,6 +252,16 @@ const sv = {
       discard: 'Kasta lead',
       searchOrCreate: 'Sök eller skapa...',
     },
+    taskForm: {
+      title: 'Ny uppgift',
+      subtitle: 'Vad behöver göras, och av vem.',
+      titleLabel: 'Titel',
+      description: 'Beskrivning',
+      priority: 'Prioritet',
+      dueDate: 'Förfallodatum',
+      assignee: 'Tilldelad',
+      unassigned: 'Ingen',
+    },
     table: {
       company: 'Företag',
       contact: 'Kontakt',
@@ -245,6 +286,7 @@ const sv = {
       followUp: 'Uppföljning',
       nextStep: 'Nästa steg',
       tags: 'Taggar',
+      tagsPlaceholder: 'företag, hög prioritet',
       notes: 'Anteckningar',
       addNote: 'Lägg till anteckning',
       saveHint: '⌘↵ spara · esc avbryt',
@@ -252,6 +294,8 @@ const sv = {
       discardTitle: 'Kasta ändringarna?',
       discardDescription: 'Dina ändringar i anteckningen har inte sparats. De går förlorade om du stänger redigeraren.',
       discard: 'Kasta',
+      nextStepPlaceholder: 'Vad händer härnäst?',
+      nextStepLogged: (text: string) => `Nästa steg: ${text}`,
     },
     filter: {
       filter: 'Filter',
@@ -261,7 +305,6 @@ const sv = {
     },
     board: {
       dropHere: 'Släpp här',
-      empty: 'Tomt',
       typeAndEnter: 'Skriv och tryck på Enter...',
     },
     view: {
@@ -316,14 +359,6 @@ const sv = {
     high: 'Hög',
     critical: 'Kritisk',
   } satisfies Record<Priority, string>,
-  strategyColumns: {
-    'Pain Points': 'Utmaningar',
-    Stakeholders: 'Intressenter',
-    Objections: 'Invändningar',
-    'Offer Angle': 'Erbjudandevinkel',
-    Proof: 'Bevis',
-    'Next Actions': 'Nästa åtgärder',
-  } satisfies Record<StrategyColumn, string>,
 }
 
 export type Dictionary = typeof sv
@@ -333,13 +368,14 @@ const en: Dictionary = {
   common: {
     cancel: 'Cancel', save: 'Save', add: 'Add', edit: 'Edit', dismiss: 'Dismiss',
     keepEditing: 'Keep editing', required: '(required)', autofilled: 'Autofilled',
-    willBeCreated: 'Will be created', search: 'Search...',
+    willBeCreated: 'Will be created', search: 'Search...', clearFilters: 'Clear filters',
   },
   nav: {
     dashboard: 'Dashboard', leads: 'Leads', pipeline: 'Pipeline', strategy: 'Strategy',
     companies: 'Companies', contacts: 'Contacts', tasks: 'Tasks', settings: 'Settings',
     switchToLight: 'Switch to light mode', switchToDark: 'Switch to dark mode',
     lightMode: 'Light mode', darkMode: 'Dark mode', collapse: 'Collapse', workspace: 'Workspace',
+    more: 'More', menu: 'Menu', closeMenu: 'Close menu', primaryNavigation: 'Primary navigation',
   },
   metadata: { description: 'Calm, sharp, premium CRM for operators' },
   settings: {
@@ -349,9 +385,10 @@ const en: Dictionary = {
     languageAndRegion: 'Language & Region', interfaceLanguage: 'Interface language',
     interfaceLanguageDescription: 'Controls the language of app text and controls.',
     regionalFormat: 'Regional format', regionalFormatDescription: 'Sets how dates, numbers and currency are written.',
-    currency: 'Currency', currencyDescription: 'Relabels existing amounts — it does not convert them.',
+    currency: 'Currency', currencyDescription: 'Amounts are stored in SEK and converted to the selected currency.',
     dateFormat: 'Date format', dateFormatDescription: 'Overrides the regional default.',
     compactNumbers: 'Compact numbers', compactNumbersDescription: 'Show large sums as 517K instead of the full figure.',
+    sounds: 'Sounds', soundsDescription: 'Play a chime when you check a task off.',
     preview: 'Preview', dealValue: 'Deal value', fullFigure: 'Full figure', followUpDate: 'Follow-up date',
     dateFormats: { locale: 'Match region', iso: 'ISO', us: 'US', eu: 'European' },
     currencyNames: { SEK: 'Swedish Krona', EUR: 'Euro', USD: 'US Dollar', GBP: 'British Pound' },
@@ -380,24 +417,37 @@ const en: Dictionary = {
   },
   strategy: {
     title: 'Strategy', dealStrategy: 'Deal Strategy', nextStep: 'Next Step', followUp: 'Follow-up',
-    priority: 'Priority', empty: 'No strategy cards yet — add some below.',
+    priority: 'Priority',
+    addHeadline: 'Add headline', headlinePlaceholder: 'Name this headline...',
+    renameHeadline: 'Rename headline', deleteHeadline: 'Delete headline', confirmDelete: 'Delete?',
+    emptyBoardTitle: 'No headlines yet',
+    emptyBoardBody:
+      'Build the board for this deal. Add the headlines that matter here — pain points, stakeholders, whatever it takes.',
+    addFirstHeadline: 'Add the first headline',
   },
   companies: {
     title: 'Companies', tracked: (count) => `${count} companies tracked`, filter: 'Filter companies...',
     newCompany: 'New Company', industry: 'Industry', size: 'Size', location: 'Location', contacts: 'Contacts',
     opportunities: 'Opportunities', noContacts: 'No contacts linked.', noOpportunities: 'No active opportunities.',
-    followUp: 'Follow-up:', deals: 'Deals:',
+    followUp: 'Follow-up:', deals: 'Deals:', empty: 'No companies match this search.',
   },
   contacts: {
     title: 'Contacts', count: (count) => `${count} contacts`, filter: 'Filter contacts...', newContact: 'New Contact',
     contactInfo: 'Contact Info', linkedInProfile: 'LinkedIn Profile', company: 'Company',
     relatedOpportunities: 'Related Opportunities', noOpportunities: 'No opportunities linked.',
-    deals: (count) => `${count} deal${count === 1 ? '' : 's'}`,
+    deals: (count) => `${count} deal${count === 1 ? '' : 's'}`, empty: 'No contacts match this search.',
   },
   tasks: {
     title: 'Tasks', summary: (active, completed) => `${active} active · ${completed} completed`,
     addTask: 'Add Task', placeholder: 'What needs to be done?', overdue: 'Overdue', today: 'Today',
-    upcoming: 'Upcoming', completed: 'Completed',
+    upcoming: 'Upcoming', completed: 'Completed', onPace: 'On pace', noTasks: 'No tasks',
+    descriptionPlaceholder: 'Add a description…',
+    archive: 'Archive', remove: 'Delete', removeTitle: 'Delete this task?',
+    removeDescription: 'The task is removed permanently and cannot be restored.',
+    clearCompleted: 'Clear', nextDay: 'Next day', previousDay: 'Previous day',
+    archiveLabel: 'Archive', restore: 'Restore', archiveEmpty: 'The archive is empty',
+    markComplete: (title) => `Mark complete: ${title}`,
+    markIncomplete: (title) => `Mark active: ${title}`,
   },
   crm: {
     modal: { closeDialog: 'Close dialog', closeDetails: 'Close details' },
@@ -421,6 +471,11 @@ const en: Dictionary = {
       discardTitle: 'Discard this lead?', discardDescription: "Everything you've entered here will be lost. Nothing has been saved yet.",
       discard: 'Discard lead', searchOrCreate: 'Search or create...',
     },
+    taskForm: {
+      title: 'New Task', subtitle: 'What needs to get done, and by whom.',
+      titleLabel: 'Title', description: 'Description', priority: 'Priority', dueDate: 'Due date',
+      assignee: 'Assignee', unassigned: 'Unassigned',
+    },
     table: {
       company: 'Company', contact: 'Contact', stage: 'Stage', pipeline: 'Pipeline', onBoard: 'On board', priority: 'Priority',
       dealValue: 'Deal Value', lastTouch: 'Last Touch', nextStep: 'Next Step', followUp: 'Follow-up', tags: 'Tags',
@@ -428,13 +483,16 @@ const en: Dictionary = {
     },
     detail: {
       primaryContact: 'Primary Contact', openLinkedIn: (name) => `Open ${name} on LinkedIn`, deal: 'Deal', stage: 'Stage',
-      priority: 'Priority', dealValue: 'Deal Value', followUp: 'Follow-up', nextStep: 'Next Step', tags: 'Tags', notes: 'Notes',
+      priority: 'Priority', dealValue: 'Deal Value', followUp: 'Follow-up', nextStep: 'Next Step', tags: 'Tags',
+      tagsPlaceholder: 'enterprise, high-intent', notes: 'Notes',
       addNote: 'Add note', saveHint: '⌘↵ save · esc cancel', lastInteraction: 'Last interaction',
       discardTitle: 'Discard changes?', discardDescription: "Your edits to this note haven't been saved. Closing the editor will lose them.",
       discard: 'Discard',
+      nextStepPlaceholder: "What's next?",
+      nextStepLogged: (text: string) => `Next step: ${text}`,
     },
     filter: { filter: 'Filter', clearAll: 'Clear all', stage: 'Stage', priority: 'Priority' },
-    board: { dropHere: 'Drop here', empty: 'Empty', typeAndEnter: 'Type and press Enter...' },
+    board: { dropHere: 'Drop here', typeAndEnter: 'Type and press Enter...' },
     view: { table: 'Table', board: 'Board' },
     notes: { empty: 'No notes yet.' },
     capture: {
@@ -458,10 +516,6 @@ const en: Dictionary = {
     'Proposal Sent': 'Proposal Sent', Negotiation: 'Negotiation', Won: 'Won', Lost: 'Lost',
   },
   priorities: { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' },
-  strategyColumns: {
-    'Pain Points': 'Pain Points', Stakeholders: 'Stakeholders', Objections: 'Objections',
-    'Offer Angle': 'Offer Angle', Proof: 'Proof', 'Next Actions': 'Next Actions',
-  },
 }
 
 export const dictionaries: Record<AppLanguage, Dictionary> = { sv, en }

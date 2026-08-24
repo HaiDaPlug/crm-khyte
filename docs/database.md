@@ -167,7 +167,7 @@ the lighter-weight option if you do not need `link`.
 
 ```
 app/layout.tsx           server component; one loadSnapshot() per page load
-  └─ lib/db/queries.ts   reads all six tables, maps rows → domain types
+  └─ lib/db/queries.ts   reads all seven tables, maps rows → domain types
        └─ lib/supabase/server.ts   secret-key client, server-only
 
 lib/store/provider.tsx   builds one store per request, holding the snapshot
@@ -193,8 +193,8 @@ then fire the matching Server Action. Nothing waits on the network, so drag and
 drop stays instant.
 
 **Names** differ by layer on purpose. Postgres columns are snake_case, and two
-of them are renamed to dodge reserved words — `strategy_cards.column_name` and
-`strategy_cards.sort_order` map back to `column` and `order`. All of that
+of them are renamed to dodge reserved words — `strategy_cards.column_id` and
+`strategy_cards.sort_order` map back to `columnId` and `order`. All of that
 translation lives in `lib/db/mappers.ts`; nothing outside `lib/db` sees a row.
 
 **IDs** are generated on the client with `crypto.randomUUID()` and sent to the
@@ -218,7 +218,7 @@ When auth lands:
 2. Set `owner_id` on insert in `app/actions/crm.ts`.
 3. Claim the existing rows:
    `update companies set owner_id = '<your-user-uuid>' where owner_id is null;`
-   and the same for the other five tables.
+   and the same for the other six tables.
 4. ~~Move the Zustand store behind a per-request React context.~~ Done
    2026-08-21 — `lib/store/provider.tsx` builds one store per request. It was a
    module singleton shared across concurrent server requests, which was harmless
