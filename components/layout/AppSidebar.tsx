@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard,
+  Sparkles,
   Table2,
   Kanban,
   Target,
@@ -24,7 +25,8 @@ import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export const navItems = [
   { href: '/dashboard', label: 'dashboard', icon: LayoutDashboard },
-  { href: '/leads', label: 'leads', icon: Table2 },
+  { href: '/leads', label: 'leads', icon: Sparkles },
+  { href: '/prospects', label: 'prospects', icon: Table2 },
   { href: '/pipeline', label: 'pipeline', icon: Kanban },
   { href: '/strategy', label: 'strategy', icon: Target },
   { href: '/companies', label: 'companies', icon: Building2 },

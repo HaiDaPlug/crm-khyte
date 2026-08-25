@@ -1,6 +1,7 @@
 import type {
   Company,
   Contact,
+  Lead,
   Note,
   Opportunity,
   StrategyCard,
@@ -10,6 +11,7 @@ import type {
 import type {
   CompanyRow,
   ContactRow,
+  LeadRow,
   NoteRow,
   OpportunityRow,
   StrategyCardRow,
@@ -144,6 +146,7 @@ export function fromOpportunityRow(row: OpportunityRow): Opportunity {
     lastInteraction: dateOrEmpty(row.last_interaction),
     tags: row.tags ?? [],
     notes: row.notes,
+    ...(row.followed_up_by ? { followedUpBy: row.followed_up_by } : {}),
   }
 }
 
@@ -161,6 +164,7 @@ export function toOpportunityInsert(opportunity: Opportunity) {
     last_interaction: nullIfBlank(opportunity.lastInteraction),
     tags: opportunity.tags,
     notes: opportunity.notes,
+    followed_up_by: opportunity.followedUpBy ?? null,
   }
 }
 
@@ -182,6 +186,49 @@ export function toOpportunityUpdate(updates: Partial<Opportunity>) {
       updates.lastInteraction === undefined ? undefined : nullIfBlank(updates.lastInteraction),
     ],
     ['tags', updates.tags],
+    ['notes', updates.notes],
+    ['followed_up_by', updates.followedUpBy === undefined ? undefined : (updates.followedUpBy ?? null)],
+  ])
+}
+
+// --- leads -------------------------------------------------------------
+
+export function fromLeadRow(row: LeadRow): Lead {
+  return {
+    id: row.id,
+    companyName: row.company_name,
+    ...(row.contact_name ? { contactName: row.contact_name } : {}),
+    ...(row.connection ? { connection: row.connection } : {}),
+    ...(row.source ? { source: row.source } : {}),
+    ...(row.followed_up_by ? { followedUpBy: row.followed_up_by } : {}),
+    priority: row.priority,
+    notes: row.notes,
+    createdAt: isoOrEmpty(row.created_at),
+  }
+}
+
+export function toLeadInsert(lead: Lead) {
+  return {
+    id: lead.id,
+    company_name: lead.companyName,
+    contact_name: nullIfBlank(lead.contactName),
+    connection: nullIfBlank(lead.connection),
+    source: nullIfBlank(lead.source),
+    followed_up_by: lead.followedUpBy ?? null,
+    priority: lead.priority,
+    notes: lead.notes,
+    created_at: lead.createdAt,
+  }
+}
+
+export function toLeadUpdate(updates: Partial<Lead>) {
+  return pickDefined<LeadRow>([
+    ['company_name', updates.companyName],
+    ['contact_name', updates.contactName === undefined ? undefined : nullIfBlank(updates.contactName)],
+    ['connection', updates.connection === undefined ? undefined : nullIfBlank(updates.connection)],
+    ['source', updates.source === undefined ? undefined : nullIfBlank(updates.source)],
+    ['followed_up_by', updates.followedUpBy === undefined ? undefined : (updates.followedUpBy ?? null)],
+    ['priority', updates.priority],
     ['notes', updates.notes],
   ])
 }

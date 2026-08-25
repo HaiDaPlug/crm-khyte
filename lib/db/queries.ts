@@ -9,12 +9,14 @@ import { isClockSkew } from './retry'
 import { mockCompanies } from '@/lib/mock-data/companies'
 import { mockContacts } from '@/lib/mock-data/contacts'
 import { mockOpportunities } from '@/lib/mock-data/opportunities'
+import { mockLeads } from '@/lib/mock-data/leads'
 import { mockNotes } from '@/lib/mock-data/notes'
 import { mockStrategyCards, mockStrategyColumns } from '@/lib/mock-data/strategy'
 import { mockTasks } from '@/lib/mock-data/tasks'
 import {
   fromCompanyRow,
   fromContactRow,
+  fromLeadRow,
   fromNoteRow,
   fromOpportunityRow,
   fromStrategyCardRow,
@@ -24,6 +26,7 @@ import {
 import type {
   CompanyRow,
   ContactRow,
+  LeadRow,
   NoteRow,
   OpportunityRow,
   StrategyCardRow,
@@ -76,6 +79,7 @@ async function readSnapshot(): Promise<CRMSnapshot> {
     companies,
     contacts,
     opportunities,
+    leads,
     notes,
     strategyColumns,
     strategyCards,
@@ -85,6 +89,7 @@ async function readSnapshot(): Promise<CRMSnapshot> {
       sql`select * from companies order by created_at`,
       sql`select * from contacts order by created_at`,
       sql`select * from opportunities order by created_at desc`,
+      sql`select * from leads order by created_at desc`,
       sql`select * from notes order by created_at desc`,
       sql`select * from strategy_columns order by opportunity_id, sort_order`,
       sql`select * from strategy_cards order by sort_order`,
@@ -96,6 +101,7 @@ async function readSnapshot(): Promise<CRMSnapshot> {
     companies: (companies as unknown as CompanyRow[]).map(fromCompanyRow),
     contacts: (contacts as unknown as ContactRow[]).map(fromContactRow),
     opportunities: (opportunities as unknown as OpportunityRow[]).map(fromOpportunityRow),
+    leads: (leads as unknown as LeadRow[]).map(fromLeadRow),
     notes: (notes as unknown as NoteRow[]).map(fromNoteRow),
     strategyColumns: (strategyColumns as unknown as StrategyColumnRow[]).map(
       fromStrategyColumnRow
@@ -136,6 +142,7 @@ function demoSnapshot(): CRMSnapshot {
     companies: mockCompanies,
     contacts: mockContacts,
     opportunities: mockOpportunities,
+    leads: mockLeads,
     notes: mockNotes,
     strategyColumns: mockStrategyColumns,
     strategyCards: mockStrategyCards,
@@ -148,6 +155,7 @@ function demoSnapshot(): CRMSnapshot {
 export type {
   CompanyRow,
   ContactRow,
+  LeadRow,
   NoteRow,
   OpportunityRow,
   StrategyCardRow,

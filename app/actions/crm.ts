@@ -3,6 +3,7 @@
 import type {
   Company,
   Contact,
+  Lead,
   Note,
   Opportunity,
   StrategyCard,
@@ -16,6 +17,8 @@ import {
   toCompanyUpdate,
   toContactInsert,
   toContactUpdate,
+  toLeadInsert,
+  toLeadUpdate,
   toNoteInsert,
   toNoteUpdate,
   toOpportunityInsert,
@@ -151,6 +154,34 @@ export async function updateOpportunity(
   )
 }
 
+// --- leads -------------------------------------------------------------
+
+export async function createLead(lead: Lead): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  return run('leads', async () =>
+    getSupabase().from('leads').insert(toLeadInsert(lead))
+  )
+}
+
+export async function updateLead(
+  id: string,
+  updates: Partial<Lead>
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  const payload = toLeadUpdate(updates)
+  if (Object.keys(payload).length === 0) return OK
+  return run('leads', async () =>
+    getSupabase().from('leads').update(payload).eq('id', id)
+  )
+}
+
+export async function deleteLead(id: string): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  return run('leads', async () =>
+    getSupabase().from('leads').delete().eq('id', id)
+  )
+}
+
 // --- notes -----------------------------------------------------------------
 
 export async function createNote(note: Note): Promise<ActionResult> {
@@ -169,6 +200,13 @@ export async function updateNote(
   if (Object.keys(payload).length === 0) return OK
   return run('notes', async () =>
     getSupabase().from('notes').update(payload).eq('id', id)
+  )
+}
+
+export async function deleteNote(id: string): Promise<ActionResult> {
+  if (skipUnconfigured()) return OK
+  return run('notes', async () =>
+    getSupabase().from('notes').delete().eq('id', id)
   )
 }
 

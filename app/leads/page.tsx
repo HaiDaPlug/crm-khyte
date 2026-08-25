@@ -1,80 +1,180 @@
 'use client'
 
-import { useState, useMemo, useRef } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
-import { CRMTable, TableRow } from '@/components/crm/CRMTable'
-import { FilterBar } from '@/components/crm/FilterBar'
-import { ViewToggle, ViewMode } from '@/components/crm/ViewToggle'
-import { DetailDrawer } from '@/components/crm/DetailDrawer'
 import { AddLeadModal } from '@/components/crm/AddLeadModal'
+import { AddProspectModal } from '@/components/crm/AddProspectModal'
 import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
-import { useBoardPan } from '@/lib/hooks/useBoardPan'
-import { Stage, Priority, Note } from '@/lib/types'
+import { useDialogBehavior } from '@/lib/hooks/useDialog'
+import { Sparkles, Plus, ArrowRight, Users, X } from 'lucide-react'
+import { priorityDot } from '@/lib/stage-config'
+import { colleagues } from '@/lib/colleagues'
+import { Lead } from '@/lib/types'
 import { cn } from '@/lib/utils'
-import { Plus } from 'lucide-react'
-import { stageColors, priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
+
+interface LeadDrawerProps {
+  lead: Lead | null
+  onClose: () => void
+  onPromote: (leadId: string) => void
+}
+
+function LeadDrawer({ lead, onClose, onPromote }: LeadDrawerProps) {
+  const { t } = useTranslations()
+  const fmt = useFormat()
+  const isOpen = !!lead
+  const panelRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+
+  useDialogBehavior({ open: isOpen, onClose, panelRef })
+
+  useEffect(() => {
+    if (isOpen) panelRef.current?.focus()
+  }, [isOpen])
+
+  return (
+    <>
+      <div
+        className={cn(
+          'fixed inset-0 bg-black/40 backdrop-blur-[3px] z-40 transition-opacity duration-250',
+          isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        )}
+        onMouseDown={onClose}
+        aria-hidden="true"
+      />
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-hidden={!isOpen}
+        tabIndex={-1}
+        inert={!isOpen}
+        className={cn(
+          'fixed inset-y-0 right-0 h-dvh w-full max-w-none bg-surface z-50 sm:h-full sm:w-[440px] sm:max-w-[90vw]',
+          'flex flex-col border-border outline-none pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] sm:border-l sm:pl-0',
+          'transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]',
+          isOpen ? 'translate-x-0' : 'translate-x-full'
+        )}
+      >
+        {lead && (
+          <>
+            <div className="flex items-start justify-between gap-3 border-b border-border px-4 pb-4 pt-[calc(1rem+env(safe-area-inset-top))] shrink-0 sm:p-5">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-accent-light flex items-center justify-center shrink-0">
+                  <Sparkles size={16} className="text-accent" />
+                </div>
+                <div className="min-w-0">
+                  <h2 id={titleId} className="break-words text-[17px] font-semibold text-foreground font-display">{lead.companyName}</h2>
+                  <p className="mt-1 text-[13px] text-foreground/60 font-mono">{fmt.date(lead.createdAt)}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label={t.crm.modal.closeDetails}
+                className="-mr-1 -mt-1 flex size-11 shrink-0 items-center justify-center rounded-xl text-foreground/60 transition-colors hover:bg-surface-raised hover:text-foreground sm:mr-0 sm:mt-0 sm:size-9 sm:rounded-lg"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
+              <div className="border-b border-border-subtle px-4 py-4 sm:px-5">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                    <p className="label-mono mb-1">{t.leads.priority}</p>
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: priorityDot[lead.priority] }} />
+                      <p className="text-[14.5px] font-medium text-foreground capitalize">{t.priorities[lead.priority]}</p>
+                    </div>
+                  </div>
+                  {lead.contactName && (
+                    <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                      <p className="label-mono mb-1">{t.crm.newLeadForm.contactName}</p>
+                      <p className="break-words text-[14.5px] font-medium text-foreground">{lead.contactName}</p>
+                    </div>
+                  )}
+                  {lead.followedUpBy && (
+                    <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                      <p className="label-mono mb-1">{t.crm.newLeadForm.followedUpBy}</p>
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-semibold text-white shrink-0"
+                          style={{ background: colleagues[lead.followedUpBy].color }}
+                        >
+                          {colleagues[lead.followedUpBy].name.charAt(0)}
+                        </span>
+                        <p className="text-[14.5px] font-medium text-foreground truncate">{colleagues[lead.followedUpBy].name}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {lead.connection && (
+                  <div className="mt-3 flex items-start gap-2.5 rounded-lg bg-accent-light border border-border-accent px-3.5 py-3">
+                    <Users size={14} className="mt-0.5 text-accent shrink-0" />
+                    <div className="min-w-0">
+                      <p className="label-mono text-accent mb-1">{t.crm.newLeadForm.connection}</p>
+                      <p className="text-[13.5px] text-foreground leading-relaxed break-words">{lead.connection}</p>
+                    </div>
+                  </div>
+                )}
+
+                {lead.source && (
+                  <div className="mt-3 min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                    <p className="label-mono mb-1">{t.crm.newLeadForm.source}</p>
+                    <p className="break-words text-[14.5px] text-foreground">{lead.source}</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="px-4 py-4 sm:px-5">
+                <p className="label-mono mb-2.5">{t.leads.notes}</p>
+                {lead.notes ? (
+                  <p className="text-[14px] text-foreground/85 leading-relaxed whitespace-pre-wrap break-words">{lead.notes}</p>
+                ) : (
+                  <p className="text-[13.5px] text-foreground/60">{t.crm.notes.empty}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="shrink-0 border-t border-border px-4 py-4 sm:px-5">
+              <Button onClick={() => onPromote(lead.id)} className="w-full">
+                {t.leads.promoteToProspect}
+                <ArrowRight size={14} />
+              </Button>
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  )
+}
 
 export default function LeadsPage() {
   const { t } = useTranslations()
-  const fmt = useFormat()
-  const opportunities = useCRMStore((s) => s.opportunities)
-  const companies = useCRMStore((s) => s.companies)
-  const contacts = useCRMStore((s) => s.contacts)
-  const notes = useCRMStore((s) => s.notes)
+  const leads = useCRMStore((s) => s.leads)
   const searchQuery = useCRMStore((s) => s.searchQuery)
-  const setSearchQuery = useCRMStore((s) => s.setSearchQuery)
 
-  const [selectedStages, setSelectedStages] = useState<Stage[]>([])
-  const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([])
-  const [view, setView] = useState<ViewMode>('table')
-  const boardRef = useRef<HTMLDivElement>(null)
-  useBoardPan(boardRef)
-  const [selectedRow, setSelectedRow] = useState<TableRow | null>(null)
   const [addLeadOpen, setAddLeadOpen] = useState(false)
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
+  const [promoteLeadId, setPromoteLeadId] = useState<string | null>(null)
 
-  const allRows: TableRow[] = useMemo(() => {
-    return opportunities.map(opp => ({
-      opportunity: opp,
-      company: companies.find(c => c.id === opp.companyId)!,
-      contact: contacts.find(c => c.id === opp.contactId)!,
-    })).filter(row => row.company && row.contact)
-  }, [opportunities, companies, contacts])
+  const filtered = useMemo(() => {
+    if (!searchQuery) return leads
+    const q = searchQuery.toLowerCase()
+    return leads.filter((l) => l.companyName.toLowerCase().includes(q))
+  }, [leads, searchQuery])
 
-  const filteredRows = useMemo(() => {
-    return allRows.filter(row => {
-      if (selectedStages.length > 0 && !selectedStages.includes(row.opportunity.stage)) return false
-      if (selectedPriorities.length > 0 && !selectedPriorities.includes(row.opportunity.priority)) return false
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase()
-        const match = row.company.name.toLowerCase().includes(q) ||
-          row.contact.name.toLowerCase().includes(q) ||
-          row.opportunity.nextStep.toLowerCase().includes(q)
-        if (!match) return false
-      }
-      return true
-    })
-  }, [allRows, selectedStages, selectedPriorities, searchQuery])
+  const selectedLead = selectedLeadId ? leads.find((l) => l.id === selectedLeadId) ?? null : null
 
-  const drawerNotes = useMemo((): Note[] => {
-    if (!selectedRow) return []
-    return notes.filter(n =>
-      n.companyId === selectedRow.company.id ||
-      n.opportunityId === selectedRow.opportunity.id
-    )
-  }, [selectedRow, notes])
-
-  const rowsByStage = useMemo(() => {
-    const grouped: Record<string, TableRow[]> = {}
-    const stages: Stage[] = ['New', 'Researched', 'Contacted', 'Warm', 'Meeting Booked', 'Proposal Sent', 'Negotiation', 'Won', 'Lost']
-    stages.forEach(s => grouped[s] = [])
-    filteredRows.forEach(r => {
-      if (grouped[r.opportunity.stage]) grouped[r.opportunity.stage].push(r)
-    })
-    return grouped
-  }, [filteredRows])
+  const beginPromote = (leadId: string) => {
+    setSelectedLeadId(null)
+    setPromoteLeadId(leadId)
+  }
 
   return (
     <>
@@ -84,98 +184,93 @@ export default function LeadsPage() {
           <div>
             <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.leads.allLeads}</h2>
             <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
-              {t.leads.count(filteredRows.length, allRows.length)}
+              {t.leads.count(filtered.length, leads.length)}
             </p>
           </div>
-          <div className="flex w-full items-center gap-2.5 sm:w-auto">
-            <ViewToggle view={view} onChange={setView} />
-            <Button onClick={() => setAddLeadOpen(true)} className="shrink-0">
-              <Plus size={15} />
-              {t.leads.newLead}
-            </Button>
-          </div>
+          <Button onClick={() => setAddLeadOpen(true)} className="shrink-0">
+            <Plus size={15} />
+            {t.leads.newLead}
+          </Button>
         </div>
 
-        <div className="mb-4">
-          <FilterBar
-            selectedStages={selectedStages}
-            selectedPriorities={selectedPriorities}
-            onStageChange={setSelectedStages}
-            onPriorityChange={setSelectedPriorities}
-          />
-        </div>
-
-        {view === 'table' ? (
-          <CRMTable
-            data={filteredRows}
-            onRowClick={(row) => setSelectedRow(row)}
-          />
-        ) : filteredRows.length === 0 ? (
-          <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-8 text-center">
-            <p className="text-[15px] text-foreground/70">{t.crm.table.empty}</p>
-            {(selectedStages.length > 0 || selectedPriorities.length > 0 || searchQuery) && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedStages([])
-                  setSelectedPriorities([])
-                  setSearchQuery('')
-                }}
-                className="mt-3 min-h-11 rounded-lg px-4 text-[14px] font-medium text-accent transition-colors hover:bg-accent-light"
-              >
-                {t.common.clearFilters}
-              </button>
-            )}
+        {filtered.length === 0 ? (
+          <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-10 text-center">
+            <Sparkles size={20} className="mb-3 text-muted" aria-hidden="true" />
+            <p className="max-w-sm text-[15px] text-foreground/70">{t.leads.empty}</p>
           </div>
         ) : (
-          <div ref={boardRef} className="board-scroll -mx-4 flex snap-x snap-proximity gap-3 overflow-x-auto px-4 pb-4 scroll-px-4 sm:-mx-6 sm:px-6 sm:scroll-px-6 lg:mx-0 lg:px-0 lg:scroll-px-0 cursor-grab">
-            {(Object.entries(rowsByStage) as [Stage, TableRow[]][])
-              .filter(([, rows]) => rows.length > 0)
-              .map(([stage, rows]) => (
-                <div key={stage} className="w-[min(82vw,280px)] shrink-0 snap-start sm:w-[260px]">
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className={cn('inline-flex items-center h-7 px-2.5 rounded-md text-[14px] font-medium', stageColors[stage])}>
-                      {t.stages[stage]}
-                    </span>
-                    <span className="text-[13px] font-mono text-foreground/60 tabular-nums">{rows.length}</span>
-                  </div>
-                  <div className="space-y-2 stagger-children">
-                    {rows.map(row => (
-                      <button
-                        key={row.opportunity.id}
-                        onClick={() => setSelectedRow(row)}
-                        className="w-full text-left bg-surface border border-border rounded-xl p-3.5 hover:border-border-accent card-glow transition-all duration-150 cursor-pointer"
-                      >
-                        <div className="flex items-start justify-between gap-2 mb-1">
-                          <p className="text-[15px] font-semibold text-foreground leading-snug">{row.company.name}</p>
-                          <span className="w-2 h-2 rounded-full mt-1 shrink-0" style={{ background: priorityDot[row.opportunity.priority] }} />
-                        </div>
-                        <p className="text-[13.5px] text-foreground/60 mb-2">{row.contact.name} · {row.contact.role}</p>
-                        {row.opportunity.dealValue && (
-                          <div className="flex items-center gap-1 mb-2">
-                            <span className="text-[15px] font-semibold text-foreground tabular-nums">
-                              {fmt.currency(row.opportunity.dealValue)}
-                            </span>
-                          </div>
-                        )}
-                        <p className="text-[13.5px] text-foreground/70 truncate">{row.opportunity.nextStep}</p>
-                      </button>
-                    ))}
-                  </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 stagger-children">
+            {filtered.map((lead) => (
+              <div
+                key={lead.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => setSelectedLeadId(lead.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    setSelectedLeadId(lead.id)
+                  }
+                }}
+                className="text-left bg-surface border border-border rounded-xl p-4 hover:border-border-accent card-glow transition-all duration-200 cursor-pointer outline-none focus-visible:ring-1 focus-visible:ring-accent/40"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-[15px] font-semibold text-foreground leading-snug break-words">
+                    {lead.companyName}
+                  </p>
+                  <span
+                    className="w-2 h-2 rounded-full mt-1.5 shrink-0"
+                    style={{ background: priorityDot[lead.priority] }}
+                    aria-label={t.priorities[lead.priority]}
+                  />
                 </div>
-              ))}
+
+                {lead.contactName && (
+                  <p className="mt-1 text-[13.5px] text-foreground/60 truncate">{lead.contactName}</p>
+                )}
+
+                {lead.connection && (
+                  <p className="mt-2 flex items-center gap-1.5 text-[12.5px] text-accent">
+                    <Users size={12} className="shrink-0" />
+                    <span className="truncate">{lead.connection}</span>
+                  </p>
+                )}
+
+                {lead.notes && (
+                  <p className="mt-2 text-[13.5px] text-foreground/70 leading-relaxed line-clamp-3">
+                    {lead.notes}
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    beginPromote(lead.id)
+                  }}
+                  className="mt-3.5 flex items-center gap-1.5 text-[13px] font-medium text-accent transition-colors hover:text-accent-hover"
+                >
+                  {t.leads.promoteToProspect}
+                  <ArrowRight size={13} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
       </main>
 
       <AddLeadModal open={addLeadOpen} onClose={() => setAddLeadOpen(false)} />
 
-      <DetailDrawer
-        opportunity={selectedRow?.opportunity ?? null}
-        company={selectedRow?.company ?? null}
-        contact={selectedRow?.contact ?? null}
-        notes={drawerNotes}
-        onClose={() => setSelectedRow(null)}
+      <LeadDrawer
+        lead={selectedLead}
+        onClose={() => setSelectedLeadId(null)}
+        onPromote={beginPromote}
+      />
+
+      <AddProspectModal
+        open={promoteLeadId !== null}
+        onClose={() => setPromoteLeadId(null)}
+        fromLeadId={promoteLeadId}
       />
     </>
   )

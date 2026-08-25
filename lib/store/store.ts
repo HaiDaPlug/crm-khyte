@@ -3,6 +3,7 @@ import {
   Opportunity,
   Company,
   Contact,
+  Lead,
   Note,
   StrategyCard,
   StrategyColumn,
@@ -54,6 +55,7 @@ export interface CRMStore {
   opportunities: Opportunity[]
   companies: Company[]
   contacts: Contact[]
+  leads: Lead[]
   notes: Note[]
   strategyColumns: StrategyColumn[]
   strategyCards: StrategyCard[]
@@ -78,6 +80,7 @@ export interface CRMStore {
   addNote: (note: Note) => void
   dismissNote: (noteId: string) => void
   applyNote: (noteId: string) => void
+  deleteNote: (noteId: string) => void
 
   // Actions — Strategy
   addStrategyColumn: (column: StrategyColumn) => void
@@ -109,6 +112,12 @@ export interface CRMStore {
   updateCompany: (companyId: string, updates: Partial<Company>) => void
   addContact: (contact: Contact) => void
   updateContact: (contactId: string, updates: Partial<Contact>) => void
+
+  // Actions — Leads
+  addLead: (lead: Lead) => void
+  updateLead: (leadId: string, updates: Partial<Lead>) => void
+  /** Permanent — used when a lead is promoted into a Prospect, or removed outright. */
+  removeLead: (leadId: string) => void
 
   // Actions — UI
   toggleSidebar: () => void
@@ -258,6 +267,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       companies: snapshot.companies,
       contacts: snapshot.contacts,
       opportunities: snapshot.opportunities,
+      leads: snapshot.leads,
       notes: snapshot.notes,
       strategyColumns: snapshot.strategyColumns,
       strategyCards: snapshot.strategyCards,
@@ -372,6 +382,11 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             api.updateOpportunity(targetId!, changes)
           )
         }
+      },
+
+      deleteNote: (noteId) => {
+        set((state) => ({ notes: state.notes.filter((n) => n.id !== noteId) }))
+        persist('Delete note', () => api.deleteNote(noteId))
       },
 
       // Strategy
@@ -503,6 +518,26 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Update contact', () => api.updateContact(contactId, updates))
+      },
+
+      // Leads
+      addLead: (lead) => {
+        set((state) => ({ leads: [lead, ...state.leads] }))
+        persist('Save lead', () => api.createLead(lead))
+      },
+
+      updateLead: (leadId, updates) => {
+        set((state) => ({
+          leads: state.leads.map((l) =>
+            l.id === leadId ? { ...l, ...updates } : l
+          ),
+        }))
+        persist('Update lead', () => api.updateLead(leadId, updates))
+      },
+
+      removeLead: (leadId) => {
+        set((state) => ({ leads: state.leads.filter((l) => l.id !== leadId) }))
+        persist('Remove lead', () => api.deleteLead(leadId))
       },
 
       // UI

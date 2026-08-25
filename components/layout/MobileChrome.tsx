@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 import khyteLogo from '@/public/khyte-logo-text-png.png'
 import { navItems } from './AppSidebar'
 
-const primaryHrefs = ['/dashboard', '/leads', '/pipeline', '/tasks'] as const
+const primaryHrefs = ['/dashboard', '/prospects', '/pipeline', '/tasks'] as const
 
 interface MobileChromeProps {
   menuOpen: boolean

@@ -2,13 +2,13 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ExternalLink, Calendar, ArrowRight, Pencil, ChevronDown } from 'lucide-react'
-import { Opportunity, Company, Contact, Note, Priority, Stage } from '@/lib/types'
+import { X, ExternalLink, Calendar, ArrowRight, ChevronDown } from 'lucide-react'
+import { ColleagueId, Opportunity, Company, Contact, Note, Priority, Stage } from '@/lib/types'
 import { NotesTimeline } from './NotesTimeline'
-import { ConfirmDialog } from './ConfirmDialog'
 import { Button } from './Button'
 import { InlineSelect } from './FormFields'
 import { useCRMStore } from '@/lib/store'
+import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
 import { STAGES, priorityDot, stageColors } from '@/lib/stage-config'
 import { useDialogBehavior, useMounted } from '@/lib/hooks/useDialog'
 import { useFormat } from '@/lib/hooks/useFormat'
@@ -41,20 +41,7 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
   const mounted = useMounted()
   const fmt = useFormat()
 
-  // Read through refs: `useDialogBehavior` runs before the editing state is
-  // declared below, and the callbacks must see live values anyway.
-  const editingNotesRef = useRef(false)
-  const discardOpenRef = useRef(false)
-  // `requestClose` is declared below and re-created each render; the ref keeps
-  // the hook's stable listener pointed at the current one.
-  const requestCloseRef = useRef<() => void>(onClose)
-  useDialogBehavior({
-    open: isOpen,
-    onClose: () => requestCloseRef.current(),
-    panelRef,
-    shouldIgnoreEscape: () => editingNotesRef.current,
-    suspended: () => discardOpenRef.current,
-  })
+  useDialogBehavior({ open: isOpen, onClose, panelRef })
 
   useEffect(() => {
     if (isOpen) panelRef.current?.focus()
@@ -73,11 +60,8 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
   const updateCompany = useCRMStore((s) => s.updateCompany)
   const updateContact = useCRMStore((s) => s.updateContact)
   const addNote = useCRMStore((s) => s.addNote)
-  const [editingNotes, setEditingNotes] = useState(false)
-  const [notesDraft, setNotesDraft] = useState('')
-  const [discardOpen, setDiscardOpen] = useState(false)
-  const [discardClosesDrawer, setDiscardClosesDrawer] = useState(false)
-  const notesInputRef = useRef<HTMLTextAreaElement>(null)
+  const deleteNote = useCRMStore((s) => s.deleteNote)
+  const [noteDraft, setNoteDraft] = useState('')
 
   // Which single field is mid-edit, if any. Only one at a time — these are
   // small, immediate-commit editors, not a form, so there's no draft/discard
@@ -92,90 +76,27 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
   const [nextStepDraft, setNextStepDraft] = useState('')
   const [tagsDraft, setTagsDraft] = useState('')
 
-  useEffect(() => {
-    editingNotesRef.current = editingNotes
-  }, [editingNotes])
-
-  useEffect(() => {
-    discardOpenRef.current = discardOpen
-  }, [discardOpen])
-
   // Never carry one lead's draft over to another, and drop the editors when
   // the drawer closes so it reopens in read mode.
   useEffect(() => {
-    setEditingNotes(false)
-    setDiscardOpen(false)
-    setDiscardClosesDrawer(false)
+    setNoteDraft('')
     setEditingField(null)
   }, [opportunity?.id, isOpen])
 
-  useEffect(() => {
-    if (!editingNotes) return
-    const el = notesInputRef.current
-    if (!el) return
-    el.focus()
-    // Caret to the end rather than selecting everything, so typing appends.
-    el.setSelectionRange(el.value.length, el.value.length)
-  }, [editingNotes])
-
-  const beginEditNotes = () => {
-    setNotesDraft(payload?.opportunity.notes ?? '')
-    setEditingNotes(true)
-  }
-
-  const notesDirty = editingNotes && notesDraft.trim() !== (payload?.opportunity.notes ?? '')
-
-  /** Discard immediately when nothing was typed; otherwise ask first. */
-  const cancelEditNotes = () => {
-    if (notesDirty) {
-      setDiscardClosesDrawer(false)
-      setDiscardOpen(true)
-      return
-    }
-    setEditingNotes(false)
-  }
-
-  const confirmDiscardNotes = () => {
-    const shouldCloseDrawer = discardClosesDrawer
-    setDiscardOpen(false)
-    setDiscardClosesDrawer(false)
-    setEditingNotes(false)
-    if (shouldCloseDrawer) onClose()
-  }
-
-  /** Dismissing the drawer with an unsaved note asks before throwing it away. */
-  const requestClose = () => {
-    if (notesDirty) {
-      setDiscardClosesDrawer(true)
-      setDiscardOpen(true)
-      return
-    }
-    onClose()
-  }
-  requestCloseRef.current = requestClose
-
-  const saveNotes = () => {
+  /** Each submission is its own timeline entry — there's no single "the" note
+   * to overwrite anymore, so this only ever adds. */
+  const addNoteEntry = () => {
     const id = payload?.opportunity.id
-    if (!id) return
-    const next = notesDraft.trim()
-    if (next !== (payload?.opportunity.notes ?? '')) {
-      updateOpportunity(id, { notes: next })
-      // Keep the retained payload in step; the drawer renders from it, not the
-      // store, so it would otherwise show the stale note until reselected.
-      setPayload((p) => (p ? { ...p, opportunity: { ...p.opportunity, notes: next } } : p))
-    }
-    setEditingNotes(false)
+    const raw = noteDraft.trim()
+    if (!id || !raw) return
+    addNote({ id: newId(), opportunityId: id, raw, createdAt: new Date().toISOString() })
+    setNoteDraft('')
   }
 
-  const handleNotesKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const handleNoteKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      saveNotes()
-    } else if (e.key === 'Escape') {
-      // Stop the drawer's own Escape handler from closing the whole panel.
-      e.preventDefault()
-      e.stopPropagation()
-      cancelEditNotes()
+      addNoteEntry()
     }
   }
 
@@ -231,6 +152,16 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
     if (!id || priority === payload?.opportunity.priority) return
     updateOpportunity(id, { priority })
     setPayload((p) => (p ? { ...p, opportunity: { ...p.opportunity, priority } } : p))
+  }
+
+  /** '' stands in for "unassigned" — InlineSelect needs a real string value. */
+  const changeFollowedUpBy = (value: ColleagueId | '') => {
+    const id = payload?.opportunity.id
+    if (!id) return
+    const followedUpBy = value || undefined
+    if (followedUpBy === payload?.opportunity.followedUpBy) return
+    updateOpportunity(id, { followedUpBy })
+    setPayload((p) => (p ? { ...p, opportunity: { ...p.opportunity, followedUpBy } } : p))
   }
 
   const beginEditDealValue = () => {
@@ -334,7 +265,7 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
           'fixed inset-0 bg-black/40 backdrop-blur-[3px] z-40 transition-opacity duration-300',
           isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'
         )}
-        onMouseDown={requestClose}
+        onMouseDown={onClose}
         aria-hidden="true"
       />
 
@@ -391,7 +322,7 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
               </div>
               <button
                 type="button"
-                onClick={requestClose}
+                onClick={onClose}
                 aria-label={t.crm.modal.closeDetails}
                 className="-mr-2 -mt-2 flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-lg text-foreground/70 transition-colors hover:bg-surface-raised hover:text-foreground sm:mr-0 sm:mt-0 sm:h-8 sm:w-8"
               >
@@ -569,6 +500,40 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
                       </button>
                     )}
                   </div>
+
+                  {/* Followed up by — commits immediately, no separate save step */}
+                  <div className="bg-background-raised border border-border-subtle rounded-lg px-3.5 py-3">
+                    <p className="label-mono mb-1.5">{copy.followedUpBy}</p>
+                    <div className="h-11 sm:h-7 flex items-center">
+                      <InlineSelect
+                        value={payload.opportunity.followedUpBy ?? ''}
+                        onChange={changeFollowedUpBy}
+                        aria-label={copy.followedUpBy}
+                        options={[
+                          { value: '' as const, label: t.crm.taskForm.unassigned },
+                          ...COLLEAGUE_IDS.map((id) => ({ value: id, label: colleagues[id].name })),
+                        ]}
+                        renderValue={(o) => (
+                          <span className="flex items-center gap-2 h-7">
+                            {o.value ? (
+                              <span
+                                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-semibold text-white shrink-0"
+                                style={{ background: colleagues[o.value].color }}
+                              >
+                                {colleagues[o.value].name.charAt(0)}
+                              </span>
+                            ) : (
+                              <span className="w-5 h-5 rounded-full border border-dashed border-current opacity-50 shrink-0" />
+                            )}
+                            <span className="text-[14px] font-medium text-foreground truncate">
+                              {o.label}
+                            </span>
+                            <ChevronDown size={12} className="text-foreground/50 opacity-60 shrink-0" />
+                          </span>
+                        )}
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 {/* Next step — click to edit; the previous value is logged to
@@ -646,67 +611,33 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
                 </div>
               </div>
 
-              {/* Notes */}
+              {/* Notes — a running, deletable log rather than one field to overwrite */}
               <div className="px-4 py-4 sm:px-6">
-                <div className="flex items-center justify-between mb-3">
-                  <p className="label-mono">{copy.notes}</p>
-                  {!editingNotes && (
-                    <button
-                      type="button"
-                      onClick={beginEditNotes}
-                      className="flex min-h-11 touch-manipulation items-center gap-1.5 text-[13px] text-foreground/70 transition-colors hover:text-foreground sm:min-h-0 sm:text-[12px]"
-                    >
-                      <Pencil size={12} />
-                      {payload.opportunity.notes ? t.common.edit : copy.addNote}
-                    </button>
-                  )}
+                <p className="label-mono mb-3">{copy.notes}</p>
+
+                <div className="mb-4">
+                  <textarea
+                    aria-label={copy.addNote}
+                    placeholder={copy.addNote}
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    onKeyDown={handleNoteKeyDown}
+                    rows={2}
+                    className={cn(
+                      'w-full px-4 py-3.5 bg-background-raised rounded-lg border border-border-subtle',
+                      'text-[16px] text-foreground leading-relaxed resize-y outline-none sm:text-[14px]',
+                      'focus:border-accent/50 transition-[border-color] duration-100 ease-out'
+                    )}
+                  />
+                  <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+                    <span className="w-full text-[11px] text-foreground/50 font-mono sm:mr-auto sm:w-auto">{copy.saveHint}</span>
+                    <Button size="sm" onClick={addNoteEntry} disabled={!noteDraft.trim()}>
+                      {copy.addNote}
+                    </Button>
+                  </div>
                 </div>
 
-                {editingNotes ? (
-                  <div className="mb-4">
-                    <textarea
-                      ref={notesInputRef}
-                      aria-label={copy.notes}
-                      value={notesDraft}
-                      onChange={(e) => setNotesDraft(e.target.value)}
-                      onKeyDown={handleNotesKeyDown}
-                      rows={4}
-                      className={cn(
-                        'w-full px-4 py-3.5 bg-background-raised rounded-lg border border-border-subtle',
-                        'text-[16px] text-foreground leading-relaxed resize-y outline-none sm:text-[14px]',
-                        'focus:border-accent/50 transition-[border-color] duration-100 ease-out'
-                      )}
-                    />
-                    <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-                      <span className="w-full text-[11px] text-foreground/50 font-mono sm:mr-auto sm:w-auto">{copy.saveHint}</span>
-                      <button
-                        type="button"
-                        onClick={cancelEditNotes}
-                        className="h-11 touch-manipulation rounded-lg px-3 text-[13px] font-medium text-foreground transition-colors hover:bg-surface-raised sm:h-8"
-                      >
-                        {t.common.cancel}
-                      </button>
-                      <Button size="sm" onClick={saveNotes}>
-                        {t.common.save}
-                      </Button>
-                    </div>
-                  </div>
-                ) : payload.opportunity.notes ? (
-                  <button
-                    type="button"
-                    onClick={beginEditNotes}
-                    className={cn(
-                      'w-full text-left mb-4 px-4 py-3.5 bg-background-raised rounded-lg border border-border-subtle',
-                      'hover:border-border transition-[border-color] duration-100 ease-out'
-                    )}
-                  >
-                    <p className="text-[14px] text-foreground leading-relaxed whitespace-pre-wrap">
-                      {payload.opportunity.notes}
-                    </p>
-                  </button>
-                ) : null}
-
-                <NotesTimeline notes={payload.notes} />
+                <NotesTimeline notes={payload.notes} onDelete={deleteNote} />
               </div>
             </div>
 
@@ -722,19 +653,6 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
           </>
         )}
       </div>
-
-      <ConfirmDialog
-        open={discardOpen}
-        title={copy.discardTitle}
-        description={copy.discardDescription}
-        confirmLabel={copy.discard}
-        cancelLabel={t.common.keepEditing}
-        onConfirm={confirmDiscardNotes}
-        onCancel={() => {
-          setDiscardOpen(false)
-          setDiscardClosesDrawer(false)
-        }}
-      />
     </>,
     document.body
   )

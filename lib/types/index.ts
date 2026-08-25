@@ -45,6 +45,30 @@ export interface Opportunity {
   lastInteraction: string
   tags: string[]
   notes: string
+  /** Who on the team is following this prospect up, from the fixed colleague roster. */
+  followedUpBy?: ColleagueId
+}
+
+/**
+ * Raw, unqualified interest — a company worth circling back to, dumped in
+ * before there's a contact or a deal to track. Deliberately has none of
+ * Opportunity's pipeline fields: promoting one to a Prospect is what creates
+ * the Company/Contact/Opportunity records and removes the Lead.
+ */
+export interface Lead {
+  id: string
+  companyName: string
+  /** Free text — no linked Contact record until this is promoted. */
+  contactName?: string
+  /** Someone in your own network who can vouch for or introduce this contact. */
+  connection?: string
+  /** Where this lead came from — a trade show, referral, LinkedIn, etc. */
+  source?: string
+  /** Who on the team owns following up, from the fixed colleague roster. */
+  followedUpBy?: ColleagueId
+  priority: Priority
+  notes: string
+  createdAt: string
 }
 
 export interface Note {
@@ -121,6 +145,7 @@ export interface CRMSnapshot {
   companies: Company[]
   contacts: Contact[]
   opportunities: Opportunity[]
+  leads: Lead[]
   notes: Note[]
   strategyColumns: StrategyColumn[]
   strategyCards: StrategyCard[]

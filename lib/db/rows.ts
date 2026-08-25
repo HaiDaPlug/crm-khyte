@@ -49,6 +49,21 @@ export interface OpportunityRow {
   last_interaction: string | null
   tags: string[]
   notes: string
+  followed_up_by: ColleagueId | null
+  created_at: string
+  updated_at: string
+}
+
+export interface LeadRow {
+  id: string
+  owner_id: string | null
+  company_name: string
+  contact_name: string | null
+  connection: string | null
+  source: string | null
+  followed_up_by: ColleagueId | null
+  priority: Priority
+  notes: string
   created_at: string
   updated_at: string
 }

@@ -1,16 +1,23 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-08-24
+**Date:** 2026-08-25
 **Phase:** MVP + persistence (Supabase live, no auth yet)
 
 The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
 (eu-north-1); schema and seed applied; reads and writes verified end to end
 against the live API.
 
-**One migration is pending.** `npm run db:status` reports
-`20260824170000_task_archive` as not yet pushed — it adds `tasks.archived_at`,
-which the task archive UI already writes to. Until it is applied, archiving
-works against the local store but the write fails on the remote.
+**Two migrations are pending.** `npm run db:status` reports
+`20260825140000_lead_contact_fields` and `20260826120000_opportunity_followed_up_by`
+as not yet pushed — run `npm run db:push`. `20260824170000_task_archive` (adds
+`tasks.archived_at`) is applied. `lead_contact_fields` adds
+`contact_name`/`connection`/`source`/`followed_up_by` to `public.leads`, and
+`opportunity_followed_up_by` adds `followed_up_by` to `public.opportunities` —
+until these land, a Lead's contact/connection/source/followed-up-by and an
+Opportunity's followed-up-by are readable and writable in the UI but the
+corresponding columns do not exist on the remote, so those specific fields
+fail to persist (the base `leads` table itself, from `20260825120000_leads.sql`,
+is already live).
 
 ---
 
@@ -29,58 +36,98 @@ works against the local store but the write fails on the remote.
 - @tanstack/react-table 8 — table shell
 - lucide-react — icons
 - Radix UI primitives (dialog, dropdown, separator, slot, tooltip)
-- motion (framer-motion successor) — installed, not yet used in components
+- motion (framer-motion successor) — task check-off/column-flight animation
 - clsx + tailwind-merge + class-variance-authority — style utilities
 
 ### Routes
 | Route | Status | Notes |
 |---|---|---|
 | `/` | Done | Redirects to `/dashboard` |
-| `/dashboard` | Functional | Command-center home, fits the viewport with no scrolling. Left: Pipeline (total value) and This Week (open task count) stacked as grainy burnt-orange cards, vertically centered. Right: card-less assistant chat column — time-aware greeting ("Good morning/afternoon/evening / It's late-night, Hai.", no icon, thin Source Serif 4 headline, trailing period), solid rounded composer with a hairline separator between the textarea and the keybind-hint/mic/send row (Enter to send, autosize, mic dictation via Web Speech API), icon quick-prompt pills, mock assistant replies keyed off lead names. |
-| `/leads` | Functional | TanStack Table + sorting + filter bar (wired) + board view (grouped by stage) + detail drawer. Search filters data via Zustand. "New Lead" capture modal (top right) with company/contact autofill comboboxes; selecting a pipeline stage is what adds the lead to the board (no stage = off board). Table shows "On board" pipeline indicator. Zebra-striped rows (`even:` uses `--surface-raised`, plain element+pseudo selector so it can never outrank the hover class). Table and board both pan/wheel-scroll via `useBoardPan` — see Pipeline board interaction. |
-| `/pipeline` | Functional | dnd-kit kanban, 9 stages, drag between columns syncs to Zustand store. Active pipeline total value in header. Drop target feedback. Only shows leads with `inPipeline: true`; "Add Leads" popover (top right) lists off-board leads and adds them at stage "New". Each column's empty slot also opens that same off-board-leads picker, scoped to drop straight into that column's stage. The board can be panned without a card in hand — drag the background, or roll a vertical wheel over it (skipped over card content, only empty space) — and auto-scrolls at the edges while dragging. See **Pipeline board interaction** below. |
-| `/strategy` | Functional | Opportunity selector dropdown + strategy board whose headlines are written per deal — add, rename inline, delete (two-step confirm, cards cascade). A new deal opens on an empty board with a single "add the first headline" prompt. Inline add-card forms; headlines and cards sync to Zustand and Supabase. |
-| `/companies` | Functional | Card grid with deal count, contact count, total value. Search/filter input. Click-to-open detail drawer with company info, contacts, opportunities. "New Company" essentials modal (top right). |
-| `/contacts` | Functional | List view with search/filter. Click-to-open drawer with contact info, email/LinkedIn links, company card, related opportunities. "New Contact" essentials modal (top right) with company autofill combobox. |
-| `/tasks` | Functional | Three columns — **On pace / Late / Completed** — derived from the data, not stored. Checking a task off strikes the title, chimes, and flies the row across to Completed. "Add Task" opens `AddTaskModal` (title, description, priority `ColorSlider`, due date, colleague assignee). Pencil opens an inline editor with the same priority/assignee controls. Archive is the only way off the board; delete lives inside the archive drawer beneath the columns. See **Tasks** below. |
-| `/settings` | Functional | Display preferences: theme (dark/light), interface language (Swedish/English), regional format, currency, date format, compact numbers, **sounds**, reset-to-defaults, plus a live preview row showing a sample amount and date under the current settings. Swedish UI and `sv-SE` formatting are the fresh-session defaults. Persisted to `localStorage`, applied app-wide. |
+| `/dashboard` | Functional | Command-center home. Desktop keeps the split pipeline/tasks + assistant composition; mobile switches to assistant-first reading order and natural vertical scrolling, with responsive greeting, composer, quick prompts and cards. The composer still supports Enter submit, autosize, mic dictation via Web Speech API, and mock replies keyed off lead names. |
+| `/leads` | Functional | New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button; each card also carries its own promote action. "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
+| `/prospects` | Functional | Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. Search and filters are wired, and table/board empty results now show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. |
+| `/pipeline` | Functional | Nine-stage dnd-kit kanban with mouse, delayed long-press touch and keyboard sensors. Mobile columns snap horizontally, expose a next-column peek/edge cue, and use natural page height instead of a locked viewport. Active value, drop feedback, off-board picker, background panning and drag-edge auto-scroll remain intact. Source data is Opportunities (Prospects), not the new Leads. |
+| `/strategy` | Functional | Opportunity selector + per-deal strategy board with add/rename/delete. The selector, summary and empty state reflow on phones; board columns snap/peek horizontally, touch actions stay visible, and drag supports mouse, long-press touch and keyboard input. |
+| `/companies` | Functional | Responsive card grid with deal/contact counts and total value. Search has a localized no-result state and clear action. Detail view becomes a full-screen, safe-area-aware mobile dialog with focus trap, Escape close, body-scroll lock and focus restoration. "New Company" is a single-column mobile modal. |
+| `/contacts` | Functional | Responsive list with search, localized no-result recovery, and 44px mobile actions. The contact detail view is a full-screen, safe-area-aware mobile dialog with focus trap/Escape/scroll lock/focus return. "New Contact" uses a labelled company combobox and single-column mobile form. |
+| `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. |
+| `/settings` | Functional | Display preferences remain app-wide and `localStorage`-backed. The page now uses responsive cards, stacked controls and mobile-safe spacing while preserving dark/light, language, locale, currency, date, compact-number and sound settings. |
 
 ### Components
 ```
 components/
   layout/
-    AppShell.tsx       — client wrapper; mounts `CRMStoreProvider` with the server snapshot, then `AppShellChrome` (which reads the store, so it has to sit inside the provider) applies data-theme to <html> and reads localStorage on mount
-    AppSidebar.tsx     — 232px → 64px collapsible sidebar; grain-nav burnt-orange treatment with film grain; amber-tinted internal dividers; Sun/Moon theme toggle above collapse button; forced `data-theme="dark"` on the `<aside>` so the rail always renders dark regardless of the page's active theme. Header shows the brand lockup (`public/khyte-logo-text-png.png` via `next/image`) — one asset for both states: an `overflow-hidden` box animates 84px → 32px on collapse, clipping the lockup down to just the orange K mark. Nav labels 15px, utility buttons 14px
-    Topbar.tsx         — 52px sticky top bar, functional search (reads/writes Zustand searchQuery)
+    AppShell.tsx       — client wrapper; mounts `CRMStoreProvider`, applies theme/language settings, reserves mobile top/bottom chrome space, adds horizontal safe-area insets, and closes the mobile menu on route change or when crossing into the desktop breakpoint
+    AppSidebar.tsx     — desktop-only (`lg+`) 232px → 64px collapsible sidebar; grain-nav burnt-orange treatment, theme toggle and shared exported nav definition used by the mobile chrome
+    MobileChrome.tsx   — fixed mobile header + five-item bottom navigation (Dashboard, Prospects, Pipeline, Tasks, More). `primaryHrefs` lists `/prospects`, not the new lightweight `/leads` — Leads is reachable only via the `More` drawer. `More` opens an inert-while-closed, focus-trapped, Escape-dismissible navigation drawer with theme control; all chrome handles top/bottom/left/right safe-area insets
+    Topbar.tsx         — optional sticky action bar; returns `null` when a route supplies no actions
   crm/
     CaptureBox.tsx     — textarea input, Cmd+Enter submit, simulated AI extraction (800ms delay) — orphaned since /inbox was removed
     SuggestionPreviewCard.tsx — AI extraction card with Apply (updates matching opportunity) / Dismiss — orphaned since /inbox was removed
-    CRMTable.tsx       — sortable TanStack table, priority dots, stage badges, dark theme. Zebra-striped rows (`.data-table tbody tr:nth-child(even)`, scoped in globals.css). Horizontal scroll wrapper uses the shared `useBoardPan` (`panExcludeSelector: 'tr, th'` so click-drag panning doesn't fight a row/header click)
-    PipelineBoard.tsx  — dnd-kit kanban board, drag overlay, drop target feedback. Column headers use the shared stage pill; per-stage border tints only. Uses the shared `useBoardPan` (`lib/hooks/`; wheel + background-drag panning, also used by `CRMTable`) and its own `useEdgeAutoScroll` (edge scroll while dragging) — see Pipeline board interaction. Empty column slots open an off-board-leads picker scoped to that stage, not the lead-creation modal
-    LeadCard.tsx       — kanban card: company, contact, priority, deal value, amber hover glow. Same card definition as the leads board's kanban card by design
-    StrategyBoard.tsx  — dnd-kit board over per-opportunity headlines (store-derived, no local copy), sortable text cards, inline add/rename forms, positional lane colours
-    DetailDrawer.tsx   — portaled slide-in drawer (translate-x animation), company/contact/deal/notes. Shares the modal's material (`grain-modal grain-drawer`), type scale and `data-theme="dark"`; `role="dialog"` + focus trap via `useDialogBehavior`; `inert` while closed. Retains the last row it rendered so the panel slides out with its content instead of emptying first. **Notes are editable in place** — click the note or "Edit"/"Add note", ⌘↵ saves, Esc cancels; writes through `updateOpportunity`. Dirty-checked: dismissing with unsaved text raises `ConfirmDialog` on all four exit paths (Esc, Cancel, backdrop, X), and confirming from a *drawer-closing* path also closes the drawer while confirming from Cancel does not
-    NotesTimeline.tsx  — chronological notes with AI-extracted indicator
-    FilterBar.tsx      — stage + priority filters, active pills, animated panel toggle
-    ViewToggle.tsx     — table/board view toggle
+    CRMTable.tsx       — sortable TanStack table at `md+`, backing `/prospects`; purpose-built mobile cards below `md` surface company, stage, contact, value, next step, follow-up, pipeline status and priority without horizontal page overflow
+    PipelineBoard.tsx  — dnd-kit kanban with mouse, delayed touch and keyboard sensors, drag overlay/drop feedback, mobile snap/peek columns and natural phone height. Shared `useBoardPan` and `useEdgeAutoScroll` behavior remains; empty slots still open the stage-scoped off-board picker
+    LeadCard.tsx       — touch-safe kanban card with mobile-sized type/controls, visible focus treatment, company/contact/priority/value and amber hover glow
+    StrategyBoard.tsx  — store-derived dnd-kit strategy board with mouse/touch/keyboard sensors, mobile snap/peek columns, visible phone actions, and responsive inline add/rename forms
+    DetailDrawer.tsx   — portaled slide-in drawer; full-width/full-`dvh` with square edges and left/right/top/bottom safe-area handling on phones, 520px on desktop. `role="dialog"`, focus trap, initial focus, Escape, body-scroll lock, focus return, `aria-hidden`/`inert` closed state and labelled inline editors. Retains its payload for the exit animation. Company name (h2 header) and Primary Contact's name are click-to-edit inline text fields that write through to the shared `Company`/`Contact` records via `updateCompany`/`updateContact`. Stage and Priority are inline-edited via the new `InlineSelect` popover (commits immediately, no draft). A 5th Deal tile, "Followed up by" (`followedUpBy` on Opportunity — who on the team is following this prospect up), is also an `InlineSelect`, using `''` as an unassigned sentinel since the component needs a real string value. Notes are a running, deletable log rather than one field to overwrite: a small compose textarea (⌘↵ or a button) calls `addNote()`, each submission becomes its own timeline entry, and the timeline renders a hover-visible delete button per entry via `NotesTimeline`'s `onDelete`. The old single-field notes editor and its dirty/discard `ConfirmDialog` flow are gone entirely
+    NotesTimeline.tsx  — chronological notes with AI-extracted indicator; takes an optional `onDelete?: (noteId: string) => void` that renders a hover-visible `Trash2` delete button per entry (omit the prop for a read-only timeline)
+    FilterBar.tsx      — stage + priority filters with semantic expanded/pressed state, inert collapsed content, horizontally scrollable mobile chips and 44px phone targets
+    ViewToggle.tsx     — labelled table/board toggle group with pressed states and full-width phone layout
     EmptyState.tsx     — centered empty state with icon + message
-    Modal.tsx          — centered modal shell, **portaled to `document.body` and unmounted when closed** (previously always-mounted inside the page tree, where an ancestor `transform`/`overflow` could clip it and the hidden subtree stayed in the a11y tree); dialog behaviour shared with the drawer via `useDialogBehavior` (grain-modal treatment, overlay, Esc, ⌘↵ submit shortcut, footer slot); `role="dialog"` + `aria-modal` + labelled by its title; accepts `suspended` so a stacked `ConfirmDialog` can take the keyboard; designed to fit without scrolling; panel forces `data-theme="dark"` so all capture modals render dark regardless of the page's active theme, matching the sidebar
-    ConfirmDialog.tsx  — `role="alertdialog"` confirmation for unrecoverable actions, stacked above the dialog that raised it (which stands down via `suspended`). Replaces `window.confirm`, which renders in browser chrome and blocks the main thread. Focus opens on the safe choice
-    FormFields.tsx     — shared form primitives: inputClass, Field, Combobox, ColorSlider, DateStepper, AssigneePicker. `Combobox` is `memo`-wrapped with full keyboard support (↑/↓ wrap, Home/End, Enter select, Esc dismiss), `role="combobox"`/`listbox` + `aria-activedescendant`, and closes on outside-pointerdown rather than blur so the list can be drag-scrolled. `ColorSlider` is a generic discrete slider that reads by colour and position instead of text — drag (pointer capture), click-anywhere, arrows/Home/End. `DateStepper` pairs the native calendar with ▲▼ day nudges; its arithmetic runs on the date parts in UTC (see Tasks). `AssigneePicker` renders the fixed colleague roster (see Tasks) as pills plus an explicit "unassigned" option — shared by `AddTaskModal` and the inline task editor
-    AddLeadModal.tsx   — full lead capture: company/contact comboboxes with two-way autofill, stage pill row (picking a stage = joins the pipeline; default off board), priority (ColorSlider)/deal/next step/follow-up/tags/notes. Validates deal value and email inline and blocks submit on either; unsaved-changes confirmation on dismiss
-    AddContactModal.tsx — contact essentials: name, role, company (combobox, creates if new), email, phone, LinkedIn
-    AddCompanyModal.tsx — company essentials: name, domain, industry, size, location, tags
-    AddTaskModal.tsx   — task capture as a proper modal (title, description, priority via `ColorSlider`, due date, assignee via `AssigneePicker`) — replaces the old inline "show/hide form" that had no date control and plain priority pills. See Tasks
-    Button.tsx         — shared button (`variant`: primary/danger/success get the `.btn-grain` material below, secondary/ghost stay flat; `size`: sm/md). Rolled out to every solid action button app-wide (page-header CTAs, modal submit buttons, drawer save, capture submit) — see Design System → Grain buttons
+    Modal.tsx          — safe-area-aware portaled modal shell, unmounted when closed; phone gutters, responsive title/spacing and stacked full-width mobile footer. Shared `useDialogBehavior` supplies focus trap, Escape, scroll lock and focus return; title labelling and nested-dialog suspension remain
+    ConfirmDialog.tsx  — safe-area-aware `role="alertdialog"` with stacked full-width phone actions and focus on the safe choice
+    FormFields.tsx     — shared mobile-safe form primitives. Inputs are 44px/16px on phones (prevents iOS focus zoom); all modal `Field` labels are wired to stable control IDs, comboboxes retain full keyboard/listbox semantics, `AssigneePicker` has labelled group semantics, and `ColorSlider`/`DateStepper` remain keyboard operable. Gained `InlineSelect<T extends string>` — a small dark popover (button + absolutely-positioned `role="listbox"`, click-outside-to-close) standing in for native `<select>`; used by `DetailDrawer` for Stage/Priority/Followed-up-by, the general-purpose version of the popover pattern `/settings` already used
+    AddLeadModal.tsx   — now the lightweight capture form for the new raw-interest `Lead` entity (company name required, contact name, connection, source, "Tillagd av"/Added-by via `AssigneePicker`, priority via `ColorSlider`, notes). No dirty-tracking or discard confirmation — it's a small form with little to lose. This filename previously held the rich Opportunity-capture modal; that component's content moved to the new `AddProspectModal.tsx` below
+    AddProspectModal.tsx — the rich capture modal (renamed from the old `AddLeadModal.tsx`, unchanged behavior): single-column phone grids, 44px stage choices, labelled company/contact comboboxes, two-way autofill, pipeline membership, priority/deal/next step/follow-up/tags/notes, inline value/email validation and unsaved-changes confirmation (dirty-tracking + `ConfirmDialog`) all remain. Widened `w-[860px]` → `w-[1120px]`; the stage pill row is now `sm:flex-nowrap`/`whitespace-nowrap` so all 10 stage pills fit one line at desktop width instead of wrapping. Gained an optional "start from a lead" `Combobox` (shown only when `leads.length > 0`) that pre-fills company name/contact name/priority/notes from a `Lead` — folding the lead's connection/source into the notes text, since Opportunity has no dedicated field for either — and a `fromLeadId?: string | null` prop to open pre-filled directly. Submitting while promoted from a lead calls `removeLead(leadId)`, deleting it
+    AddContactModal.tsx — contact essentials in a single-column phone layout; labelled company combobox, mobile email/phone/URL keyboards and stacked actions
+    AddCompanyModal.tsx — company essentials in a single-column phone layout with labelled fields, URL keyboard hint and stacked actions
+    AddTaskModal.tsx   — single-column phone task capture with labelled title/description/date/assignee controls, responsive priority/date layout and stacked actions
+    Button.tsx         — shared button with 44px touch targets and visible keyboard focus on phones; compact desktop sizes and grain variants remain unchanged
     ButtonGrainPatchy.tsx — byte-for-byte snapshot of an earlier, mottled grain treatment (`.btn-grain-patchy` in globals.css), kept for reference/reuse; not wired into any page
 ```
+
+### Mobile UX and responsive behavior
+
+- The shell switches at Tailwind's `lg` breakpoint. Below 1024px the desktop
+  sidebar is removed from layout and `MobileChrome` provides a fixed header,
+  four primary bottom-nav destinations and a `More` drawer for the full route
+  set. At 1024px the mobile drawer closes automatically, body scroll unlocks,
+  and the 232px/64px desktop sidebar takes over.
+- `app/layout.tsx` exports a device-width viewport with `viewportFit: 'cover'`
+  and theme-aware browser chrome. `AppShell`, mobile navigation, global error,
+  modals, confirmations and full-screen drawers all account for horizontal and
+  vertical safe-area insets, including landscape notches.
+- Mobile pages use natural vertical scrolling and responsive gutters instead of
+  desktop viewport locks. Dashboard is assistant-first; Companies, Contacts,
+  Tasks and Settings stack their controls/content; filtered Companies, Contacts
+  and Prospects-board results render localized empty guidance and a clear action.
+- Dense CRM data changes representation rather than merely shrinking: the
+  Prospects table becomes cards below `md`, while Pipeline/Strategy use
+  horizontally snapping columns with an intentional next-column peek and edge
+  cue.
+- Touch targets are at least 44px for primary mobile controls. Text inputs are
+  16px to avoid iOS focus zoom. Form labels use stable `htmlFor`/`id` pairs;
+  task completion exposes accessible names/pressed states; mobile menus,
+  drawers and dialogs trap focus, close on Escape, lock background scroll and
+  restore focus to their opener.
+- Board dragging has explicit mouse, delayed long-press touch (250ms / 8px
+  tolerance) and keyboard sensors. Desktop background/wheel panning and edge
+  auto-scroll are preserved.
+
+**Verification (2026-08-25):** `next build`, TypeScript and `git diff --check`
+pass. All eight primary routes were checked at 320px with no page-level
+horizontal overflow; representative flows were also checked at 390px, 820px,
+1023/1024px and 1440px in dark and light themes. Mobile navigation, forms,
+drawers, focus return, note-discard confirmation, breakpoint handoff and empty
+state recovery passed against the production bundle with no browser console
+warnings/errors. The remaining validation item is physical iOS/Android feel for
+long-press drag/drop and real hardware safe areas.
 
 ### Shared Config (lib/stage-config.ts)
 - `STAGES: Stage[]` — canonical ordered list of the 9 pipeline stages
 - `stageColors: Record<Stage, string>` — Tailwind badge classes for all 9 pipeline stages
 - `priorityDot: Record<Priority, string>` — fixed hex colors (not Tailwind theme classes) for all 4 priority levels: critical `#E05252`, high `#E09040`, medium `#D4943C`, low `#4CAF72`. Deliberately not theme tokens — `bg-accent`/`bg-muted` shift hue between light/dark by design, but a priority indicator needs to read as the same color regardless of theme. Consumers apply it via inline `style={{ background: priorityDot[p] }}`, not className
-- `priorityRamp: Record<Priority, { from: string; to: string }>` — two-stop gradients for the priority `ColorSlider`. Kept **separate** from `priorityDot` rather than replacing it: a 6px dot reads best flat and saturated, while a large fill needs a gradient. `priorityDot` still has eight consumers
-- Single source of truth; imported by `CRMTable`, `leads/page`, `pipeline/page`, `AddLeadModal` (stage pills), `FilterBar`, `LeadCard`, and `dashboard/page` — previously `FilterBar`, `LeadCard`, and the dashboard each had their own duplicate (and inconsistent) local copy; consolidated into this one
+- `priorityRamp: Record<Priority, { from: string; to: string }>` — two-stop gradients for the priority `ColorSlider`. Kept **separate** from `priorityDot` rather than replacing it: a 6px dot reads best flat and saturated, while a large fill needs a gradient. `priorityDot` now has ten consumers, including the new `leads/page` cards and drawer
+- Single source of truth; imported by `CRMTable`, `prospects/page`, `leads/page`, `pipeline/page`, `AddProspectModal` (stage pills), `FilterBar`, `LeadCard`, and `dashboard/page` — previously `FilterBar`, `LeadCard`, and the dashboard each had their own duplicate (and inconsistent) local copy; consolidated into this one
 
 ### Display Settings and localization (`lib/settings.ts` + `lib/i18n/` + hooks)
 
@@ -106,9 +153,9 @@ on render — and are dated in a comment there.
   a separate user choice from interface language
 - `convertFromBase` / `convertToBase` bracket the FX boundary. Display goes
   through `formatCurrency`, which converts on the way out; the one money input
-  (`AddLeadModal`'s deal value) converts on the way in via `fmt.toBase`, because
-  the field is prefixed with the *display* currency's symbol. Any new money
-  input has to do the same, or it writes a figure that is off by the FX rate
+  (`AddProspectModal`'s deal value) converts on the way in via `fmt.toBase`,
+  because the field is prefixed with the *display* currency's symbol. Any new
+  money input has to do the same, or it writes a figure that is off by the FX rate
 - Compaction is applied to the **converted** amount, not the stored one: the
   `>= 1000` threshold and the 1-decimal rounding both see the display figure
 - Database stages and priorities keep their canonical English enum values. Only
@@ -124,9 +171,9 @@ on render — and are dated in a comment there.
 - `sounds` (default on) gates the interface chimes. Only the task check-off uses
   it today; anything audible added later should read the same flag rather than
   growing a second preference
-- `AddLeadModal`'s deal-value prefix is text, not a `DollarSign` icon, and the
-  input's left padding comes from a length lookup (`pl-7`/`pl-9`/`pl-12`) — Tailwind
-  needs whole class names at build time, so it can't be interpolated
+- `AddProspectModal`'s deal-value prefix is text, not a `DollarSign` icon, and the
+  input's left padding comes from a length lookup (`pl-11`/`pl-14`/`pl-[4.5rem]`) —
+  Tailwind needs whole class names at build time, so it can't be interpolated
 
 **There are now zero raw `toLocaleString()` calls and zero hardcoded `$` in the
 app.** Three `DollarSign` icons were removed along the way; left in place they
@@ -141,8 +188,8 @@ gestures:
   hand. A vertical wheel over the board becomes horizontal travel, and the
   background can be grabbed and thrown sideways. Extracted from a
   pipeline-only inline hook into a shared one: `CRMTable`'s horizontal scroll
-  (the leads table) and the leads page's board view now use it too, not just
-  the pipeline kanban. Two independent, separately-configurable exclusion
+  (the prospects table) and the prospects page's board view now use it too,
+  not just the pipeline kanban. Two independent, separately-configurable exclusion
   selectors, because click-drag panning and wheel-to-horizontal answer
   different problems:
   - `panExcludeSelector` — presses that shouldn't start a drag-pan because
@@ -179,11 +226,11 @@ gestures:
 the board also stayed permanently un-pannable. This predated the panning work
 and was only visible as a stuck highlight.
 
-**Empty column slots open a picker of off-board leads, not the "add lead"
-modal.** A lightly-tinted, empty card silhouette (`bg-white/[0.04]`, dotted
-border) rather than a "Tomt"/"Empty" label — the tint alone signals a card
-belongs there, and clicking it opens the same off-board-leads list as the
-top-right "Add Leads" button, scoped to drop the pick directly into that
+**Empty column slots open a picker of off-board prospects, not the "add
+prospect" modal.** A lightly-tinted, empty card silhouette (`bg-white/[0.04]`,
+dotted border) rather than a "Tomt"/"Empty" label — the tint alone signals a
+card belongs there, and clicking it opens the same off-board-prospects list as
+the top-right "Add Prospects" button, scoped to drop the pick directly into that
 column's stage (`addToPipeline(id, stage)`) rather than always landing in
 "New". The picker button sits at `z-50`, above the click-outside overlay's
 `z-30`, so a second press on it reliably toggles the picker closed — with no
@@ -232,7 +279,7 @@ through the 29 March 2026 DST boundary in `Europe/Stockholm`.
 old form had no due-date control at all (silently hardcoded to +7 days) and
 plain pill buttons for priority. The modal has title, description, priority via
 the shared `ColorSlider`, an actual due-date input, and an assignee picker —
-same material and field layout as `AddLeadModal`/`AddCompanyModal`. The inline
+same material and field layout as `AddProspectModal`/`AddCompanyModal`. The inline
 pencil-editor kept its existing row-morphs-in-place interaction (not converted
 to a modal) but picked up the same `ColorSlider` for priority and the same
 `AssigneePicker` for assignee, so both entry points now agree on controls.
@@ -314,6 +361,10 @@ Full detail in `docs/database.md`. Shape of it:
 | `supabase/migrations/20260819120000_init.sql` | 6 tables, 3 enums, indexes, `updated_at` triggers, RLS enabled with owner-scoped policies. One of those enums, `crm_strategy_column`, is dropped again by the migration below |
 | `supabase/migrations/20260821120000_strategy_headlines.sql` | `strategy_columns` table; backfills the six enum lanes into per-opportunity headlines, repoints `strategy_cards.column_name` → `column_id`, drops the `crm_strategy_column` enum |
 | `supabase/migrations/20260824120000_task_assignee.sql` | `crm_colleague` enum (`erik`/`abdi`/`hai`), nullable `tasks.assignee` column — plain enum, not a foreign key, same reasoning as `crm_priority` (no real accounts yet, see Tasks) |
+| `supabase/migrations/20260824170000_task_archive.sql` | `tasks.archived_at`. Applied |
+| `supabase/migrations/20260825120000_leads.sql` | new `public.leads` table (`id`, `owner_id`, `company_name text not null`, `priority`, `notes`, timestamps), RLS + owner policy, index on `owner_id`, `updated_at` trigger. Deliberately no FK to companies/contacts — promoting a Lead to a Prospect is what creates those records, and the Lead row is deleted at that point. Applied |
+| `supabase/migrations/20260825140000_lead_contact_fields.sql` | adds `contact_name`, `connection`, `source`, `followed_up_by crm_colleague` (reuses the enum from `task_assignee` above) to `public.leads` — pending |
+| `supabase/migrations/20260826120000_opportunity_followed_up_by.sql` | adds `followed_up_by crm_colleague` to `public.opportunities` — pending |
 | `supabase/seed.sql` | the former mock data as real rows, fixed UUIDs, re-runnable |
 | `supabase/config.toml` | local CLI config from `supabase init`; not a project link |
 | `scripts/supabase.mjs` | `npm run supabase -- <cmd>` — runs any CLI command with `SUPABASE_ACCESS_TOKEN` taken from `.env.local`, which overrides the machine-global `~/.supabase/access-token` |
@@ -322,8 +373,8 @@ Full detail in `docs/database.md`. Shape of it:
 | `lib/db/pg.ts` | `getDb()` — direct Postgres client (`postgres.js`) over `SUPABASE_DB_URL`, for reads only. Cached on `globalThis`, not a module-level singleton — see Known issues |
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
-| `lib/db/queries.ts` | `loadSnapshot()` — reads all seven tables in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing |
-| `app/actions/crm.ts` | 10 Server Actions (create + update per entity), returning `{ ok }` rather than throwing |
+| `lib/db/queries.ts` | `loadSnapshot()` — reads all eight tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing |
+| `app/actions/crm.ts` | 20 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks, returning `{ ok }` rather than throwing |
 | `lib/store/provider.tsx` | `CRMStoreProvider` — builds one store per request **containing** the snapshot, so the server HTML and the hydration pass both render real rows; `useCRMStore` resolves it from context |
 
 Reads happen once per full page load in `app/layout.tsx` (now `async`); client
@@ -334,7 +385,9 @@ optimistic row and the stored row are the same row — via `newId()` in
 timestamp+random string. **`crypto.randomUUID` is only defined in a secure
 context**, so on a plain-HTTP LAN origin (the dev server also binds a network
 address) it is `undefined` and a bare call would mint records with `id:
-undefined`. Only `AddLeadModal` uses `newId()` so far — see Known issues.
+undefined`. `AddLeadModal` and `AddProspectModal` both use `newId()` — see
+Known issues for the remaining call sites that still call
+`crypto.randomUUID()` directly.
 
 **Runs without credentials.** No `.env.local` means demo data, a boot warning,
 and writes that no-op. The UI is identical either way.
@@ -348,15 +401,17 @@ and writes that no-op. The UI is identical either way.
 | `npm run db:link -- --project-ref <ref>` | links the CLI to a project |
 | `npm run supabase -- <cmd>` | any other CLI command, same scoped auth |
 
-Four migration files exist; three are applied to `wmnobqhypkocirfybqsj`
-(`init`, `strategy_headlines`, `task_assignee`). `20260824170000_task_archive`
-is **pending** — run `npm run db:push`. The headline migration was pushed
-through the `SUPABASE_DB_URL` path while the access token was stale, which is
-exactly the fallback that path exists for — schema changes never need a
-Management API token. `task_assignee` reached the database the same way; its
-`--yes` push was blocked client-side by the assistant's own permission
-classifier before returning a result, so it was verified by querying
-`information_schema.columns` directly rather than trusting the CLI's exit code.
+Seven migration files exist; five are applied to `wmnobqhypkocirfybqsj`
+(`init`, `strategy_headlines`, `task_assignee`, `task_archive`, `leads`). Two are
+**pending** — `20260825140000_lead_contact_fields` and
+`20260826120000_opportunity_followed_up_by`, confirmed via `npm run db:status`
+— run `npm run db:push`. The headline migration was pushed through the
+`SUPABASE_DB_URL` path while the access token was stale, which is exactly the
+fallback that path exists for — schema changes never need a Management API
+token. `task_assignee` reached the database the same way; its `--yes` push was
+blocked client-side by the assistant's own permission classifier before
+returning a result, so it was verified by querying `information_schema.columns`
+directly rather than trusting the CLI's exit code.
 
 Migration files **must** be named `<14-digit-timestamp>_<name>.sql` — that is how
 the CLI orders them and matches them against `supabase_migrations.schema_migrations`
@@ -396,13 +451,15 @@ promptly. See the fixed entry under Known issues.
 Every data mutation below also persists via the matching Server Action; failures
 land in `syncError` and are logged, without rolling back the optimistic change.
 Actions:
-- `addOpportunity` — new lead from capture modal
+- `addOpportunity` — new prospect from `AddProspectModal`
 - `addToPipeline` — sets `inPipeline: true` and resets stage to `'New'`
-- `moveOpportunityStage` — drag/drop pipeline updates
-- `addNote`, `dismissNote`, `applyNote` — inbox note management; apply updates matching opportunity
+- `moveOpportunityStage`, `updateOpportunity` — drag/drop pipeline updates and general field edits (stage/priority/followedUpBy/dealValue/followUpDate/nextStep/tags from `DetailDrawer`'s inline editors)
+- `addNote`, `dismissNote`, `applyNote`, `deleteNote` — note management; apply updates matching opportunity, delete backs `NotesTimeline`'s per-entry delete button
 - `addStrategyColumn`, `renameStrategyColumn`, `removeStrategyColumn` — strategy headlines (removing one prunes its cards locally; the database cascades)
 - `moveStrategyCard`, `addStrategyCard` — strategy card management; a move resequences the destination lane so `order` stays dense
 - `addTask`, `toggleTaskComplete` — task management
+- `addCompany`, `updateCompany`, `addContact`, `updateContact` — company/contact records; the update pair backs `DetailDrawer`'s click-to-edit company/contact name fields
+- `addLead`, `updateLead`, `removeLead` — the new lightweight Lead entity; `removeLead` is permanent, used both when a lead is promoted into a Prospect and when removed outright
 - `syncError` / `clearSyncError` — last failed write (set and logged, not yet rendered)
 - `toggleSidebar`, `setSearchQuery` — UI state
 - `toggleTheme`, `setSetting`, `resetSettings`, `hydrateSettings` — display preferences and interface language, persisted to `localStorage` key `khyte-settings` (`khyte-theme` is still read as a legacy fallback for pre-settings builds)
@@ -420,6 +477,7 @@ from.
 | `notes.ts` | 3 raw capture notes, 2 with AI extraction |
 | `strategy.ts` | 6 headlines + 10 strategy cards for the Nordvik Capital opportunity; every other demo deal opens empty |
 | `tasks.ts` | 8 realistic tasks linked to opportunities/companies, mix of overdue/today/upcoming/completed |
+| `leads.ts` | 2 example leads (Halcyon Robotics with a connection/source, Fjord Analytics with neither) for the credential-free demo-data fallback, wired into `demoSnapshot()` in `lib/db/queries.ts` |
 
 ### Sound (lib/sound.ts)
 
@@ -432,7 +490,7 @@ on the `sounds` setting; the module itself does not read settings.
 - `Priority` — `'low' | 'medium' | 'high' | 'critical'`
 - `Stage` — 9 pipeline stages
 - `ColleagueId` — `'erik' | 'abdi' | 'hai'`, the fixed assignment roster (see Tasks); metadata (name, avatar color) lives in `lib/colleagues.ts`, not this file
-- `Company`, `Contact`, `Opportunity` (with `inPipeline` — leads only appear on the pipeline board once explicitly added), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
+- `Company`, `Contact`, `Opportunity` (with `inPipeline` — prospects only appear on the pipeline board once explicitly added, and now `followedUpBy?: ColleagueId` — who on the team is following this prospect up), `Lead` (new: `{ id, companyName (required), contactName?, connection?, source?, followedUpBy?: ColleagueId, priority, notes, createdAt }` — raw, unqualified interest with no company/contact/opportunity records until promoted to a Prospect, at which point the Lead row is deleted; `Lead.followedUpBy` means who *added* the lead, a different scope from `Opportunity.followedUpBy`'s "who's following it up"), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
 - `PipelineStage`
 - `Settings` — display preferences (`theme`, `currency`, `locale`, `dateFormat`, `compactNumbers`), plus `CurrencyCode`, `LocaleCode`, `DateFormat`
 
@@ -496,11 +554,11 @@ also carries hover/active/disabled states):
   Toggle/filter pills were deliberately left alone (different interaction
   pattern, not a one-off action).
 
-**Type scale (the leads page is the reference).** Every tab was brought onto
-one scale; before this, `/tasks`, `/companies`, `/contacts` and `/strategy` sat a
-full tier below `/leads` and the table — 13px primaries against 15px, 11px
-secondaries against 13.5px, 10px labels — which is what read as timid rather
-than deliberate.
+**Type scale (the prospects page — the old `/leads`, renamed — is the
+reference).** Every tab was brought onto one scale; before this, `/tasks`,
+`/companies`, `/contacts` and `/strategy` sat a full tier below `/prospects`
+and the table — 13px primaries against 15px, 11px secondaries against 13.5px,
+10px labels — which is what read as timid rather than deliberate.
 
 | Role | Size |
 |---|---|
@@ -525,14 +583,14 @@ mixing the two is what made pages look like different products. Remaining
 **Controls.** `Button`'s `md` is the page-level primary action
 (`h-[38px] px-[18px] text-[14px]`) and `sm` sits with the filter bar and in-form
 controls (`h-9 px-4 text-[13.5px]`). That size used to live as a one-off
-`className` override on `/leads` while other tabs took smaller defaults, and two
+`className` override on `/prospects` while other tabs took smaller defaults, and two
 pages used `size="sm"` for a page-level action. Header action icons are 15px.
 
 **Shared surfaces.** Both boards use the same card definition — `bg-surface
 border border-border rounded-xl p-3.5 card-glow` — and the same stage pill
 (`h-7 px-2.5 rounded-md text-[14px]` + `stageColors`). The pipeline column well
 sits at `bg-background/60` so a `bg-surface` card separates from it the way the
-leads board's cards separate from the page.
+prospects board's cards separate from the page.
 
 **Typography:**
 - Display: Instrument Serif (page headings, empty states — warm, editorial) via `.font-display`
@@ -543,9 +601,9 @@ leads board's cards separate from the page.
 - The dashboard is a **deliberate exception** to the scale above only in its
   chrome — the 50px greeting, the 17px composer and the Barlow uppercase card
   labels are the surface's signature and stay. Its two card *lists* were brought
-  onto the shared 15 / 13.5 / 15 values, and its colours onto the ramp. The
-  vh-clamp compression and `justify-center-safe` that keep those cards from ever
-  clipping are untouched — see Layout
+  onto the shared 15 / 13.5 / 15 values, and its colours onto the ramp. Desktop
+  retains vh-clamp compression/`justify-center-safe`; mobile switches to natural
+  scrolling and assistant-first order — see Layout
 - Data/Labels: Geist Mono (uppercase, tracked, 10px — via `.label-mono` utility)
 
 **Effects:**
@@ -559,16 +617,23 @@ leads board's cards separate from the page.
 - `color-scheme: dark` / `light` set per theme on the root — native widgets (date picker icon, scrollbars) match the active theme
 
 **Layout:**
-- Dashboard cards never clip. The column is `overflow-y-auto` with
+- Desktop dashboard cards never clip. The column is `overflow-y-auto` with
   `justify-center-safe` (`justify-content: safe center`), so when the stack
   outgrows the viewport it falls back to start-alignment and scrolls rather than
   spilling past both edges and being cut by `overflow-hidden`. Every vertical
   value scales with viewport height via `clamp()` with the max pinned to the
   desktop figure, so tall screens are unchanged and short ones compress instead
   of overflowing
-- Sidebar: 232px expanded → 64px collapsed
-- Topbar: 52px sticky with backdrop blur
-- Drawers: always-mounted, slide via translate-x with `cubic-bezier(0.16, 1, 0.3, 1)`
+- Mobile dashboard uses natural page scrolling and assistant-first source order;
+  the desktop split/viewport lock starts at `lg`
+- Mobile chrome heights are CSS variables and include top/bottom safe-area
+  insets; `AppShell` reserves that space and adds left/right safe-area padding
+- Sidebar: desktop-only at `lg`, 232px expanded → 64px collapsed
+- Topbar: optional 64px sticky action surface with backdrop blur; returns `null`
+  on routes that supply no actions
+- Drawers slide via translate-x with `cubic-bezier(0.16, 1, 0.3, 1)`;
+  `DetailDrawer` and route detail drawers remain mounted/inert for the exit
+  animation, while centered `Modal`/`ConfirmDialog` portals unmount when closed
 - Overlay: `bg-black/40 backdrop-blur-[3px]`
 
 ---
@@ -578,20 +643,30 @@ leads board's cards separate from the page.
 - Authentication — the Server Actions in `app/actions/crm.ts` are therefore
   unauthenticated write endpoints, reachable by direct POST. Keep the app local
   or access-controlled until this lands.
-- Delete flows, except tasks — `deleteTask` exists end to end (store → action →
-  `delete().eq('id', …)`) and is reachable only from the task archive. Every
-  other entity is still create + update only
+- Delete flows for companies, contacts, opportunities and strategy content —
+  those are still create + update only. Tasks, notes and leads are the
+  exceptions: `deleteTask` (reachable only from the task archive), `deleteNote`
+  (the per-entry `Trash2` button in `NotesTimeline`, wired only in
+  `DetailDrawer`) and `deleteLead` (permanent — used both when a lead is
+  promoted into a Prospect, via `removeLead`, and when discarded outright) all
+  exist end to end (store → Server Action → `delete().eq('id', …)`)
 - Realtime — two open tabs do not see each other's changes until reload
 - Surfacing failed writes in the UI (`syncError` is set and logged, nothing renders it)
 - Real AI extraction (mocked — picks random extraction for notes > 30 chars)
 - Email / calendar sync
 - Notifications
 - Advanced cell editing in table
-- Edit flows for companies, contacts, opportunities (add modals exist). Two
-  exceptions: **opportunity notes**, editable inline in `DetailDrawer`, and
-  **tasks**, fully editable inline behind the pencil. Every other field is still
-  read-only once created
-- Mobile optimization beyond basic responsive layout
+- Dedicated edit flows for companies, contacts, opportunities (add modals
+  exist; there is still no "Edit Company"/"Edit Contact" modal). `DetailDrawer`
+  now covers most of this piecemeal instead: opportunity stage, priority,
+  followed-up-by, deal value, follow-up date, next step and tags are all
+  click-to-edit inline, and the company name / primary contact name write
+  through to the shared `Company`/`Contact` records. Notes are no longer a
+  single editable field — they're an append-only, individually deletable log
+  (see Components: `DetailDrawer.tsx`). What remains genuinely uneditable:
+  company industry/size/location/tags, contact role/email/linkedin/phone, and
+  everything on Lead outside its own drawer/promote flow. **Tasks** remain
+  fully editable inline behind the pencil
 - Loading states, and per-route `error.tsx` boundaries (only the root `global-error.tsx` exists)
 
 ---
@@ -609,6 +684,9 @@ leads board's cards separate from the page.
    check-off (shared-layout flight between columns). The rest of the app is
    still CSS keyframes; migrate the drawers and modals next if the richer
    interactions are wanted
+7. **Physical mobile acceptance pass** — validate long-press board drag/drop,
+   notch/home-indicator insets and virtual-keyboard resizing on real iOS and
+   Android hardware. Browser viewport QA is complete; this is feel/hardware QA
 
 ---
 
@@ -619,16 +697,18 @@ leads board's cards separate from the page.
   refresh if no `.env.local` is present, which is the intended demo-mode behaviour
 - ~~Pages render empty until the client store fills, sometimes never~~ — fixed
   2026-08-21. Every store-backed page server-rendered its empty state (`/leads`
-  shipped `No leads match the current filters.` and zero table rows), and the
-  real data only appeared once a subscriber noticed the store had changed. That
-  check lives in a passive effect, so a backgrounded tab could defer it
-  indefinitely — the page would sit at "0 of 0 opportunities" until you switched
-  back to the tab. Cause: `StoreHydrator` wrote the snapshot in *after* the store
-  was created, but `useSyncExternalStore` renders SSR and hydration from
-  `getInitialState()`, which Zustand fixes at construction. Fix: build the store
-  with the snapshot (see State Management). `/leads` now server-renders all 7
-  rows. This also removed the shared-singleton-across-requests problem that would
-  have leaked one operator's data into another's render once auth landed
+  — since renamed to `/prospects` — shipped `No leads match the current
+  filters.` and zero table rows), and the real data only appeared once a
+  subscriber noticed the store had changed. That check lives in a passive
+  effect, so a backgrounded tab could defer it indefinitely — the page would
+  sit at "0 of 0 opportunities" until you switched back to the tab. Cause:
+  `StoreHydrator` wrote the snapshot in *after* the store was created, but
+  `useSyncExternalStore` renders SSR and hydration from `getInitialState()`,
+  which Zustand fixes at construction. Fix: build the store with the snapshot
+  (see State Management). That page now server-renders all rows (seven at the
+  time; eight now that `leads` is a table too). This also removed the
+  shared-singleton-across-requests problem that would have leaked one
+  operator's data into another's render once auth landed
 - **Use the Session pooler connection string, not Direct connection.**
   `db.<ref>.supabase.co` resolves to IPv6 only; on an IPv4 network the CLI fails
   with `getaddrinfo ENOTFOUND`, which reads like a wrong project ref but is not.
@@ -662,10 +742,16 @@ leads board's cards separate from the page.
 - No loading states, and no segment-level `error.tsx` boundaries — `global-error`
   is the only one, so any route failure takes the whole page rather than just
   that section
-- No mobile optimization beyond basic responsive layout
+- **Physical-device mobile QA remains.** Browser checks cover 320–1440px,
+  light/dark themes, overflow, dialogs, navigation and the 1024px handoff, but
+  long-press drag feel and real notch/home-indicator behavior still need one pass
+  on physical iOS and Android devices
 - Dashboard chat is mock-only (canned replies matched on keywords); mic dictation depends on the browser's Web Speech API (works in Chrome/Edge, silent no-op elsewhere)
 - `CaptureBox` / `SuggestionPreviewCard` are orphaned since `/inbox` was removed — reuse or delete when the capture flow finds a new home
-- ~~Capture modals (lead/contact/company) are a functional first pass — a hand polish pass on the design comes later~~ — **`AddLeadModal` has now had that pass** (2026-08-21): transparency fix, portal + focus trap, keyboard-complete combobox, priority `ColorSlider`, Jakarta title, +2px type scale, inline validation. `AddContactModal` / `AddCompanyModal` inherit the shared `Modal` and `FormFields` improvements, and were brought onto the same control scale on 2026-08-21 (36px buttons, 14px labels, `⌘↵` beside the buttons instead of stranded bottom-left at 10px), but have **not** had their own layout pass
+- ~~Capture modals were desktop-first functional passes~~ — fixed. Prospect,
+  contact, company and task modals now share safe-area phone gutters, 16px/44px
+  controls, programmatic labels, single-column mobile grids and stacked actions;
+  `AddProspectModal` retains its richer validation/dirty-discard behavior
 - **Settings are per-browser, not per-account.** They live in `localStorage`
   (`khyte-settings`), so they do not follow the operator to another machine and
   there is no server-side record of them. Revisit when auth lands
@@ -678,7 +764,11 @@ leads board's cards separate from the page.
 - Native `<select>` is unusable in this design system — Chrome renders the option
   popup with OS chrome that ignores the page palette, which came out white-on-white
   in dark mode. `/settings` uses a custom dropdown built on the `Combobox` popover
-  pattern instead. Worth remembering before reaching for a native select elsewhere
+  pattern instead; `FormFields.tsx`'s new `InlineSelect<T extends string>` is the
+  general-purpose version of that same pattern — a button plus an
+  absolutely-positioned `role="listbox"`, click-outside-to-close — now also used
+  by `DetailDrawer` for Stage/Priority/Followed-up-by inline editing. Worth
+  remembering before reaching for a native select elsewhere
 - ~~Supabase intermittently rejects reads with `PGRST303 / JWT issued at future`~~
   — **fixed 2026-08-24, not just mitigated.** `loadSnapshot()` (`lib/db/queries.ts`)
   no longer goes through PostgREST at all: `readSnapshot()` now runs seven plain
@@ -726,18 +816,20 @@ leads board's cards separate from the page.
   else in this codebase — the module-level pattern every other singleton here
   uses (`lib/supabase/server.ts`) is wrong for anything that holds a real
   connection.
-- **Only `AddLeadModal` guards against discarding a half-filled form.** It tracks
-  dirtiness and raises `ConfirmDialog`; `AddContactModal` and `AddCompanyModal`
-  throw typed input away silently on Esc, backdrop click, or Cancel. The dialog is
-  generic and the wiring is a few lines each — left undone deliberately, because it
-  changes those modals' close behaviour and that was not the task at hand
-- **`LeadCard` is the last component on the old type scale.** The leads table and
-  its board view were lifted to match `DetailDrawer` on 2026-08-21 (14px names,
-  12.5px secondary, 13px stage pills, `foreground/60–85` instead of `muted`), but
-  the pipeline board's card still runs 13px/11px/9px. Visible when moving between
-  `/leads` in board mode and `/pipeline`, which show near-identical cards at
-  different sizes
-- Adding a lead from the pipeline "Add Leads" picker resets its stage to "New" even if it was further along — intentional per spec, revisit if it feels wrong in use
+- **Only `AddProspectModal` guards against discarding a half-filled form.** It
+  tracks dirtiness and raises `ConfirmDialog`; `AddContactModal` and
+  `AddCompanyModal` throw typed input away silently on Esc, backdrop click, or
+  Cancel — and so does the new lightweight `AddLeadModal` (it has no
+  dirty-tracking at all; a half-filled lead is small enough to not warrant the
+  guard). Note the filename swap: `AddLeadModal.tsx` used to be the component
+  with the guard, back when it was the rich Opportunity-capture form; that
+  behavior lives in `AddProspectModal.tsx` now. The dialog is generic and the
+  wiring is a few lines each — left undone for the other modals deliberately,
+  because it changes their close behaviour and that was not the task at hand
+- ~~`LeadCard` was the last component on the old type/touch scale~~ — fixed in
+  the mobile pass; pipeline cards now use the shared readable scale, visible
+  focus treatment and touch-safe controls
+- Adding a prospect from the pipeline "Add Prospects" picker resets its stage to "New" even if it was further along — intentional per spec, revisit if it feels wrong in use
 - **Five call sites still call `crypto.randomUUID()` directly** instead of
   `newId()` — `AddCompanyModal`, `AddContactModal` (×2), `CaptureBox`,
   `dashboard/page` (×2), `tasks/page`. They mint `id: undefined`
@@ -746,5 +838,7 @@ leads board's cards separate from the page.
   swap each when someone is in those files
 - ~~Strategy board cards state is duplicated (local + Zustand)~~ — fixed: the board derives headlines and cards straight from the store, so switching deals re-renders it
 - ~~Pipeline board also duplicates opportunity state locally for drag/drop~~ — fixed: board now derives cards straight from store-backed props
-- `layout.tsx`'s `Source_Serif_4` font config has no `weight` set, which Turbopack rejects ("Unknown weight 200 900 for font Source Serif 4") — shows as a dev-overlay build issue; needs an explicit `weight` array to resolve
+- ~~`Source_Serif_4` without an explicit weight failed under an earlier
+  Turbopack build~~ — no longer reproducible on Next 16.2.1; the variable-font
+  configuration passes the production build
 - Sidebar and capture modals are now permanently dark-styled regardless of the page theme (see Design System note above); Topbar and regular content cards still switch with the theme toggle — revisit if the split ever feels inconsistent
