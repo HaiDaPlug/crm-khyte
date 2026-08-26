@@ -1,7 +1,7 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-08-25
-**Phase:** MVP + persistence (Supabase live, no auth yet)
+**Date:** 2026-08-26
+**Phase:** MVP + persistence + password gate (Supabase live; shared-password auth, no accounts)
 
 The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
 (eu-north-1); schema and seed applied; reads and writes verified end to end
@@ -42,6 +42,7 @@ is already live).
 ### Routes
 | Route | Status | Notes |
 |---|---|---|
+| `/login` | Functional | The password gate. Renders outside `AppShell` — no sidebar, no store, no database read. Single autofocused password field, `useActionState` error states (empty / invalid / throttled), `noindex`. See Auth gate |
 | `/` | Done | Redirects to `/dashboard` |
 | `/dashboard` | Functional | Command-center home. Desktop keeps the split pipeline/tasks + assistant composition; mobile switches to assistant-first reading order and natural vertical scrolling, with responsive greeting, composer, quick prompts and cards. The composer still supports Enter submit, autosize, mic dictation via Web Speech API, and mock replies keyed off lead names. |
 | `/leads` | Functional | New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button; each card also carries its own promote action. "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
@@ -73,7 +74,7 @@ components/
     FilterBar.tsx      — stage + priority filters with semantic expanded/pressed state, inert collapsed content, horizontally scrollable mobile chips and 44px phone targets
     ViewToggle.tsx     — labelled table/board toggle group with pressed states and full-width phone layout
     EmptyState.tsx     — centered empty state with icon + message
-    Modal.tsx          — safe-area-aware portaled modal shell, unmounted when closed; phone gutters, responsive title/spacing and stacked full-width mobile footer. Shared `useDialogBehavior` supplies focus trap, Escape, scroll lock and focus return; title labelling and nested-dialog suspension remain
+    Modal.tsx          — safe-area-aware portaled modal shell, unmounted when closed; phone gutters, responsive title/spacing and stacked full-width mobile footer. Shared `useDialogBehavior` supplies focus trap, Escape, scroll lock and focus return; title labelling and nested-dialog suspension remain. The scroll container keeps pointer events and owns close-on-press; the backdrop is now purely the scrim — see Known issues for why
     ConfirmDialog.tsx  — safe-area-aware `role="alertdialog"` with stacked full-width phone actions and focus on the safe choice
     FormFields.tsx     — shared mobile-safe form primitives. Inputs are 44px/16px on phones (prevents iOS focus zoom); all modal `Field` labels are wired to stable control IDs, comboboxes retain full keyboard/listbox semantics, `AssigneePicker` has labelled group semantics, and `ColorSlider`/`DateStepper` remain keyboard operable. Gained `InlineSelect<T extends string>` — a small dark popover (button + absolutely-positioned `role="listbox"`, click-outside-to-close) standing in for native `<select>`; used by `DetailDrawer` for Stage/Priority/Followed-up-by, the general-purpose version of the popover pattern `/settings` already used
     AddLeadModal.tsx   — now the lightweight capture form for the new raw-interest `Lead` entity (company name required, contact name, connection, source, "Tillagd av"/Added-by via `AssigneePicker`, priority via `ColorSlider`, notes). No dirty-tracking or discard confirmation — it's a small form with little to lose. This filename previously held the rich Opportunity-capture modal; that component's content moved to the new `AddProspectModal.tsx` below
@@ -331,6 +332,88 @@ and "Try again" re-ran the render. That also exercised the retry's fast path —
 `Invalid API key` is non-transient, so it failed on the first attempt rather than
 spending the whole budget on a fault that was never going to clear.
 
+### Auth gate (lib/auth/ + proxy.ts + app/login/)
+
+**One shared password, no accounts.** Anyone holding it gets full read/write on
+every record, so it is a workspace credential rather than a personal one. This
+authenticates but does not authorize — there is no identity to scope data
+against (see What does NOT exist).
+
+| File | Role |
+|---|---|
+| `lib/auth/session.ts` | Signs/verifies the cookie, compares the password. `SESSION_COOKIE`, `createSession()`, `verifySession()`, `verifyPassword()`, `sessionCookieOptions`, `generateSecret()` |
+| `lib/auth/guard.ts` | `isAuthenticated()` (React `cache`d), `requireSession()` for pages, `requireAuth()` for Server Actions |
+| `proxy.ts` | Route-level redirect gate — Next 16's renamed `middleware.ts` |
+| `app/actions/auth.ts` | `login` (a `useActionState` form handler) and `logout` |
+| `app/login/page.tsx` + `components/auth/LoginForm.tsx` | The gate itself |
+
+**The cookie is a signed timestamp, not an encrypted token.** Value is
+`<expiry>.<hmac>`, HMAC-SHA256 over the expiry with `AUTH_SECRET`. There is no
+identity to hide, so signing is the whole requirement — the payload is
+readable, it just cannot be forged. Nothing is stored server-side, so there is
+no session table and nothing to clean up; the tradeoff is that a single session
+cannot be revoked. Rotating `AUTH_SECRET` invalidates every session at once,
+which is the right blunt instrument for a shared password. Seven-day expiry.
+
+**`node:crypto`, not `jose`.** Proxy runs on the Node.js runtime in Next 16, so
+the built-in works everywhere this runs. `jose` is present only as a transitive
+dependency of `@supabase/supabase-js` and could vanish on any lockfile update.
+
+**Both string comparisons are constant-time** (`timingSafeEqual`), including
+the length-mismatch path — returning early on a length difference would leak
+length through timing.
+
+**The password is compared directly, not hashed.** It is a single secret in the
+environment, not a row in a users table: there is no store to breach, and
+hashing would only protect the env file from itself. Hash it the moment this
+becomes per-user.
+
+**Two layers, deliberately.** `proxy.ts` is an *optimistic* check — it verifies
+the cookie signature and does no I/O, because Proxy runs on every request
+including prefetches. The real enforcement is `requireAuth()` inside the
+actions, because Server Actions are reachable by direct POST and a request that
+never renders a page never passes through a page guard.
+
+**`requireAuth()` sits at the two choke points in `app/actions/crm.ts`, not in
+all 20 bodies** — inside `run()` (everything that touches the database) and
+`guardedOk()` (the early returns that never reach `run()`). A 21st action
+cannot be added without a session check unless it bypasses both. Both early-out
+paths needed it: the 20 `skipUnconfigured()` returns would have been a real hole
+on a credential-less preview deploy, and the 8
+`Object.keys(payload).length === 0` returns answered `ok: true` to an
+unauthenticated probe.
+
+`requireAuth()` throws rather than redirecting — `redirect()` inside an action
+would tell the client to navigate while the action itself had already committed
+to running. `requireSession()` is the redirecting variant, for pages.
+
+**The root layout gates `loadSnapshot()` on the session.** `app/layout.tsx`
+reads `isAuthenticated()` and passes `null` instead of a snapshot when logged
+out, rendering `children` bare instead of `AppShell`. Two reasons: an
+unauthenticated request must not reach the database, and `AppShell` would
+otherwise serialize the entire working set into the login page's HTML. This is
+also why the gate is not a route group — a layout cannot read the pathname on
+the server (layouts do not re-render on navigation) but it *can* read cookies,
+so one root layout serves both states without moving all ten route folders.
+
+**`LoginForm` carries its own Swedish copy** rather than using
+`useTranslations()`. The dictionary is reached through the client store, which
+is populated from the server snapshot in `AppShell` — the very thing the login
+page renders outside of. Swedish matches the `lang="sv"` the root layout sets.
+
+Rate limiting is a per-process in-memory counter (10 attempts / 15 min, one
+global bucket). A shared password has no account to lock, and keying on a
+client-settable forwarded IP would let an attacker rotate freely. It frustrates
+a script pointed at one box; it is not a distributed defense, and it resets on
+deploy. Move to a shared store if this ever runs on more than one instance.
+
+**Verified 2026-08-26** against the running dev server, same action id and
+payload both ways: no session → 307 to `/login`; forged cookie → 307; valid
+session → 200 and the row actually landed in Postgres (then deleted). Session
+primitives pass 12/12 unit cases — forged signature, tampered payload, expired
+timestamp, foreign-secret signature, wrong password, password prefix. Login
+page ships zero CRM chrome or data.
+
 ### Dialog behaviour (lib/hooks/useDialog.ts)
 
 `useDialogBehavior({ open, onClose, panelRef, shouldIgnoreEscape?, suspended? })`
@@ -374,11 +457,13 @@ Full detail in `docs/database.md`. Shape of it:
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
 | `lib/db/queries.ts` | `loadSnapshot()` — reads all eight tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing |
-| `app/actions/crm.ts` | 20 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks, returning `{ ok }` rather than throwing |
+| `app/actions/crm.ts` | 20 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks, returning `{ ok }` rather than throwing. Every one is gated on the session via `run()`/`guardedOk()` — see Auth gate |
+| `app/actions/auth.ts` | `login` / `logout`. Kept separate from `crm.ts`: those are narrow writes the store calls after an optimistic update, these are form handlers that set cookies and redirect |
 | `lib/store/provider.tsx` | `CRMStoreProvider` — builds one store per request **containing** the snapshot, so the server HTML and the hydration pass both render real rows; `useCRMStore` resolves it from context |
 
-Reads happen once per full page load in `app/layout.tsx` (now `async`); client
-navigation re-uses the store. Writes are optimistic — local state first, then
+Reads happen once per full page load in `app/layout.tsx` (now `async`), and only
+when the request carries a valid session — an unauthenticated request never
+reaches the database (see Auth gate). Client navigation re-uses the store. Writes are optimistic — local state first, then
 the Server Action, no awaiting. Record IDs are generated client-side so the
 optimistic row and the stored row are the same row — via `newId()` in
 `lib/utils.ts`, which prefers `crypto.randomUUID()` and falls back to a
@@ -389,8 +474,14 @@ undefined`. `AddLeadModal` and `AddProspectModal` both use `newId()` — see
 Known issues for the remaining call sites that still call
 `crypto.randomUUID()` directly.
 
-**Runs without credentials.** No `.env.local` means demo data, a boot warning,
-and writes that no-op. The UI is identical either way.
+**Runs without Supabase credentials.** No `.env.local` means demo data, a boot
+warning, and writes that no-op. The UI is identical either way.
+
+**`AUTH_PASSWORD` and `AUTH_SECRET` are the exception — those are required.**
+Unlike the Supabase variables there is no fallback: `verifyPassword()` and the
+signing helper both throw if their variable is missing, deliberately, because
+the alternatives are a gate that accepts everything or one that accepts nothing
+silently. Demo mode still needs them.
 
 ### Migrations & CLI (npm scripts)
 
@@ -640,9 +731,12 @@ prospects board's cards separate from the page.
 
 ## What does NOT exist yet
 
-- Authentication — the Server Actions in `app/actions/crm.ts` are therefore
-  unauthenticated write endpoints, reachable by direct POST. Keep the app local
-  or access-controlled until this lands.
+- **Accounts.** There is now a gate (see Auth gate below) but no identity: one
+  shared password opens the whole workspace, so the app authenticates without
+  authorizing. Nothing sets `owner_id`, the RLS policies from
+  `20260819120000_init.sql` still have no session to scope against, and the
+  secret key still bypasses them. Per-user auth is unchanged as a next step —
+  what landed is a lock on the door, not a user model.
 - Delete flows for companies, contacts, opportunities and strategy content —
   those are still create + update only. Tasks, notes and leads are the
   exceptions: `deleteTask` (reachable only from the task archive), `deleteNote`
@@ -673,9 +767,15 @@ prospects board's cards separate from the page.
 
 ## Next logical steps (not started)
 
-1. **Auth** — Supabase Auth; then set `owner_id` on insert and swap the secret-key
-   client for a session-scoped one on the publishable key (see `docs/database.md`).
-   The per-request store this also required is already done — see State Management
+1. **Accounts** — the shared-password gate is in (see Auth gate); what remains is
+   identity. Supabase Auth, then set `owner_id` on insert and swap the secret-key
+   client for a session-scoped one on the publishable key (see `docs/database.md`),
+   which is what finally gives the RLS policies a session to scope against. The
+   per-request store this also required is already done — see State Management.
+   Two smaller follow-ons from the gate itself: **`logout()` exists in
+   `app/actions/auth.ts` but nothing calls it** — there is no way to end a
+   session from the UI short of clearing cookies — and the rate limiter should
+   move off per-process memory if this ever runs on more than one instance
 2. **Surface `syncError`** — a toast, so a failed save is visible without the console
 3. **AI extraction** — hook CaptureBox submit to Claude API via server action
 4. **Edit flows** — edit drawers for companies, contacts, opportunities (add modals done)
@@ -745,9 +845,33 @@ prospects board's cards separate from the page.
 - **Physical-device mobile QA remains.** Browser checks cover 320–1440px,
   light/dark themes, overflow, dialogs, navigation and the 1024px handoff, but
   long-press drag feel and real notch/home-indicator behavior still need one pass
-  on physical iOS and Android devices
+  on physical iOS and Android devices. **Add the modal scroll fix to that pass**
+  — the `pointer-events`/`100dvh` change below was reasoned from the hit-test
+  and verified by build, never by a finger on glass
 - Dashboard chat is mock-only (canned replies matched on keywords); mic dictation depends on the browser's Web Speech API (works in Chrome/Edge, silent no-op elsewhere)
 - `CaptureBox` / `SuggestionPreviewCard` are orphaned since `/inbox` was removed — reuse or delete when the capture flow finds a new home
+- ~~Capture modals could not be scrolled on mobile~~ — fixed 2026-08-26.
+  A tall form (`AddLeadModal`, `AddProspectModal` et al) could not be dragged
+  past the fold on a phone; a mouse wheel scrolled the same modal fine on
+  desktop, which is what made this look like a layout bug rather than a
+  pointer one. Cause: `Modal.tsx`'s scroll container carried
+  `pointer-events-none` with the panel re-enabling it via `pointer-events-auto`
+  — an old trick for letting backdrop clicks through. **Touch scrolling is
+  hit-test driven**: a drag scrolls the nearest scrollable ancestor *of the
+  element under the finger*, and with pointer events off on the scroller a drag
+  starting over the panel found no scrollable ancestor at all. A wheel event
+  ignores the hit test and walks the box tree, hence desktop working. Fix: keep
+  pointer events on the scroller and move close-on-press there behind an
+  `e.target === e.currentTarget` check (the scroller is `relative` and paints
+  over the `absolute` backdrop, so the backdrop's own handler had become
+  unreachable — it is now the scrim and nothing else). `h-full` also became
+  `h-[100dvh]`: `height: 100%` against a `fixed inset-0` parent resolves to the
+  layout viewport, so a full-height panel's footer sat behind the mobile URL
+  bar. Fixes all five Add… modals at once. `DetailDrawer` uses a plain
+  `flex-1 overflow-y-auto` child and never had the bug.
+  **Not yet confirmed on physical hardware** — verified by build and by
+  reasoning about the hit-test, not by scrolling on a real phone; folded into
+  the physical-device pass already open below
 - ~~Capture modals were desktop-first functional passes~~ — fixed. Prospect,
   contact, company and task modals now share safe-area phone gutters, 16px/44px
   controls, programmatic labels, single-column mobile grids and stacked actions;

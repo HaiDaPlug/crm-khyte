@@ -4,6 +4,7 @@ import { Instrument_Serif, Source_Serif_4 } from 'next/font/google'
 import './globals.css'
 import { AppShell } from '@/components/layout/AppShell'
 import { loadSnapshot } from '@/lib/db/queries'
+import { isAuthenticated } from '@/lib/auth/guard'
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -58,10 +59,21 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode
 }>) {
+  // The gate decides whether the CRM chrome renders at all. Reading the
+  // session here rather than branching on the pathname is what lets a single
+  // root layout serve both: layouts cannot see the pathname on the server
+  // (they do not re-render on navigation), but they can read cookies.
+  //
+  // The snapshot load sits behind the same check on purpose — an
+  // unauthenticated request must not reach the database, and AppShell would
+  // otherwise hand a full copy of the working set to the client tree on the
+  // login page.
+  const authed = await isAuthenticated()
+
   // One read per full page load, handed to the client store below. Layouts do
   // not re-run on client-side navigation, so moving between routes costs
   // nothing — the store carries the data.
-  const snapshot = await loadSnapshot()
+  const snapshot = authed ? await loadSnapshot() : null
 
   return (
     <html
@@ -76,7 +88,11 @@ export default async function RootLayout({
         />
       </head>
       <body className="h-full antialiased">
-        <AppShell snapshot={snapshot}>{children}</AppShell>
+        {snapshot ? (
+          <AppShell snapshot={snapshot}>{children}</AppShell>
+        ) : (
+          children
+        )}
       </body>
     </html>
   )

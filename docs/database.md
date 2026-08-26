@@ -54,6 +54,11 @@ new ones with `npx supabase migration new <name>` rather than by hand.
    - **Secret key** (`sb_secret_…`) → `SUPABASE_SECRET_KEY`
 3. Restart the dev server. The "no Supabase credentials" warning should be gone.
 
+`.env.example` also carries `AUTH_PASSWORD` and `AUTH_SECRET` for the password
+gate. Those are **not** optional the way the Supabase values are — the app runs
+on demo data without a database, but it throws without those two rather than
+serving an open gate. Generate a secret with the one-liner in `.env.example`.
+
 This project uses the **new API keys**, not the legacy JWT `anon` /
 `service_role` pair on the "Legacy API Keys" tab. The mapping is
 `anon` → publishable (`sb_publishable_…`), `service_role` → secret
