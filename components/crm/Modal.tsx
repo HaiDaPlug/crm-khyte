@@ -55,20 +55,47 @@ export function Modal({
 
   return createPortal(
     <div className="fixed inset-0 z-50">
+      {/*
+        Purely the scrim. The scroll container below is positioned and painted
+        over this, so it — not this element — is what a pointer actually hits;
+        the close-on-press lives there.
+      */}
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-[3px] animate-fade-in"
-        onMouseDown={suspended ? undefined : onClose}
         aria-hidden="true"
       />
 
+      {/*
+        The scroll container.
+
+        `pointer-events` stays on here rather than being switched off and
+        re-enabled on the panel. Touch scrolling is hit-test driven: a finger
+        drag scrolls the nearest scrollable ancestor *of the element under the
+        finger*, so with pointer-events:none on this element a drag starting
+        over the panel found no scrollable ancestor and did nothing. A wheel
+        works either way, which is why this only ever showed up on mobile.
+
+        Click-outside-to-close is handled by the backdrop sibling above, so
+        nothing here needs to be transparent to the pointer.
+
+        Height is 100dvh, not h-full: `height:100%` against a fixed inset-0
+        parent resolves to the layout viewport, which on mobile sits behind the
+        browser's collapsing URL bar and cut off the bottom of a tall form.
+      */}
       <div
         className={cn(
-          'relative flex h-full overflow-y-auto overscroll-contain py-2 pointer-events-none',
+          'relative flex h-[100dvh] overflow-y-auto overscroll-contain py-2',
           '[padding-left:max(0.5rem,env(safe-area-inset-left))] [padding-right:max(0.5rem,env(safe-area-inset-right))]',
           '[padding-top:max(0.5rem,env(safe-area-inset-top))] [padding-bottom:max(0.5rem,env(safe-area-inset-bottom))]',
           'sm:py-6 sm:[padding-top:1.5rem] sm:[padding-bottom:1.5rem]',
           'sm:[padding-left:max(1rem,env(safe-area-inset-left))] sm:[padding-right:max(1rem,env(safe-area-inset-right))]'
         )}
+        onMouseDown={(e) => {
+          // The panel no longer shields this element from the pointer, so a
+          // press landing on the padding around it still has to close — that
+          // gap used to belong to the backdrop underneath.
+          if (!suspended && e.target === e.currentTarget) onClose()
+        }}
       >
         <div
           ref={panelRef}
@@ -80,7 +107,7 @@ export function Modal({
           tabIndex={-1}
           onKeyDown={handlePanelKeyDown}
           className={cn(
-            'grain-modal m-auto max-w-full pointer-events-auto outline-none',
+            'grain-modal m-auto max-w-full outline-none',
             'animate-modal-in',
             width
           )}
