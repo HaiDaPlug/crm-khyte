@@ -137,6 +137,71 @@ export interface Task {
   archivedAt?: string
 }
 
+/* ———— Company direction (Khyte internal) ———— */
+
+/**
+ * Which band of the direction board a goal sits in.
+ *
+ * A closed set rather than free text because the wallpaper layout has fixed
+ * regions — a goal in an unknown section has nowhere to be drawn.
+ */
+export type GoalSection =
+  | 'north_star'
+  | 'annual'
+  | 'quarter'
+  | 'principle'
+  | 'not_now'
+
+export type GoalStatus = 'on_track' | 'at_risk' | 'off_track' | 'done'
+
+/** One line on the company layer, shared by every colleague's wallpaper. */
+export interface Goal {
+  id: string
+  section: GoalSection
+  title: string
+  /** Optional supporting line, rendered smaller beneath the title. */
+  detail: string
+  status: GoalStatus
+  /** 0–100, or undefined for "no bar" — a principle has no progress. */
+  progress?: number
+  order: number
+}
+
+/** How a metric's numbers should be rendered, not how they are stored. */
+export type MetricUnit = 'currency' | 'number' | 'percent'
+
+/** One row of the scoreboard. */
+export interface GoalMetric {
+  id: string
+  label: string
+  currentValue: number
+  /** Undefined means "just show the number" — no bar, no percentage. */
+  targetValue?: number
+  unit: MetricUnit
+  order: number
+}
+
+/** One line of a single colleague's weekly focus — the personal layer. */
+export interface FocusItem {
+  id: string
+  colleague: ColleagueId
+  title: string
+  done: boolean
+  order: number
+}
+
+/**
+ * Everything the direction board needs, company layer and all people.
+ *
+ * Loaded separately from CRMSnapshot: the wallpaper route reads this alone,
+ * without dragging the entire pipeline through Postgres on every repaint.
+ */
+export interface GoalsSnapshot {
+  goals: Goal[]
+  metrics: GoalMetric[]
+  focusItems: FocusItem[]
+}
+
 /**
  * The full working set the client store is built with on boot.
  * Produced server-side by lib/db/queries.loadSnapshot().

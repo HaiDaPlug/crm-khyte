@@ -1,3 +1,4 @@
+import { headers } from 'next/headers'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono, Barlow, Plus_Jakarta_Sans } from 'next/font/google'
 import { Instrument_Serif, Source_Serif_4 } from 'next/font/google'
@@ -70,10 +71,25 @@ export default async function RootLayout({
   // login page.
   const authed = await isAuthenticated()
 
+  // The wallpaper renders bare — no sidebar, no store, no CRM snapshot.
+  //
+  // Two reasons, and both matter. It is a desktop background, so chrome would
+  // be absurd on it; and it reloads itself every few minutes, so pulling the
+  // entire CRM working set through Postgres here would turn a read of three
+  // small tables into a read of everything, forever. The display page calls
+  // loadGoals() for exactly what it needs.
+  //
+  // Detected from the pathname header rather than a route group, because a
+  // group would need its own root layout duplicating the font setup and
+  // <html> element below — this is one branch instead of a second copy that
+  // silently drifts.
+  const headerList = await headers()
+  const isDisplay = (headerList.get('x-pathname') ?? '').startsWith('/goals/display')
+
   // One read per full page load, handed to the client store below. Layouts do
   // not re-run on client-side navigation, so moving between routes costs
   // nothing — the store carries the data.
-  const snapshot = authed ? await loadSnapshot() : null
+  const snapshot = authed && !isDisplay ? await loadSnapshot() : null
 
   return (
     <html

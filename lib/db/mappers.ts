@@ -1,6 +1,9 @@
 import type {
   Company,
   Contact,
+  FocusItem,
+  Goal,
+  GoalMetric,
   Lead,
   Note,
   Opportunity,
@@ -11,6 +14,9 @@ import type {
 import type {
   CompanyRow,
   ContactRow,
+  FocusItemRow,
+  GoalMetricRow,
+  GoalRow,
   LeadRow,
   NoteRow,
   OpportunityRow,
@@ -388,5 +394,120 @@ export function toTaskUpdate(updates: Partial<Task>) {
     // Same `in` treatment as assignee: un-archiving passes
     // `{ archivedAt: undefined }`, which must still reach the DB as null.
     ['archived_at', 'archivedAt' in updates ? (updates.archivedAt ?? null) : undefined],
+  ])
+}
+
+// --- goals -----------------------------------------------------------------
+
+export function fromGoalRow(row: GoalRow): Goal {
+  return {
+    id: row.id,
+    section: row.section,
+    title: row.title,
+    detail: row.detail,
+    status: row.status,
+    // Null is "no bar at all", which is not the same as 0 — an explicit 0
+    // draws an empty bar. Only null collapses to undefined.
+    ...(row.progress === null ? {} : { progress: row.progress }),
+    order: row.sort_order,
+  }
+}
+
+export function toGoalInsert(goal: Goal) {
+  return {
+    id: goal.id,
+    section: goal.section,
+    title: goal.title,
+    detail: goal.detail,
+    status: goal.status,
+    progress: goal.progress ?? null,
+    sort_order: goal.order,
+  }
+}
+
+export function toGoalUpdate(updates: Partial<Goal>) {
+  return pickDefined<GoalRow>([
+    ['section', updates.section],
+    ['title', updates.title],
+    ['detail', updates.detail],
+    ['status', updates.status],
+    // `in` rather than `=== undefined`: clearing a progress bar passes
+    // `{ progress: undefined }` and must reach the DB as null.
+    ['progress', 'progress' in updates ? (updates.progress ?? null) : undefined],
+    ['sort_order', updates.order],
+  ])
+}
+
+// --- goal metrics ----------------------------------------------------------
+
+/** `numeric` arrives as a string; the UI wants a number. */
+const toNumber = (value: number | string): number =>
+  typeof value === 'number' ? value : Number(value)
+
+export function fromGoalMetricRow(row: GoalMetricRow): GoalMetric {
+  return {
+    id: row.id,
+    label: row.label,
+    currentValue: toNumber(row.current_value),
+    ...(row.target_value === null ? {} : { targetValue: toNumber(row.target_value) }),
+    unit: row.unit,
+    order: row.sort_order,
+  }
+}
+
+export function toGoalMetricInsert(metric: GoalMetric) {
+  return {
+    id: metric.id,
+    label: metric.label,
+    current_value: metric.currentValue,
+    target_value: metric.targetValue ?? null,
+    unit: metric.unit,
+    sort_order: metric.order,
+  }
+}
+
+export function toGoalMetricUpdate(updates: Partial<GoalMetric>) {
+  return pickDefined<GoalMetricRow>([
+    ['label', updates.label],
+    ['current_value', updates.currentValue],
+    // Same `in` treatment as goal progress: a metric losing its target passes
+    // `{ targetValue: undefined }` and must reach the DB as null.
+    [
+      'target_value',
+      'targetValue' in updates ? (updates.targetValue ?? null) : undefined,
+    ],
+    ['unit', updates.unit],
+    ['sort_order', updates.order],
+  ])
+}
+
+// --- focus items -----------------------------------------------------------
+
+export function fromFocusItemRow(row: FocusItemRow): FocusItem {
+  return {
+    id: row.id,
+    colleague: row.colleague,
+    title: row.title,
+    done: row.done,
+    order: row.sort_order,
+  }
+}
+
+export function toFocusItemInsert(item: FocusItem) {
+  return {
+    id: item.id,
+    colleague: item.colleague,
+    title: item.title,
+    done: item.done,
+    sort_order: item.order,
+  }
+}
+
+export function toFocusItemUpdate(updates: Partial<FocusItem>) {
+  return pickDefined<FocusItemRow>([
+    ['colleague', updates.colleague],
+    ['title', updates.title],
+    ['done', updates.done],
+    ['sort_order', updates.order],
   ])
 }

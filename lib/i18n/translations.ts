@@ -26,6 +26,7 @@ const sv = {
     prospects: 'Prospekt',
     pipeline: 'Pipeline',
     strategy: 'Strategi',
+    goals: 'Riktning',
     companies: 'Företag',
     contacts: 'Kontakter',
     tasks: 'Uppgifter',
@@ -405,6 +406,7 @@ const en: Dictionary = {
   },
   nav: {
     dashboard: 'Dashboard', leads: 'Leads', prospects: 'Prospects', pipeline: 'Pipeline', strategy: 'Strategy',
+    goals: 'Direction',
     companies: 'Companies', contacts: 'Contacts', tasks: 'Tasks', settings: 'Settings',
     switchToLight: 'Switch to light mode', switchToDark: 'Switch to dark mode',
     lightMode: 'Light mode', darkMode: 'Dark mode', collapse: 'Collapse', workspace: 'Workspace',
