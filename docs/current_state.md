@@ -492,7 +492,7 @@ Full detail in `docs/database.md`. Shape of it:
 | `lib/db/pg.ts` | `getDb()` — direct Postgres client (`postgres.js`) over `SUPABASE_DB_URL`, for reads only. Cached on `globalThis`, not a module-level singleton — see Known issues |
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
-| `lib/db/queries.ts` | `loadSnapshot()` — reads all eight tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing |
+| `lib/db/queries.ts` | `loadSnapshot()` — reads all eight CRM tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing. **`loadGoals()`** is a second, deliberately separate read for the three direction-board tables (`goals`, `goal_metrics`, `focus_items`) — not a key on `CRMSnapshot`, and its rows never enter the CRM store. The wallpaper reloads every 5 minutes; folding it into the snapshot would drag the whole working set through Postgres on each refresh to render three small tables |
 | `app/actions/crm.ts` | 20 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks, returning `{ ok }` rather than throwing. Every one is gated on the session via `run()`/`guardedOk()` — see Auth gate |
 | `app/actions/auth.ts` | `login` / `logout`. Kept separate from `crm.ts`: those are narrow writes the store calls after an optimistic update, these are form handlers that set cookies and redirect |
 | `lib/store/provider.tsx` | `CRMStoreProvider` — builds one store per request **containing** the snapshot, so the server HTML and the hydration pass both render real rows; `useCRMStore` resolves it from context |
@@ -605,6 +605,7 @@ from.
 | `strategy.ts` | 6 headlines + 10 strategy cards for the Nordvik Capital opportunity; every other demo deal opens empty |
 | `tasks.ts` | 8 realistic tasks linked to opportunities/companies, mix of overdue/today/upcoming/completed |
 | `leads.ts` | 2 example leads (Halcyon Robotics with a connection/source, Fjord Analytics with neither) for the credential-free demo-data fallback, wired into `demoSnapshot()` in `lib/db/queries.ts` |
+| `goals.ts` | A full demo direction board — 1 north star, 3 annual outcomes, 3 quarter priorities, 2 principles, 3 "not now", 4 scoreboard metrics, and weekly focus for all three colleagues. Enough in every section that the wallpaper layout can be judged before a real row exists. Returned by `loadGoals()` rather than `demoSnapshot()`, since goals are a separate read path |
 
 ### Sound (lib/sound.ts)
 
@@ -619,6 +620,7 @@ on the `sounds` setting; the module itself does not read settings.
 - `ColleagueId` — `'erik' | 'abdi' | 'hai'`, the fixed assignment roster (see Tasks); metadata (name, avatar color) lives in `lib/colleagues.ts`, not this file
 - `Company`, `Contact`, `Opportunity` (with `inPipeline` — prospects only appear on the pipeline board once explicitly added, and now `followedUpBy?: ColleagueId` — who on the team is following this prospect up), `Lead` (new: `{ id, companyName (required), contactName?, connection?, source?, followedUpBy?: ColleagueId, priority, notes, createdAt }` — raw, unqualified interest with no company/contact/opportunity records until promoted to a Prospect, at which point the Lead row is deleted; `Lead.followedUpBy` means who *added* the lead, a different scope from `Opportunity.followedUpBy`'s "who's following it up"), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
 - `PipelineStage`
+- **Direction board (Khyte-internal):** `GoalSection` — `'north_star' | 'annual' | 'quarter' | 'principle' | 'not_now'`, a closed set because the wallpaper has fixed regions and a goal in an unknown section has nowhere to be drawn; `GoalStatus` — `'on_track' | 'at_risk' | 'off_track' | 'done'`; `MetricUnit` — `'currency' | 'number' | 'percent'`, a rendering hint rather than a stored format. `Goal` (`progress?` undefined means "no bar" — distinct from `0`, which draws an empty one), `GoalMetric` (`targetValue?` undefined means "just show the number"), `FocusItem` (keyed to a `ColleagueId`). `GoalsSnapshot` bundles all three for `loadGoals()` — deliberately **not** part of `CRMSnapshot`
 - `Settings` — display preferences (`theme`, `currency`, `locale`, `dateFormat`, `compactNumbers`), plus `CurrencyCode`, `LocaleCode`, `DateFormat`
 
 ### Design System — "Darkroom Operator"
@@ -774,12 +776,14 @@ prospects board's cards separate from the page.
   secret key still bypasses them. Per-user auth is unchanged as a next step —
   what landed is a lock on the door, not a user model.
 - Delete flows for companies, contacts, opportunities and strategy content —
-  those are still create + update only. Tasks, notes and leads are the
-  exceptions: `deleteTask` (reachable only from the task archive), `deleteNote`
-  (the per-entry `Trash2` button in `NotesTimeline`, wired only in
-  `DetailDrawer`) and `deleteLead` (permanent — used both when a lead is
-  promoted into a Prospect, via `removeLead`, and when discarded outright) all
-  exist end to end (store → Server Action → `delete().eq('id', …)`)
+  those are still create + update only. Tasks, notes, leads and everything on
+  the direction board are the exceptions: `deleteTask` (reachable only from the
+  task archive), `deleteNote` (the per-entry `Trash2` button in `NotesTimeline`,
+  wired only in `DetailDrawer`), `deleteLead` (permanent — used both when a lead
+  is promoted into a Prospect, via `removeLead`, and when discarded outright)
+  and `deleteGoal`/`deleteGoalMetric`/`deleteFocusItem` (the per-row `Trash2` in
+  `GoalsEditor`, immediate and unconfirmed — a goal row is cheap to retype) all
+  exist end to end (store or local state → Server Action → `delete().eq('id', …)`)
 - Realtime — two open tabs do not see each other's changes until reload
 - Surfacing failed writes in the UI (`syncError` is set and logged, nothing renders it)
 - Real AI extraction (mocked — picks random extraction for notes > 30 chars)
@@ -798,6 +802,22 @@ prospects board's cards separate from the page.
   everything on Lead outside its own drawer/promote flow. **Tasks** remain
   fully editable inline behind the pencil
 - Loading states, and per-route `error.tsx` boundaries (only the root `global-error.tsx` exists)
+- **Reordering on the direction board.** `sort_order` exists on all three goals
+  tables and every read honours it, but nothing in `GoalsEditor` writes it —
+  rows sit in creation order and there is no drag handle. The dnd-kit wiring
+  from `PipelineBoard`/`StrategyBoard` is the obvious model when it matters
+- **The goals → pipeline link.** The metric scoreboard stores its own
+  `current_value`; nothing derives it from won deals yet. That was deliberate —
+  a metric that holds its own number keeps working when the figure comes from
+  somewhere the CRM has never heard of — but the "deal marked Won → goal
+  progress updates" loop from the original sketch is still unbuilt. It is a
+  computation over the pipeline written into `current_value`, not a foreign key
+- **The direction board is not localized.** Every label in `GoalsEditor`,
+  `WallpaperLinks` and `DisplayBoard` is hard-coded Swedish rather than going
+  through `lib/i18n/` (only the sidebar nav entry has `sv`/`en` entries). The
+  wallpaper is arguably right to be fixed — a desktop background has no
+  language toggle — but the editor should join the rest of the app if `en` ever
+  matters internally
 
 ---
 
