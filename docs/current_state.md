@@ -7,17 +7,12 @@ The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
 (eu-north-1); schema and seed applied; reads and writes verified end to end
 against the live API.
 
-**Two migrations are pending.** `npm run db:status` reports
-`20260825140000_lead_contact_fields` and `20260826120000_opportunity_followed_up_by`
-as not yet pushed — run `npm run db:push`. `20260824170000_task_archive` (adds
-`tasks.archived_at`) is applied. `lead_contact_fields` adds
-`contact_name`/`connection`/`source`/`followed_up_by` to `public.leads`, and
-`opportunity_followed_up_by` adds `followed_up_by` to `public.opportunities` —
-until these land, a Lead's contact/connection/source/followed-up-by and an
-Opportunity's followed-up-by are readable and writable in the UI but the
-corresponding columns do not exist on the remote, so those specific fields
-fail to persist (the base `leads` table itself, from `20260825120000_leads.sql`,
-is already live).
+**All migrations are applied.** `npm run db:status` reports the remote as up to
+date, `20260826140000_goals` (the direction board) included. The two that were
+outstanding at the previous writing — `20260825140000_lead_contact_fields` and
+`20260826120000_opportunity_followed_up_by` — have since been pushed, so a
+Lead's contact/connection/source/followed-up-by and an Opportunity's
+followed-up-by now persist.
 
 ---
 
@@ -49,6 +44,8 @@ is already live).
 | `/prospects` | Functional | Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. Search and filters are wired, and table/board empty results now show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. |
 | `/pipeline` | Functional | Nine-stage dnd-kit kanban with mouse, delayed long-press touch and keyboard sensors. Mobile columns snap horizontally, expose a next-column peek/edge cue, and use natural page height instead of a locked viewport. Active value, drop feedback, off-board picker, background panning and drag-edge auto-scroll remain intact. Source data is Opportunities (Prospects), not the new Leads. |
 | `/strategy` | Functional | Opportunity selector + per-deal strategy board with add/rename/delete. The selector, summary and empty state reflow on phones; board columns snap/peek horizontally, touch actions stay visible, and drag supports mouse, long-press touch and keyboard input. |
+| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): north star, 2026 outcomes, quarter priorities, scoreboard, per-colleague weekly focus, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. Top of the page carries the copyable wallpaper links, one per colleague. |
+| `/goals/display/[colleague]` | Functional | The wallpaper. A fixed 16:9 board with zero chrome, rendered outside `AppShell` and sized in `cqw` so it scales whole to any resolution. Company layer is shared; only the "denna vecka" column differs per person. Reloads itself every 5 minutes (`BoardRefresh.tsx`). Reachable either with a session or with a signed `?k=` display token — see Wallpaper display links below. |
 | `/companies` | Functional | Responsive card grid with deal/contact counts and total value. Search has a localized no-result state and clear action. Detail view becomes a full-screen, safe-area-aware mobile dialog with focus trap, Escape close, body-scroll lock and focus restoration. "New Company" is a single-column mobile modal. |
 | `/contacts` | Functional | Responsive list with search, localized no-result recovery, and 44px mobile actions. The contact detail view is a full-screen, safe-area-aware mobile dialog with focus trap/Escape/scroll lock/focus return. "New Contact" uses a labelled company combobox and single-column mobile form. |
 | `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. |
@@ -413,6 +410,45 @@ session → 200 and the row actually landed in Postgres (then deleted). Session
 primitives pass 12/12 unit cases — forged signature, tampered payload, expired
 timestamp, foreign-secret signature, wrong password, password prefix. Login
 page ships zero CRM chrome or data.
+
+### Wallpaper display links (lib/auth/display-token.ts)
+
+The one documented way past the password gate, and it exists because Lively
+Wallpaper renders a URL in a bare Chromium embed: no cookie jar worth relying
+on, no way to present a login form, nothing that survives a reboot. Without
+this the desktop background would be the login page.
+
+`?k=<token>` on `/goals/display/<colleague>`, where the token is
+`HMAC-SHA256(colleague, DISPLAY_SECRET)` truncated to 32 base64url chars.
+Signing the colleague rather than issuing one shared random string is what
+binds a link to a single board — a leaked link opens that person's wallpaper
+and nothing else.
+
+Three properties worth keeping straight:
+
+- **Scoped to display routes by pathname.** `proxy.ts` consults the token only
+  for `/goals/display/*`; every other path still requires the session cookie.
+- **Read-only in practice and by construction.** The display page renders no
+  forms and calls no Server Action, and `requireAuth()` reads the session
+  cookie only — a token satisfies Proxy, never an action.
+- **No expiry.** Deliberate: a wallpaper that goes blank in a month is worse
+  than useless. Rotate `DISPLAY_SECRET` to invalidate every link at once.
+
+`DISPLAY_SECRET` is optional. Unset, `/goals` shows a notice instead of links
+and every display URL falls through to the normal login redirect.
+
+Note `app/layout.tsx` branches on an `x-pathname` header that `proxy.ts` sets
+(and always overwrites, so a client cannot forge it) to keep `AppShell` and the
+`loadSnapshot()` call off the wallpaper — without that branch every 5-minute
+refresh would pull the entire CRM working set for a board that reads three
+small tables.
+
+**Verified 2026-08-26** against the production build: no token → 307 to
+`/login`; wrong token → 307; correct token → 200; **hai's token on erik's
+board → 307** (binding holds); **display token on `/goals` → 307** (scope
+holds); **spoofed `x-pathname: /goals/display/hai` on `/goals` → 307** (header
+cannot be forged). Rendered wallpaper contains zero sidebar markup, and the
+two boards differ only in the personal column.
 
 ### Dialog behaviour (lib/hooks/useDialog.ts)
 

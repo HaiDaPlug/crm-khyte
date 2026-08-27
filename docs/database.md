@@ -172,13 +172,30 @@ the lighter-weight option if you do not need `link`.
 
 ```
 app/layout.tsx           server component; one loadSnapshot() per page load
-  └─ lib/db/queries.ts   reads all seven tables, maps rows → domain types
+  └─ lib/db/queries.ts   reads the eight CRM tables, maps rows → domain types
        └─ lib/supabase/server.ts   secret-key client, server-only
 
 lib/store/provider.tsx   builds one store per request, holding the snapshot
   └─ lib/store/store.ts   client source of truth for the session
        └─ app/actions/crm.ts   'use server' writes, one per mutation
 ```
+
+**The direction board is a second, deliberately separate read path.** `/goals`
+and `/goals/display/[colleague]` call `loadGoals()`, which reads only `goals`,
+`goal_metrics` and `focus_items` — it is not a key on `CRMSnapshot` and those
+rows never enter the CRM store:
+
+```
+app/goals/…              server components; one loadGoals() per page load
+  └─ lib/db/queries.ts   reads the three goals tables
+       └─ app/actions/goals.ts   'use server' writes, one per mutation
+```
+
+The split is load-bearing rather than tidiness. The wallpaper route reloads
+itself every five minutes; folding goals into `loadSnapshot()` would drag every
+company, contact, opportunity, lead, note and strategy card through Postgres on
+each of those refreshes, forever, to render three small tables. `app/layout.tsx`
+skips `loadSnapshot()` entirely on display routes for the same reason.
 
 The store is constructed **with** the snapshot rather than filled after the
 fact. `useSyncExternalStore` renders both the SSR pass and the client's
@@ -223,7 +240,10 @@ When auth lands:
 2. Set `owner_id` on insert in `app/actions/crm.ts`.
 3. Claim the existing rows:
    `update companies set owner_id = '<your-user-uuid>' where owner_id is null;`
-   and the same for the other six tables.
+   and the same for the other ten tables (the three goals tables included —
+   they carry `owner_id` and RLS policies on the same pattern, even though the
+   direction board is company-wide rather than per-person, so that the eventual
+   multi-tenant story does not need a second migration).
 4. ~~Move the Zustand store behind a per-request React context.~~ Done
    2026-08-21 — `lib/store/provider.tsx` builds one store per request. It was a
    module singleton shared across concurrent server requests, which was harmless
@@ -235,9 +255,17 @@ When auth lands:
 
 ## Known gaps
 
-- **The Server Actions are unauthenticated.** They are reachable by direct POST,
-  not just through the UI, and there is no session check because there are no
-  sessions. Keep the app local or behind access control until auth ships.
+- ~~**The Server Actions are unauthenticated.**~~ Fixed by the shared-password
+  gate: every action in `app/actions/crm.ts` and `app/actions/goals.ts` runs
+  `requireAuth()` through one of two helpers, so a direct POST without a
+  session is rejected. They authenticate but still do not **authorize** —
+  there is one password and no per-user identity, so there is no `owner_id` to
+  check a caller against. That half lands with accounts.
+- **The wallpaper display token is a weaker credential than a session.** Anyone
+  holding a `/goals/display/<name>?k=…` link reads that board — goals, targets,
+  revenue — with no password. It is bound to one colleague, confined to display
+  routes, read-only, and never expires. Treat the URL as a secret; rotate
+  `DISPLAY_SECRET` to invalidate every link. See `lib/auth/display-token.ts`.
 - **Failed writes are quiet.** A write that fails sets `syncError` in the store
   and logs to the console, but nothing renders it yet — the optimistic change
   stays on screen. Wiring `syncError` to a toast is the natural next step.

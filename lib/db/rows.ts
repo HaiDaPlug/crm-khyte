@@ -1,4 +1,11 @@
-import type { ColleagueId, Priority, Stage } from '@/lib/types'
+import type {
+  ColleagueId,
+  GoalSection,
+  GoalStatus,
+  MetricUnit,
+  Priority,
+  Stage,
+} from '@/lib/types'
 
 /**
  * The wire shape of each table, exactly as PostgREST returns it — snake_case,
@@ -97,6 +104,43 @@ export interface StrategyCardRow {
   opportunity_id: string
   column_id: string
   content: string
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface GoalRow {
+  id: string
+  owner_id: string | null
+  section: GoalSection
+  title: string
+  detail: string
+  status: GoalStatus
+  progress: number | null
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface GoalMetricRow {
+  id: string
+  owner_id: string | null
+  label: string
+  /** `numeric` arrives as a string over PostgREST and from postgres.js alike. */
+  current_value: number | string
+  target_value: number | string | null
+  unit: MetricUnit
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export interface FocusItemRow {
+  id: string
+  owner_id: string | null
+  colleague: ColleagueId
+  title: string
+  done: boolean
   sort_order: number
   created_at: string
   updated_at: string
