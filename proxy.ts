@@ -82,12 +82,21 @@ export default function proxy(request: NextRequest) {
 
 export const config = {
   /**
-   * Everything except Next's own assets and the favicon.
+   * Everything except Next's own assets, the favicon, and the logo.
    *
    * The Server Actions endpoint is intentionally NOT excluded — actions POST
    * to the page URL they were called from, so they pass through here and a
    * request without a session is turned away before it reaches the action.
    * The login action is the exception that makes /login public above.
+   *
+   * `khyte-logo` is excluded because the wallpaper renders it and cannot
+   * authenticate a subresource: the display token lives in the page URL's
+   * query string, and a browser fetching an <img> does not carry it. Without
+   * this the logo 307s to /login and Lively paints a broken mark.
+   *
+   * Narrowed to that one prefix rather than opening all of /public: a company
+   * logo is on the marketing site anyway and reveals nothing, whereas anything
+   * else dropped into that folder later should still meet the gate by default.
    */
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|khyte-logo).*)'],
 }

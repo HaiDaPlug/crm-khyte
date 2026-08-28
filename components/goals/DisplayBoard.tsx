@@ -92,9 +92,9 @@ function Label({ children }: { children: React.ReactNode }) {
     <h2
       className="shrink-0 font-mono uppercase text-[color:var(--dim)]"
       style={{
-        fontSize: 'calc(0.62 * var(--u))',
-        letterSpacing: '0.26em',
-        marginBottom: 'calc(1.5 * var(--u))',
+        fontSize: 'calc(0.6 * var(--u))',
+        letterSpacing: '0.3em',
+        marginBottom: 'calc(2.2 * var(--u))',
       }}
     >
       {children}
@@ -238,47 +238,151 @@ export function DisplayBoard({
         className="relative flex h-full flex-col"
         style={{ padding: 'calc(3.6 * var(--u)) calc(6 * var(--u)) calc(5.5 * var(--u))' }}
       >
-        {/* ——— north star: the one thing worth the biggest type on screen ———
-            No eyebrow label. At this size and this position nothing else could
-            be mistaken for it, so the word "Nordstjärna" was only taking up the
-            space above it. */}
-        {northStar && (
-          <div className="shrink-0 text-center">
+        {/* ——— statement · logo ———
+            Left-aligned against the same edge the columns start on, so the
+            board reads down one axis instead of two. The logo sits opposite
+            it: the only place a mark can go without competing with the
+            statement is the corner diagonally furthest from where the eye
+            lands first. */}
+        <div
+          className="flex shrink-0 items-start justify-between"
+          style={{ gap: 'calc(4 * var(--u))' }}
+        >
+          {/* Always rendered, even when empty: it is what holds the left half
+              of this row open. Without it a missing statement collapses the
+              flex row and `justify-between` strands the logo on the left. */}
+          <div className="min-w-0 flex-1">
+            {northStar && (
             <p
               className="font-jakarta font-semibold text-white"
               style={{
-                fontSize: 'calc(3.4 * var(--u))',
-                lineHeight: 1.14,
+                fontSize: 'calc(4.1 * var(--u))',
+                lineHeight: 1.08,
                 // Optical tightening: Jakarta at display size sets looser than
-                // the serif it replaced, and the default tracking reads slack
+                // the serif it replaced, and default tracking reads slack
                 // across a wall.
-                letterSpacing: '-0.02em',
-                // Centred, so held to a measure rather than a left edge —
-                // a centred line running the full width loses its shape.
-                maxWidth: 'calc(58 * var(--u))',
-                marginInline: 'auto',
+                letterSpacing: '-0.025em',
+                // Held to a measure so the statement breaks into two or three
+                // deliberate lines rather than one thin ribbon.
+                maxWidth: 'calc(48 * var(--u))',
               }}
             >
               {northStar.title}
             </p>
+            )}
           </div>
-        )}
 
-        {/* The slack lives here, so the board breathes at any aspect ratio
-            instead of stretching the gaps between every row. */}
-        <div className="flex-1" />
+          {/* The K mark. Served from /public, which proxy.ts exempts by
+              filename prefix — a browser fetching an <img> cannot carry the
+              display token that lives in the page URL's query string, so
+              without that exemption the logo 307s to /login and Lively paints
+              a broken image.
+
+              `mix-blend-screen` because the source PNG is on white: on this
+              near-black board the white ground drops out and only the orange
+              mark survives, which is what a transparent PNG would have given
+              us. Swap this for plain rendering if a transparent asset lands. */}
+          {/* eslint-disable-next-line @next/next/no-img-element --
+              next/image would route this through /_next/image, which is
+              gated; a plain img hits the exempted path directly. */}
+          <img
+            src="/khyte-logo-mark.png"
+            alt="Khyte"
+            className="shrink-0 object-contain mix-blend-screen"
+            style={{
+              width: 'calc(4.6 * var(--u))',
+              // Optically aligned to the statement's cap height rather than
+              // its bounding box, which sits higher than the letterforms.
+              marginTop: 'calc(-0.4 * var(--u))',
+            }}
+          />
+        </div>
+
+        {/* Absorbs slack between the statement and the numbers, so they can
+            never collide with its descenders the way a fixed margin allowed. */}
+        <div className="flex-[0.9]" style={{ minHeight: 'calc(3.5 * var(--u))' }} />
+
+        {/* ——— scoreboard: where the business actually stands ———
+            Above the goals on purpose. The numbers are the situation; the
+            goals beneath them are the response to it. Reading down the board
+            now goes: where we are going, where we are, what we are doing. */}
+        <div
+          className="grid shrink-0"
+          style={{
+            gridTemplateColumns: `repeat(${Math.max(scoreboard.length, 1)}, minmax(0, 1fr))`,
+            gap: 'calc(6 * var(--u))',
+          }}
+        >
+          {scoreboard.map((metric) => {
+            const pct =
+              metric.targetValue && metric.targetValue > 0
+                ? Math.round((metric.currentValue / metric.targetValue) * 100)
+                : undefined
+            return (
+              <div key={metric.id}>
+                <p
+                  className="font-mono uppercase text-[color:var(--dim)]"
+                  style={{ fontSize: 'calc(0.62 * var(--u))', letterSpacing: '0.26em' }}
+                >
+                  {metric.label}
+                </p>
+                <p
+                  className="font-jakarta font-semibold tabular-nums text-white"
+                  style={{
+                    fontSize: 'calc(3.4 * var(--u))',
+                    marginTop: 'calc(0.8 * var(--u))',
+                    lineHeight: 1,
+                    letterSpacing: '-0.02em',
+                  }}
+                >
+                  {formatMetric(metric.currentValue, metric.unit)}
+                  {metric.targetValue !== undefined && (
+                    <span
+                      className="font-mono font-normal text-[color:var(--dim)]"
+                      style={{
+                        fontSize: 'calc(1.05 * var(--u))',
+                        marginLeft: 'calc(0.7 * var(--u))',
+                      }}
+                    >
+                      / {formatMetric(metric.targetValue, metric.unit)}
+                    </span>
+                  )}
+                </p>
+                {pct !== undefined && (
+                  // Fixed track rather than the full grid cell: the columns are
+                  // sized by their labels, so a full-width bar would make 18%
+                  // under a short label longer than 33% under a long one — the
+                  // one comparison a scoreboard has to get right.
+                  <div style={{ marginTop: 'calc(1.3 * var(--u))', width: 'calc(15 * var(--u))' }}>
+                    <Bar value={pct} />
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        <div
+          aria-hidden
+          className="shrink-0 bg-white/8"
+          style={{ height: '1px', margin: 'calc(3.6 * var(--u)) 0 calc(3.4 * var(--u))' }}
+        />
 
         {/* ——— quarter · this week · personal ——— */}
         <div
           className="grid shrink-0"
           style={{
-            gridTemplateColumns: '1.25fr 0.85fr 0.9fr',
-            gap: 'calc(5 * var(--u))',
+            // The quarter column carries the longest titles, so it takes the
+            // most room; the other two are near-equal. Ratios alone decide the
+            // widths — the maxWidths that used to fight them are gone, which
+            // is what squared up the ragged right edges.
+            gridTemplateColumns: '1.4fr 1fr 1fr',
+            gap: 'calc(4.5 * var(--u))',
           }}
         >
-          <section className="min-w-0" style={{ maxWidth: 'calc(30 * var(--u))' }}>
+          <section className="min-w-0">
             <Label>{period}</Label>
-            <ul className="flex flex-col" style={{ gap: 'calc(2.1 * var(--u))' }}>
+            <ul className="flex flex-col" style={{ gap: 'calc(2.7 * var(--u))' }}>
               {quarter.map((goal) => (
                 <li key={goal.id}>
                   <div
@@ -298,27 +402,26 @@ export function DisplayBoard({
                       }}
                     />
                     <span
-                      className="min-w-0 flex-1 text-white/90"
-                      style={{ fontSize: 'calc(1.18 * var(--u))', lineHeight: 1.35 }}
+                      className="min-w-0 flex-1 text-white"
+                      style={{
+                        fontSize: 'calc(1.32 * var(--u))',
+                        lineHeight: 1.28,
+                        letterSpacing: '-0.005em',
+                      }}
                     >
                       {goal.title}
                     </span>
                     {goal.progress !== undefined && (
                       <span
-                        className="shrink-0 font-mono tabular-nums text-[color:var(--dim)]"
-                        style={{ fontSize: 'calc(0.8 * var(--u))' }}
+                        className="shrink-0 font-mono tabular-nums text-white/30"
+                        style={{ fontSize: 'calc(0.72 * var(--u))' }}
                       >
                         {goal.progress}%
                       </span>
                     )}
                   </div>
                   {goal.progress !== undefined && (
-                    <div
-                      style={{
-                        marginTop: 'calc(0.75 * var(--u))',
-                        marginLeft: 'calc(1.5 * var(--u))',
-                      }}
-                    >
+                    <div style={{ marginTop: 'calc(0.9 * var(--u))' }}>
                       <Bar value={goal.progress} />
                     </div>
                   )}
@@ -334,7 +437,7 @@ export function DisplayBoard({
           {weekly.length > 0 && (
             <section className="min-w-0">
               <Label>Denna vecka</Label>
-              <ul className="flex flex-col" style={{ gap: 'calc(2.1 * var(--u))' }}>
+              <ul className="flex flex-col" style={{ gap: 'calc(2.7 * var(--u))' }}>
                 {weekly.map((goal) => {
                   const actual = goal.metricKind
                     ? (weeklyCounts[goal.metricKind] ?? 0)
@@ -349,15 +452,19 @@ export function DisplayBoard({
                         style={{ gap: 'calc(1.1 * var(--u))' }}
                       >
                         <span
-                          className="min-w-0 flex-1 text-white/90"
-                          style={{ fontSize: 'calc(1.18 * var(--u))', lineHeight: 1.35 }}
+                          className="min-w-0 flex-1 text-white"
+                          style={{
+                            fontSize: 'calc(1.32 * var(--u))',
+                            lineHeight: 1.28,
+                            letterSpacing: '-0.005em',
+                          }}
                         >
                           {goal.title}
                         </span>
                         <span
                           className="shrink-0 font-mono tabular-nums"
                           style={{
-                            fontSize: 'calc(0.95 * var(--u))',
+                            fontSize: 'calc(1.15 * var(--u))',
                             // Green only once the week's number is met: the
                             // one thing worth spotting from across a room is
                             // which non-negotiables are still short.
@@ -371,7 +478,7 @@ export function DisplayBoard({
                         </span>
                       </div>
                       {target !== undefined && target > 0 && (
-                        <div style={{ marginTop: 'calc(0.75 * var(--u))' }}>
+                        <div style={{ marginTop: 'calc(0.9 * var(--u))' }}>
                           <Bar value={(actual / target) * 100} />
                         </div>
                       )}
@@ -385,9 +492,9 @@ export function DisplayBoard({
           {/* The private layer. Not Khyte's — this person's own life, on their
               own board and nobody else's. Same visual weight as the quarter
               column on purpose: it is not a footnote to the company's goals. */}
-          <section className="min-w-0" style={{ maxWidth: 'calc(30 * var(--u))' }}>
+          <section className="min-w-0">
             <Label>{person.name}</Label>
-            <ul className="flex flex-col" style={{ gap: 'calc(2.1 * var(--u))' }}>
+            <ul className="flex flex-col" style={{ gap: 'calc(2.7 * var(--u))' }}>
               {personal.map((goal) => {
                 const until = goal.targetDate
                   ? untilLabel(goal.targetDate, now)
@@ -412,9 +519,13 @@ export function DisplayBoard({
                         className={
                           goal.done
                             ? 'min-w-0 flex-1 text-white/30 line-through decoration-white/20'
-                            : 'min-w-0 flex-1 text-white/90'
+                            : 'min-w-0 flex-1 text-white'
                         }
-                        style={{ fontSize: 'calc(1.18 * var(--u))', lineHeight: 1.35 }}
+                        style={{
+                          fontSize: 'calc(1.32 * var(--u))',
+                          lineHeight: 1.28,
+                          letterSpacing: '-0.005em',
+                        }}
                       >
                         {goal.title}
                       </span>
@@ -440,67 +551,11 @@ export function DisplayBoard({
           </section>
         </div>
 
-        <div
-          aria-hidden
-          className="shrink-0 bg-white/8"
-          style={{ height: '1px', margin: 'calc(4.5 * var(--u)) 0' }}
-        />
+        {/* The remaining slack. Weighted lighter than the spacer above the
+            scoreboard so the composition sits high on the board — a wallpaper
+            is looked at over the top of whatever window is in front of it. */}
+        <div className="flex-[0.25]" />
 
-        {/* ——— scoreboard: the numbers, given room to be big ——— */}
-        <div
-          className="grid shrink-0"
-          style={{
-            gridTemplateColumns: `repeat(${Math.max(scoreboard.length, 1)}, minmax(0, 1fr))`,
-            gap: 'calc(6 * var(--u))',
-          }}
-        >
-          {scoreboard.map((metric) => {
-            const pct =
-              metric.targetValue && metric.targetValue > 0
-                ? Math.round((metric.currentValue / metric.targetValue) * 100)
-                : undefined
-            return (
-              <div key={metric.id}>
-                <p
-                  className="font-mono uppercase text-[color:var(--dim)]"
-                  style={{ fontSize: 'calc(0.62 * var(--u))', letterSpacing: '0.26em' }}
-                >
-                  {metric.label}
-                </p>
-                <p
-                  className="font-jakarta font-semibold tabular-nums text-white"
-                  style={{
-                    fontSize: 'calc(2.9 * var(--u))',
-                    marginTop: 'calc(0.7 * var(--u))',
-                    lineHeight: 1,
-                  }}
-                >
-                  {formatMetric(metric.currentValue, metric.unit)}
-                  {metric.targetValue !== undefined && (
-                    <span
-                      className="font-mono font-normal text-[color:var(--dim)]"
-                      style={{
-                        fontSize: 'calc(0.95 * var(--u))',
-                        marginLeft: 'calc(0.6 * var(--u))',
-                      }}
-                    >
-                      / {formatMetric(metric.targetValue, metric.unit)}
-                    </span>
-                  )}
-                </p>
-                {pct !== undefined && (
-                  // Fixed track rather than the full grid cell: the columns are
-                  // sized by their labels, so a full-width bar would make 18%
-                  // under a short label longer than 33% under a long one — the
-                  // one comparison a scoreboard has to get right.
-                  <div style={{ marginTop: 'calc(1.1 * var(--u))', width: 'calc(13 * var(--u))' }}>
-                    <Bar value={pct} />
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
       </div>
     </div>
   )
