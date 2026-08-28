@@ -51,11 +51,12 @@ const SECTION_LABELS: Record<GoalSection, string> = {
 }
 
 const SECTION_HINTS: Record<GoalSection, string> = {
-  north_star: 'En mening. Den enda raden högst upp på tavlan.',
+  north_star:
+    'Valfri. Står under loggan på tavlan, max tre rader — längre text kapas.',
   annual: 'Vad året ska ha gett. Sparas här — ritas inte på tavlan.',
-  quarter: 'Vad som faktiskt görs nu. De tre första hamnar på tavlan.',
+  quarter: 'De tre första ritas på tavlan. Resten sparas men syns inte.',
   weekly:
-    'Räknas automatiskt från aktivitet i Leads och Prospekt. Nollställs varje måndag.',
+    'Räknas från aktivitet i Leads och Prospekt — kan inte skrivas in för hand. Veckan börjar om på måndagen och den gamla arkiveras.',
   principle: 'Hur ni arbetar. Sparas här — ritas inte på tavlan.',
   not_now: 'Medvetet bortvalt. Sparas här — ritas inte på tavlan.',
 }
@@ -79,6 +80,49 @@ const UNIT_LABELS: Record<MetricUnit, string> = {
   currency: 'Valuta',
   number: 'Antal',
   percent: 'Procent',
+}
+
+/**
+ * The scoreboard's three rows, in the order the board draws them.
+ *
+ * These are fixed rather than user-added: DisplayBoard computes each figure
+ * from the pipeline and matches its target by label, so a fourth invented row
+ * would have no number behind it and never appear. The labels are the join
+ * key between the two files — changing one means changing both.
+ */
+const SCOREBOARD_ROWS = [
+  {
+    key: 'revenue' as const,
+    label: 'Intäkt',
+    unit: 'currency' as const,
+    source: 'Summan av affärer i steget Won.',
+  },
+  {
+    key: 'pipeline' as const,
+    label: 'Pipeline',
+    unit: 'currency' as const,
+    source: 'Summan av öppna affärer på tavlan — varken Won eller Lost.',
+  },
+  {
+    key: 'customers' as const,
+    label: 'Kunder',
+    unit: 'number' as const,
+    source: 'Antal affärer i steget Won.',
+  },
+]
+
+/**
+ * Formats a derived figure exactly as the wallpaper does.
+ *
+ * Deliberately NOT useFormat: that converts out of a base currency into the
+ * user's display currency, which rendered 467 000 SEK as "49 tn US$" before
+ * localStorage hydrated. These figures come straight from the pipeline in the
+ * currency the deals are stored in, and DisplayBoard prints them with a fixed
+ * sv-SE locale — the editor has to agree with the board about the same number.
+ */
+function formatDerived(value: number, unit: MetricUnit): string {
+  const formatted = new Intl.NumberFormat('sv-SE').format(value)
+  return unit === 'currency' ? `${formatted} kr` : formatted
 }
 
 /** Sections that take a progress bar. A principle has no percentage. */
@@ -134,6 +178,9 @@ function RemoveButton({ onClick, label }: { onClick: () => void; label: string }
 }
 
 export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
+  // The live figures, so the editor shows the same numbers as the wallpaper
+  // rather than a stale stored value the board no longer reads.
+  const derived = initial.totals
   const [goals, setGoals] = useState<Goal[]>(initial.goals)
   const [metrics, setMetrics] = useState<GoalMetric[]>(initial.metrics)
   const [personalGoals, setPersonalGoals] = useState<PersonalGoal[]>(initial.personalGoals)
@@ -267,22 +314,6 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                 // per edit instead of one per character.
                 onBlur={(e) => editGoal(goal.id, { title: e.target.value })}
               />
-
-              {section === 'north_star' && (
-                <input
-                  className={inputClass}
-                  value={goal.detail}
-                  placeholder="Stödjande rad (valfri)"
-                  onChange={(e) =>
-                    setGoals((prev) =>
-                      prev.map((g) =>
-                        g.id === goal.id ? { ...g, detail: e.target.value } : g
-                      )
-                    )
-                  }
-                  onBlur={(e) => editGoal(goal.id, { detail: e.target.value })}
-                />
-              )}
 
               {withProgress && (
                 <div className="flex flex-wrap items-center gap-3">
@@ -462,103 +493,83 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
       </SectionShell>
 
       {/* --- scoreboard --- */}
+      {/* --- scoreboard: targets only, actuals come from the CRM --- */}
       <SectionShell
         title="Resultattavla"
-        hint="De tre första visas längst ner på tavlan. Lämna målet tomt för att bara visa värdet."
-        addLabel="Lägg till"
-        onAdd={addMetric}
+        hint="Siffrorna räknas ut från affärerna i pipelinen — bara målet sätts här. Raderna Intäkt, Pipeline och Kunder visas på tavlan."
       >
-        {metrics.length === 0 ? (
-          <p className="py-2 text-[13.5px] text-foreground/40">Inget här ännu.</p>
-        ) : (
-          <ul className="flex flex-col gap-3">
-            {metrics
-              .slice()
-              .sort((a, b) => a.order - b.order)
-              .map((metric) => (
-                <li key={metric.id} className="flex items-start gap-2">
-                  <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
-                    <input
-                      className={inputClass}
-                      value={metric.label}
-                      placeholder="Etikett, t.ex. Intäkt"
-                      onChange={(e) =>
-                        setMetrics((prev) =>
-                          prev.map((m) =>
-                            m.id === metric.id ? { ...m, label: e.target.value } : m
-                          )
+        <ul className="flex flex-col gap-3">
+          {SCOREBOARD_ROWS.map((row) => {
+            // Matched by label, the same way DisplayBoard resolves its targets.
+            const metric = metrics.find(
+              (m) => m.label.toLowerCase() === row.label.toLowerCase()
+            )
+            const actual = derived[row.key]
+
+            return (
+              <li key={row.key} className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[14.5px] font-medium text-foreground">{row.label}</p>
+                  <p className="text-[13px] text-foreground/50">{row.source}</p>
+                </div>
+
+                {/* Read-only: this is what the CRM says right now. Showing it
+                    as an input would invite edits the board would discard. */}
+                <div className="shrink-0 text-right">
+                  <p className="label-mono mb-1">Nu</p>
+                  <p className="font-mono text-[15px] tabular-nums text-foreground">
+                    {formatDerived(actual, row.unit)}
+                  </p>
+                </div>
+
+                <div className="shrink-0">
+                  <p className="label-mono mb-1">Mål</p>
+                  <input
+                    type="number"
+                    min={0}
+                    className={cn(inputClass, 'h-9 w-32 text-[14px] tabular-nums')}
+                    value={metric?.targetValue ?? ''}
+                    placeholder="—"
+                    onChange={(e) => {
+                      if (!metric) return
+                      const next =
+                        e.target.value === '' ? undefined : Number(e.target.value)
+                      setMetrics((prev) =>
+                        prev.map((m) =>
+                          m.id === metric.id ? { ...m, targetValue: next } : m
                         )
+                      )
+                    }}
+                    onBlur={(e) => {
+                      const next =
+                        e.target.value === '' ? undefined : Number(e.target.value)
+                      if (metric) {
+                        // Empty means "no target", which must reach the DB as
+                        // null — 0 would draw an empty bar instead of none.
+                        editMetric(metric.id, { targetValue: next })
+                        return
                       }
-                      onBlur={(e) => editMetric(metric.id, { label: e.target.value })}
-                    />
-                    <input
-                      type="number"
-                      className={cn(inputClass, 'sm:w-32', 'tabular-nums')}
-                      value={metric.currentValue}
-                      placeholder="Nu"
-                      onChange={(e) =>
-                        setMetrics((prev) =>
-                          prev.map((m) =>
-                            m.id === metric.id
-                              ? { ...m, currentValue: Number(e.target.value) }
-                              : m
-                          )
-                        )
+                      // No row for this metric yet: create one so the target
+                      // has somewhere to live. The label is what DisplayBoard
+                      // matches on, so it has to be exactly this string.
+                      if (next === undefined) return
+                      const created: GoalMetric = {
+                        id: crypto.randomUUID(),
+                        label: row.label,
+                        currentValue: 0,
+                        targetValue: next,
+                        unit: row.unit,
+                        order: metrics.length,
                       }
-                      onBlur={(e) =>
-                        editMetric(metric.id, {
-                          currentValue: Number(e.target.value) || 0,
-                        })
-                      }
-                    />
-                    <input
-                      type="number"
-                      className={cn(inputClass, 'sm:w-32', 'tabular-nums')}
-                      value={metric.targetValue ?? ''}
-                      placeholder="Mål"
-                      onChange={(e) =>
-                        setMetrics((prev) =>
-                          prev.map((m) =>
-                            m.id === metric.id
-                              ? {
-                                  ...m,
-                                  targetValue:
-                                    e.target.value === ''
-                                      ? undefined
-                                      : Number(e.target.value),
-                                }
-                              : m
-                          )
-                        )
-                      }
-                      onBlur={(e) =>
-                        // An empty field means "no target", which has to reach
-                        // the DB as null rather than 0 — 0 would draw a bar.
-                        editMetric(metric.id, {
-                          targetValue:
-                            e.target.value === '' ? undefined : Number(e.target.value),
-                        })
-                      }
-                    />
-                    <select
-                      className={cn(inputClass, 'sm:w-32')}
-                      value={metric.unit}
-                      onChange={(e) =>
-                        editMetric(metric.id, { unit: e.target.value as MetricUnit })
-                      }
-                    >
-                      {(Object.keys(UNIT_LABELS) as MetricUnit[]).map((unit) => (
-                        <option key={unit} value={unit}>
-                          {UNIT_LABELS[unit]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <RemoveButton onClick={() => removeMetric(metric.id)} label="Ta bort" />
-                </li>
-              ))}
-          </ul>
-        )}
+                      setMetrics((prev) => [...prev, created])
+                      persist(() => api.createGoalMetric(created))
+                    }}
+                  />
+                </div>
+              </li>
+            )
+          })}
+        </ul>
       </SectionShell>
 
       {/* --- the personal layer, one block per colleague --- */}
