@@ -89,7 +89,22 @@ export function verifyDisplayToken(
  */
 export function colleagueFromDisplayPath(pathname: string): string | undefined {
   if (!pathname.startsWith(`${DISPLAY_PATH_PREFIX}/`)) return undefined
-  const segment = pathname.slice(DISPLAY_PATH_PREFIX.length + 1)
-  if (!segment || !/^[a-z0-9-]{1,40}$/.test(segment)) return undefined
-  return segment
+
+  const rest = pathname.slice(DISPLAY_PATH_PREFIX.length + 1)
+  const segments = rest.split('/').filter(Boolean)
+
+  // The colleague, plus at most one sub-path beneath it. The board lives at
+  // /goals/display/<colleague> and its change-check at
+  // /goals/display/<colleague>/version, and both must be reachable with the
+  // same token — the token is bound to the colleague, not to the leaf.
+  //
+  // Bounded rather than open-ended on purpose: allowing arbitrary depth would
+  // let any future route nested under a display path inherit token access by
+  // accident. A new sub-route has to be a deliberate decision, not a default.
+  if (segments.length === 0 || segments.length > 2) return undefined
+
+  const [colleague] = segments
+  if (!/^[a-z0-9-]{1,40}$/.test(colleague)) return undefined
+
+  return colleague
 }

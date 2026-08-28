@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation'
 
 import { DisplayBoard } from '@/components/goals/DisplayBoard'
 import { COLLEAGUE_IDS } from '@/lib/colleagues'
-import { loadGoals } from '@/lib/db/queries'
+import { loadGoals, loadGoalsVersion } from '@/lib/db/queries'
 import type { ColleagueId } from '@/lib/types'
 import { BoardRefresh } from './BoardRefresh'
 
@@ -22,9 +22,21 @@ import { BoardRefresh } from './BoardRefresh'
  * CRM working set, because this repaints on a timer. See lib/db/queries.ts.
  */
 
-/** How often the board pulls fresh data, in seconds. Five minutes is well
- *  under a working session and far above anything that would hammer the DB. */
+/**
+ * Unconditional reload period, in seconds. The backstop for what the version
+ * stamp cannot see — a deploy, a persistently failing check, a slept machine.
+ */
 const REFRESH_SECONDS = 300
+
+/**
+ * How often the board asks whether anything changed.
+ *
+ * Five seconds: an edit reaches the desktop about as fast as someone can look
+ * up from the editor, and the request is one indexed aggregate returning a few
+ * bytes — three boards checking at this rate is negligible next to the page
+ * render it replaces.
+ */
+const CHECK_SECONDS = 5
 
 /** The quarter label in the header, derived rather than stored — one less
  *  field to remember to update every three months. */
@@ -46,7 +58,12 @@ export default async function GoalsDisplayPage({
     notFound()
   }
 
-  const { goals, metrics, personalGoals } = await loadGoals()
+  // Read together: the version has to describe the same board that is about to
+  // render, or the first check would see a difference and reload immediately.
+  const [{ goals, metrics, personalGoals }, version] = await Promise.all([
+    loadGoals(),
+    loadGoalsVersion(),
+  ])
 
   // One clock reading for the whole render, so the period label and every
   // deadline countdown are computed against the same instant.
@@ -54,7 +71,11 @@ export default async function GoalsDisplayPage({
 
   return (
     <>
-      <BoardRefresh seconds={REFRESH_SECONDS} />
+      <BoardRefresh
+        seconds={REFRESH_SECONDS}
+        checkSeconds={CHECK_SECONDS}
+        version={version}
+      />
       {/* Exactly the viewport, and nothing but. The board fills this rather
           than being centred inside it — Lively hands over the whole monitor,
           so letterboxing a fixed 16:9 box into it would waste the edges of

@@ -162,6 +162,64 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
 }
 
 /**
+ * A stamp that changes whenever anything on the direction board changes.
+ *
+ * This is the cheap half of the wallpaper's update loop. Reloading the whole
+ * page every few seconds to find out whether anything moved is wasteful; asking
+ * this instead costs one indexed aggregate per table and a few bytes on the
+ * wire, so the board can check often and reload only when there is something to
+ * see.
+ *
+ * WHY NOT SUPABASE REALTIME. It would be the obvious answer and it is already
+ * installed, but Realtime enforces RLS, and every policy on these tables is
+ * scoped to `authenticated` with `auth.uid() = owner_id` while every row still
+ * has a null owner (there are no accounts yet — see docs/current_state.md). A
+ * browser subscribing with the publishable key connects as `anon` and receives
+ * nothing; verified by querying as anon, which returns zero rows rather than an
+ * error. Making it work would mean granting `anon` SELECT on the goals tables,
+ * and since the publishable key ships in the browser bundle that would put the
+ * company's goals and revenue on the public internet — undoing the password
+ * gate this feature sits behind. Revisit when per-user auth lands, at which
+ * point Realtime works as designed and this function can go.
+ *
+ * `max(updated_at)` rather than a row count: an edit to an existing goal is the
+ * common case and would not change a count. The `set_updated_at` triggers from
+ * the init migration are what make this reliable — every table here has one.
+ *
+ * Deletes are the one gap. Removing a row lowers no timestamp, so a board whose
+ * only change was a deletion will not notice until the slow fallback reload.
+ * Counting rows alongside the timestamp closes that, which is why the count is
+ * folded into the stamp below.
+ */
+export async function loadGoalsVersion(): Promise<string> {
+  await connection()
+
+  // Without a database the board is rendering demo data that never changes, so
+  // a constant stamp is the honest answer — the client then never reloads.
+  if (!isSupabaseConfigured || !isDirectDbConfigured) return 'demo'
+
+  const sql = getDb()
+
+  const [row] = await withDbErrors(
+    () => sql`
+      select
+        coalesce(max(updated_at)::text, '') as stamp,
+        count(*)                            as total
+      from (
+        select updated_at from goals
+        union all
+        select updated_at from goal_metrics
+        union all
+        select updated_at from personal_goals
+      ) as board
+    `
+  )
+
+  const { stamp, total } = row as unknown as { stamp: string; total: string | number }
+  return `${stamp}:${total}`
+}
+
+/**
  * Wraps the raw driver error with the same diagnostic shape `unwrap` used to
  * give the PostgREST path — a wrong connection string or an un-migrated
  * database should still fail loud and specific, not just "connection error".
