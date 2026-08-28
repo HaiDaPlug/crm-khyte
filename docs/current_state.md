@@ -1,18 +1,25 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-08-26
-**Phase:** MVP + persistence + password gate (Supabase live; shared-password auth, no accounts)
+**Date:** 2026-08-28
+**Phase:** MVP + persistence + password gate + derived direction board
+(Supabase live; shared-password auth, no accounts)
 
 The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
 (eu-north-1); schema and seed applied; reads and writes verified end to end
 against the live API.
 
 **All migrations are applied.** `npm run db:status` reports the remote as up to
-date, `20260826140000_goals` (the direction board) included. The two that were
-outstanding at the previous writing — `20260825140000_lead_contact_fields` and
-`20260826120000_opportunity_followed_up_by` — have since been pushed, so a
-Lead's contact/connection/source/followed-up-by and an Opportunity's
-followed-up-by now persist.
+date. Since the previous writing three landed for the direction board:
+`20260828120000_personal_goals` (renames `focus_items`, adds `target_date` and
+`progress`), `20260828140000_crm_events` (the activity log and the weekly
+archive) and `20260828140100_weekly_goal_section` (the `weekly` goal section
+plus `metric_kind`/`metric_target`).
+
+**The board's numbers are now computed, not typed.** Revenue, customers and
+pipeline are recomputed from `opportunities` on every read, and the weekly
+non-negotiables are counted from `crm_events`. Nothing on the wallpaper can
+drift from what the CRM holds — which also means it reads 0 revenue until deals
+are actually marked Won.
 
 ---
 
@@ -44,8 +51,8 @@ followed-up-by now persist.
 | `/prospects` | Functional | Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. Search and filters are wired, and table/board empty results now show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. |
 | `/pipeline` | Functional | Nine-stage dnd-kit kanban with mouse, delayed long-press touch and keyboard sensors. Mobile columns snap horizontally, expose a next-column peek/edge cue, and use natural page height instead of a locked viewport. Active value, drop feedback, off-board picker, background panning and drag-edge auto-scroll remain intact. Source data is Opportunities (Prospects), not the new Leads. |
 | `/strategy` | Functional | Opportunity selector + per-deal strategy board with add/rename/delete. The selector, summary and empty state reflow on phones; board columns snap/peek horizontally, touch actions stay visible, and drag supports mouse, long-press touch and keyboard input. |
-| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): north star, 2026 outcomes, quarter priorities, scoreboard, per-colleague weekly focus, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. Top of the page carries the copyable wallpaper links, one per colleague. |
-| `/goals/display/[colleague]` | Functional | The wallpaper. A fixed 16:9 board with zero chrome, rendered outside `AppShell` and sized in `cqw` so it scales whole to any resolution. Company layer is shared; only the "denna vecka" column differs per person. Reloads itself every 5 minutes (`BoardRefresh.tsx`). Reachable either with a session or with a signed `?k=` display token — see Wallpaper display links below. |
+| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, 2026 outcomes, quarter priorities, weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. Top of the page carries the copyable wallpaper links, one per colleague. |
+| `/goals/display/[colleague]` | Functional | The wallpaper. Fills the screen edge to edge (no letterboxing) with zero chrome, rendered outside `AppShell` and sized off a single `--u` unit blending `vw` and `vh`, so the composition scales whole to any monitor. Bento header: the K mark left, three derived KPI tiles right, optional statement beneath the mark. Below it three columns — quarter priorities, this week's counted non-negotiables, and the viewer's own personal goals — every list hard-capped at three rows. Checks a version stamp every 5s and reloads only on change, with an unconditional 5-minute reload as backstop (`BoardRefresh.tsx`). Reachable with a session or a signed `?k=` display token. |
 | `/companies` | Functional | Responsive card grid with deal/contact counts and total value. Search has a localized no-result state and clear action. Detail view becomes a full-screen, safe-area-aware mobile dialog with focus trap, Escape close, body-scroll lock and focus restoration. "New Company" is a single-column mobile modal. |
 | `/contacts` | Functional | Responsive list with search, localized no-result recovery, and 44px mobile actions. The contact detail view is a full-screen, safe-area-aware mobile dialog with focus trap/Escape/scroll lock/focus return. "New Contact" uses a labelled company combobox and single-column mobile form. |
 | `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. |
@@ -428,6 +435,9 @@ Three properties worth keeping straight:
 
 - **Scoped to display routes by pathname.** `proxy.ts` consults the token only
   for `/goals/display/*`; every other path still requires the session cookie.
+  `colleagueFromDisplayPath` accepts the colleague plus at most one sub-path,
+  so `/goals/display/hai/version` opens with the same token while a deeper
+  route cannot inherit access by accident.
 - **Read-only in practice and by construction.** The display page renders no
   forms and calls no Server Action, and `requireAuth()` reads the session
   cookie only — a token satisfies Proxy, never an action.
@@ -436,6 +446,12 @@ Three properties worth keeping straight:
 
 `DISPLAY_SECRET` is optional. Unset, `/goals` shows a notice instead of links
 and every display URL falls through to the normal login redirect.
+
+`proxy.ts` also exempts the `khyte-logo` prefix from the gate. A browser
+fetching an `<img>` cannot carry the token that lives in the page URL's query
+string, so without that the wallpaper's mark 307s to `/login` and Lively paints
+a broken image. Narrowed to that one prefix rather than opening all of
+`/public`, so anything else dropped in that folder still meets the gate.
 
 Note `app/layout.tsx` branches on an `x-pathname` header that `proxy.ts` sets
 (and always overwrites, so a client cannot forge it) to keep `AppShell` and the
@@ -449,6 +465,92 @@ board → 307** (binding holds); **display token on `/goals` → 307** (scope
 holds); **spoofed `x-pathname: /goals/display/hai` on `/goals` → 307** (header
 cannot be forged). Rendered wallpaper contains zero sidebar markup, and the
 two boards differ only in the personal column.
+
+### Derived board metrics (lib/db/events.ts + lib/db/board-metrics.ts)
+
+The direction board's numbers are computed from the CRM rather than typed in.
+One distinction runs through the whole feature, and getting it backwards is the
+easy mistake:
+
+- **Current state** — intäkt, kunder, pipeline. Recomputed from
+  `opportunities` on every read, never stored. Moving a deal out of Won lowers
+  revenue again, because the number describes how things stand rather than what
+  once happened. Needs no log.
+- **Events** — möten bokade, prospekt kontaktade, leads tillagda. Counted from
+  `crm_events` within the current week. "We booked three meetings" stays true
+  after all three go to Lost, so these cannot be read off current stages.
+
+Revenue counted from events would never fall; a meeting counter read from
+current stages would drop every time a deal progressed past Meeting Booked.
+
+**Events are recorded server-side, inside the Server Action, after the write
+succeeds.** Never from the client store — every CRM mutation there is
+optimistic, so emitting from it would log activity that never reached the
+database. `updateOpportunity` reads the prior stage before writing, because the
+row about to be overwritten is the only place it exists; only stage changes pay
+for that extra read.
+
+**Transitions, not states, and only forward ones.** `eventsForStageChange`
+records a threshold crossing, so dragging a card into Meeting Booked and back
+out logs one event rather than two, and dragging it forward again logs a second
+— that genuinely is a second booking. A jump straight from New to Meeting
+Booked crosses the Contacted threshold too and records both. Won is an arrival
+rather than a threshold, so re-closing from Lost counts again; `Lost` is
+excluded from every crossing so marking a deal lost never looks like progress.
+11 transition cases verified, including every drag-back case.
+
+`crm_events` is append-only and its `subject_id` is deliberately **not** a
+foreign key: an event is a historical fact, and deleting the lead or
+opportunity it refers to must not delete the fact that it happened, or a past
+week's counts would change retroactively.
+
+**Weekly non-negotiables live on the `goals` table**, in a `weekly` section
+with `metric_kind` and `metric_target` columns — a non-negotiable *is* a goal,
+differing only in that its number is counted rather than typed. A row with a
+null `metric_kind` is an ordinary hand-tracked goal, which is every row that
+predates this.
+
+**Finished weeks archive on read, not on a schedule.** There is no cron here,
+and a wallpaper reloading all day is a more dependable trigger: the first load
+after Monday midnight closes the week that just ended, and catching up several
+weeks at once is the same loop, so a laptop shut for a fortnight still archives
+correctly. The counts could be recomputed from `crm_events` forever, but the
+target could not — "12 of 15" needs the 15 that was in force that week, and
+that lives on a row the operator may change next Monday — so `weekly_snapshots`
+freezes both. Idempotent by a unique index on `week_start`; an archive failure
+is caught and logged rather than thrown, since a missing history row is worth
+far less than the board it would otherwise take down.
+
+**Verified 2026-08-28** against the live database: a backdated event produced
+exactly one snapshot, four further reads produced no duplicates, and the
+current week's count correctly excluded the archived one. Driving the same
+read-write-log sequence the action uses, New → Meeting Booked logged both
+thresholds, the backward move logged nothing, and the re-forward move logged
+one more.
+
+### Wallpaper live updates (app/goals/display/[colleague]/version/)
+
+An edit in `/goals` used to take up to five minutes to reach a desktop. The
+board now checks a version stamp every 5 seconds and reloads only when it
+differs, with the unconditional 5-minute reload kept as a backstop for what a
+stamp cannot see — a deploy, a persistently failing check, a slept machine.
+
+**This is deliberately not Supabase Realtime**, despite `realtime-js` already
+being installed. Realtime enforces RLS, and every policy on these tables is
+scoped to `authenticated` with `auth.uid() = owner_id` while every row still
+has a null owner. A browser subscribing with the publishable key connects as
+`anon` and receives nothing — verified by querying as anon, which returns zero
+rows rather than erroring. Making it work would mean granting `anon` SELECT on
+the goals tables, and since the publishable key ships in the browser bundle
+that would put the company's goals and revenue on the public internet, undoing
+the gate this feature sits behind. Revisit when per-user auth lands.
+
+The stamp is `max(updated_at)` plus a row count across the three goals tables
+and `crm_events`. The count is not redundant: a delete lowers no timestamp, and
+without it a removed row would go unnoticed until the slow reload. The endpoint
+re-checks the display token itself rather than trusting `proxy.ts` — a Route
+Handler is reachable by direct fetch — and returns only a timestamp and a
+count, so a leaked stamp reveals nothing but "something changed".
 
 ### Dialog behaviour (lib/hooks/useDialog.ts)
 
@@ -492,7 +594,7 @@ Full detail in `docs/database.md`. Shape of it:
 | `lib/db/pg.ts` | `getDb()` — direct Postgres client (`postgres.js`) over `SUPABASE_DB_URL`, for reads only. Cached on `globalThis`, not a module-level singleton — see Known issues |
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
-| `lib/db/queries.ts` | `loadSnapshot()` — reads all eight CRM tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing. **`loadGoals()`** is a second, deliberately separate read for the three direction-board tables (`goals`, `goal_metrics`, `focus_items`) — not a key on `CRMSnapshot`, and its rows never enter the CRM store. The wallpaper reloads every 5 minutes; folding it into the snapshot would drag the whole working set through Postgres on each refresh to render three small tables |
+| `lib/db/queries.ts` | `loadSnapshot()` — reads all eight CRM tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing. **`loadGoals()`** is a second, deliberately separate read for the direction-board tables (`goals`, `goal_metrics`, `personal_goals`) — not a key on `CRMSnapshot`, and its rows never enter the CRM store. It also returns the current week's event counts and the derived revenue/customers/pipeline totals in the same pass, so a goal and its number always describe the same instant, and archives any finished week before counting this one. **`loadGoalsVersion()`** is the cheap change-stamp the wallpaper polls. The wallpaper reloads every 5 minutes; folding it into the snapshot would drag the whole working set through Postgres on each refresh to render three small tables |
 | `app/actions/crm.ts` | 20 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks, returning `{ ok }` rather than throwing. Every one is gated on the session via `run()`/`guardedOk()` — see Auth gate |
 | `app/actions/auth.ts` | `login` / `logout`. Kept separate from `crm.ts`: those are narrow writes the store calls after an optimistic update, these are form handlers that set cookies and redirect |
 | `lib/store/provider.tsx` | `CRMStoreProvider` — builds one store per request **containing** the snapshot, so the server HTML and the hydration pass both render real rows; `useCRMStore` resolves it from context |
@@ -605,7 +707,7 @@ from.
 | `strategy.ts` | 6 headlines + 10 strategy cards for the Nordvik Capital opportunity; every other demo deal opens empty |
 | `tasks.ts` | 8 realistic tasks linked to opportunities/companies, mix of overdue/today/upcoming/completed |
 | `leads.ts` | 2 example leads (Halcyon Robotics with a connection/source, Fjord Analytics with neither) for the credential-free demo-data fallback, wired into `demoSnapshot()` in `lib/db/queries.ts` |
-| `goals.ts` | A full demo direction board — 1 north star, 3 annual outcomes, 3 quarter priorities, 2 principles, 3 "not now", 4 scoreboard metrics, and weekly focus for all three colleagues. Enough in every section that the wallpaper layout can be judged before a real row exists. Returned by `loadGoals()` rather than `demoSnapshot()`, since goals are a separate read path |
+| `goals.ts` | A full demo direction board — 1 north star, 3 annual outcomes, 3 quarter priorities, 2 principles, 3 "not now", 4 scoreboard metrics, and personal goals for all three colleagues. Enough in every section that the wallpaper layout can be judged before a real row exists. Returned by `loadGoals()` rather than `demoSnapshot()`, since goals are a separate read path |
 
 ### Sound (lib/sound.ts)
 
@@ -620,7 +722,7 @@ on the `sounds` setting; the module itself does not read settings.
 - `ColleagueId` — `'erik' | 'abdi' | 'hai'`, the fixed assignment roster (see Tasks); metadata (name, avatar color) lives in `lib/colleagues.ts`, not this file
 - `Company`, `Contact`, `Opportunity` (with `inPipeline` — prospects only appear on the pipeline board once explicitly added, and now `followedUpBy?: ColleagueId` — who on the team is following this prospect up), `Lead` (new: `{ id, companyName (required), contactName?, connection?, source?, followedUpBy?: ColleagueId, priority, notes, createdAt }` — raw, unqualified interest with no company/contact/opportunity records until promoted to a Prospect, at which point the Lead row is deleted; `Lead.followedUpBy` means who *added* the lead, a different scope from `Opportunity.followedUpBy`'s "who's following it up"), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
 - `PipelineStage`
-- **Direction board (Khyte-internal):** `GoalSection` — `'north_star' | 'annual' | 'quarter' | 'principle' | 'not_now'`, a closed set because the wallpaper has fixed regions and a goal in an unknown section has nowhere to be drawn; `GoalStatus` — `'on_track' | 'at_risk' | 'off_track' | 'done'`; `MetricUnit` — `'currency' | 'number' | 'percent'`, a rendering hint rather than a stored format. `Goal` (`progress?` undefined means "no bar" — distinct from `0`, which draws an empty one), `GoalMetric` (`targetValue?` undefined means "just show the number"), `FocusItem` (keyed to a `ColleagueId`). `GoalsSnapshot` bundles all three for `loadGoals()` — deliberately **not** part of `CRMSnapshot`
+- **Direction board (Khyte-internal):** `GoalSection` — `'north_star' | 'annual' | 'quarter' | 'weekly' | 'principle' | 'not_now'`, a closed set because the wallpaper has fixed regions and a goal in an unknown section has nowhere to be drawn; `GoalStatus` — `'on_track' | 'at_risk' | 'off_track' | 'done'`; `MetricUnit` — `'currency' | 'number' | 'percent'`, a rendering hint rather than a stored format. `Goal` (`progress?` undefined means "no bar" — distinct from `0`, which draws an empty one), `GoalMetric` (`targetValue?` undefined means "just show the number"), `PersonalGoal` (keyed to a `ColleagueId`; carries an optional `targetDate` and `progress`, and is deliberately **not** linked to a company `Goal` — it is the operator's own life shown on their own wallpaper, not a contribution rolling up into a Khyte objective). `Goal` also carries `metricKind`/`metricTarget` for counted weekly rows. `CrmEventKind` names the four countable CRM actions. `GoalsSnapshot` bundles the rows plus `weeklyCounts` and `totals` for `loadGoals()` — deliberately **not** part of `CRMSnapshot`
 - `Settings` — display preferences (`theme`, `currency`, `locale`, `dateFormat`, `compactNumbers`), plus `CurrencyCode`, `LocaleCode`, `DateFormat`
 
 ### Design System — "Darkroom Operator"
@@ -781,7 +883,7 @@ prospects board's cards separate from the page.
   task archive), `deleteNote` (the per-entry `Trash2` button in `NotesTimeline`,
   wired only in `DetailDrawer`), `deleteLead` (permanent — used both when a lead
   is promoted into a Prospect, via `removeLead`, and when discarded outright)
-  and `deleteGoal`/`deleteGoalMetric`/`deleteFocusItem` (the per-row `Trash2` in
+  and `deleteGoal`/`deleteGoalMetric`/`deletePersonalGoal` (the per-row `Trash2` in
   `GoalsEditor`, immediate and unconfirmed — a goal row is cheap to retype) all
   exist end to end (store or local state → Server Action → `delete().eq('id', …)`)
 - Realtime — two open tabs do not see each other's changes until reload
@@ -802,16 +904,24 @@ prospects board's cards separate from the page.
   everything on Lead outside its own drawer/promote flow. **Tasks** remain
   fully editable inline behind the pencil
 - Loading states, and per-route `error.tsx` boundaries (only the root `global-error.tsx` exists)
-- **Reordering on the direction board.** `sort_order` exists on all three goals
+- **Reordering on the direction board.** `sort_order` exists on all the goals
   tables and every read honours it, but nothing in `GoalsEditor` writes it —
   rows sit in creation order and there is no drag handle. The dnd-kit wiring
   from `PipelineBoard`/`StrategyBoard` is the obvious model when it matters
-- **The goals → pipeline link.** The metric scoreboard stores its own
-  `current_value`; nothing derives it from won deals yet. That was deliberate —
-  a metric that holds its own number keeps working when the figure comes from
-  somewhere the CRM has never heard of — but the "deal marked Won → goal
-  progress updates" loop from the original sketch is still unbuilt. It is a
-  computation over the pipeline written into `current_value`, not a foreign key
+- **No timeline UI.** Finished weeks archive into `weekly_snapshots` and have
+  been verified as landing correctly, but nothing reads them back — the
+  week-by-week review the archive exists for is still unbuilt
+- **Daily goals.** Discussed as a tier between weekly and personal, assignable
+  to people; not built. Personal goals are the closest thing that exists
+- **A late-archived week records today's targets, not that week's.** The
+  actuals are recomputed correctly from `crm_events` for the right window, but
+  the target is read from the goal row as it stands when the archive runs.
+  Versioning goal rows would fix it and is far more machinery than a
+  three-person scoreboard warrants
+- **`goal_metrics.current_value` is now dead weight.** The scoreboard derives
+  its actuals from `opportunities`, so only `target_value`, `label` and `unit`
+  are still read. The column stays because dropping it is a migration for no
+  gain, but nothing writes it any more
 - **The direction board is not localized.** Every label in `GoalsEditor`,
   `WallpaperLinks` and `DisplayBoard` is hard-coded Swedish rather than going
   through `lib/i18n/` (only the sidebar nav entry has `sv`/`en` entries). The
