@@ -236,21 +236,27 @@ export function DisplayBoard({
 
       <div
         className="relative flex h-full flex-col"
-        style={{ padding: 'calc(5.5 * var(--u)) calc(6 * var(--u))' }}
+        style={{ padding: 'calc(3.6 * var(--u)) calc(6 * var(--u)) calc(5.5 * var(--u))' }}
       >
-        {/* ——— north star: the one thing worth the biggest type on screen ——— */}
+        {/* ——— north star: the one thing worth the biggest type on screen ———
+            No eyebrow label. At this size and this position nothing else could
+            be mistaken for it, so the word "Nordstjärna" was only taking up the
+            space above it. */}
         {northStar && (
-          <div className="shrink-0">
-            <Label>Nordstjärna</Label>
+          <div className="shrink-0 text-center">
             <p
-              className="font-display text-white"
+              className="font-jakarta font-semibold text-white"
               style={{
-                fontSize: 'calc(3.6 * var(--u))',
-                lineHeight: 1.08,
-                // Held short of the full width. A line of display type that
-                // runs the whole board is read as a paragraph; one that stops
-                // around two-thirds is read as a statement.
-                maxWidth: '62%',
+                fontSize: 'calc(3.4 * var(--u))',
+                lineHeight: 1.14,
+                // Optical tightening: Jakarta at display size sets looser than
+                // the serif it replaced, and the default tracking reads slack
+                // across a wall.
+                letterSpacing: '-0.02em',
+                // Centred, so held to a measure rather than a left edge —
+                // a centred line running the full width loses its shape.
+                maxWidth: 'calc(58 * var(--u))',
+                marginInline: 'auto',
               }}
             >
               {northStar.title}
@@ -412,9 +418,12 @@ export function DisplayBoard({
                       >
                         {goal.title}
                       </span>
-                      {/* A deadline and a bar are alternatives, not a pair —
-                          showing both would put two different answers to
-                          "how far along is this" on one line. */}
+                      {/* A deadline, and nothing else. No percentage and no
+                          bar: these are here to be looked at and wanted, not
+                          measured — a half-filled rule under "flytta ut i
+                          december" turns a private ambition into another
+                          progress report. The countdown stays because a date
+                          is part of the wanting. */}
                       {until && !goal.done && (
                         <span
                           className="shrink-0 font-mono tabular-nums text-[color:var(--dim)]"
@@ -423,25 +432,7 @@ export function DisplayBoard({
                           {until}
                         </span>
                       )}
-                      {!until && goal.progress !== undefined && (
-                        <span
-                          className="shrink-0 font-mono tabular-nums text-[color:var(--dim)]"
-                          style={{ fontSize: 'calc(0.8 * var(--u))' }}
-                        >
-                          {goal.progress}%
-                        </span>
-                      )}
                     </div>
-                    {goal.progress !== undefined && !goal.done && (
-                      <div
-                        style={{
-                          marginTop: 'calc(0.75 * var(--u))',
-                          marginLeft: 'calc(1.5 * var(--u))',
-                        }}
-                      >
-                        <Bar value={goal.progress} />
-                      </div>
-                    )}
                   </li>
                 )
               })}

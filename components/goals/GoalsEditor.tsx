@@ -9,6 +9,7 @@ import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
 import { cn } from '@/lib/utils'
 import type {
   ColleagueId,
+  CrmEventKind,
   PersonalGoal,
   Goal,
   GoalMetric,
@@ -64,6 +65,14 @@ const STATUS_LABELS: Record<GoalStatus, string> = {
   at_risk: 'Risk',
   off_track: 'Ur spår',
   done: 'Klart',
+}
+
+/** What each countable CRM action is called on screen. */
+const METRIC_KIND_LABELS: Record<CrmEventKind, string> = {
+  meeting_booked: 'Möten bokade',
+  prospect_contacted: 'Prospekt kontaktade',
+  lead_added: 'Leads tillagda',
+  deal_won: 'Affärer vunna',
 }
 
 const UNIT_LABELS: Record<MetricUnit, string> = {
@@ -153,6 +162,11 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
       detail: '',
       status: 'on_track',
       ...(PROGRESS_SECTIONS.includes(section) ? { progress: 0 } : {}),
+      // A weekly row is counted, never typed, so it is born bound to an event
+      // kind — an unbound one would show a number that never moves.
+      ...(section === 'weekly'
+        ? { metricKind: 'meeting_booked' as const, metricTarget: 5 }
+        : {}),
       order: siblings.length,
     }
     setGoals((prev) => [...prev, goal])
@@ -369,6 +383,84 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
         </SectionShell>
       </div>
 
+      {/* --- weekly non-negotiables: counted, not typed --- */}
+      <SectionShell
+        title={SECTION_LABELS.weekly}
+        hint={SECTION_HINTS.weekly}
+        addLabel="Lägg till"
+        onAdd={() => addGoal('weekly')}
+      >
+        {inSection('weekly').length === 0 ? (
+          <p className="py-2 text-[13.5px] text-foreground/40">Inget här ännu.</p>
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {inSection('weekly').map((goal) => (
+              <li key={goal.id} className="flex items-start gap-2">
+                <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
+                  <input
+                    className={inputClass}
+                    value={goal.title}
+                    placeholder="T.ex. Möten bokade"
+                    onChange={(e) =>
+                      setGoals((prev) =>
+                        prev.map((g) =>
+                          g.id === goal.id ? { ...g, title: e.target.value } : g
+                        )
+                      )
+                    }
+                    onBlur={(e) => editGoal(goal.id, { title: e.target.value })}
+                  />
+                  <select
+                    className={cn(inputClass, 'sm:w-52')}
+                    value={goal.metricKind ?? 'meeting_booked'}
+                    onChange={(e) =>
+                      editGoal(goal.id, { metricKind: e.target.value as CrmEventKind })
+                    }
+                  >
+                    {(Object.keys(METRIC_KIND_LABELS) as CrmEventKind[]).map((kind) => (
+                      <option key={kind} value={kind}>
+                        {METRIC_KIND_LABELS[kind]}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min={0}
+                    className={cn(inputClass, 'sm:w-24', 'tabular-nums')}
+                    value={goal.metricTarget ?? ''}
+                    placeholder="Mål"
+                    onChange={(e) =>
+                      setGoals((prev) =>
+                        prev.map((g) =>
+                          g.id === goal.id
+                            ? {
+                                ...g,
+                                metricTarget:
+                                  e.target.value === ''
+                                    ? undefined
+                                    : Number(e.target.value),
+                              }
+                            : g
+                        )
+                      )
+                    }
+                    onBlur={(e) =>
+                      editGoal(goal.id, {
+                        metricTarget:
+                          e.target.value === ''
+                            ? undefined
+                            : Math.max(0, Number(e.target.value) || 0),
+                      })
+                    }
+                  />
+                </div>
+                <RemoveButton onClick={() => removeGoal(goal.id)} label="Ta bort" />
+              </li>
+            ))}
+          </ul>
+        )}
+      </SectionShell>
+
       {/* --- scoreboard --- */}
       <SectionShell
         title="Resultattavla"
@@ -512,61 +604,25 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                           }
                           onBlur={(e) => editPersonalGoal(item.id, { title: e.target.value })}
                         />
-                        {/* Both optional and independent: a deadline goal, a
-                            measurable one, or neither. The board shows the date
-                            as a countdown and prefers it over the bar when both
-                            are set. */}
-                        <div className="flex flex-wrap items-center gap-2">
-                          <label className="flex items-center gap-2">
-                            <span className="label-mono">Datum</span>
-                            <input
-                              type="date"
-                              className={cn(inputClass, 'h-9 w-auto text-[14px]')}
-                              value={item.targetDate ?? ''}
-                              onChange={(e) =>
-                                editPersonalGoal(item.id, {
-                                  // Empty clears the deadline; the mapper turns
-                                  // undefined into a null column write.
-                                  targetDate: e.target.value || undefined,
-                                })
-                              }
-                            />
-                          </label>
-                          <label className="flex items-center gap-2">
-                            <span className="label-mono">%</span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={100}
-                              className={cn(inputClass, 'h-9 w-20 text-[14px] tabular-nums')}
-                              value={item.progress ?? ''}
-                              placeholder="—"
-                              onChange={(e) =>
-                                setPersonalGoals((prev) =>
-                                  prev.map((f) =>
-                                    f.id === item.id
-                                      ? {
-                                          ...f,
-                                          progress:
-                                            e.target.value === ''
-                                              ? undefined
-                                              : Number(e.target.value),
-                                        }
-                                      : f
-                                  )
-                                )
-                              }
-                              onBlur={(e) =>
-                                editPersonalGoal(item.id, {
-                                  progress:
-                                    e.target.value === ''
-                                      ? undefined
-                                      : Math.min(100, Math.max(0, Number(e.target.value) || 0)),
-                                })
-                              }
-                            />
-                          </label>
-                        </div>
+                        {/* Only a date. Personal goals are motivation, not
+                            tracking — the board deliberately shows no bar for
+                            them, so offering a percentage here would promise
+                            something that never appears. */}
+                        <label className="flex items-center gap-2">
+                          <span className="label-mono">Datum</span>
+                          <input
+                            type="date"
+                            className={cn(inputClass, 'h-9 w-auto text-[14px]')}
+                            value={item.targetDate ?? ''}
+                            onChange={(e) =>
+                              editPersonalGoal(item.id, {
+                                // Empty clears the deadline; the mapper turns
+                                // undefined into a null column write.
+                                targetDate: e.target.value || undefined,
+                              })
+                            }
+                          />
+                        </label>
                       </div>
                       <RemoveButton onClick={() => removePersonalGoal(item.id)} label="Ta bort" />
                     </li>

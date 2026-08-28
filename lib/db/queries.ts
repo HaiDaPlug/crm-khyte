@@ -6,7 +6,12 @@ import type { CRMSnapshot, GoalsSnapshot } from '@/lib/types'
 import { isSupabaseConfigured } from '@/lib/supabase/server'
 import { getDb, isDirectDbConfigured } from './pg'
 import { isClockSkew } from './retry'
-import { countEventsSince, loadDerivedTotals, weekStart } from './board-metrics'
+import {
+  archiveFinishedWeeks,
+  countEventsSince,
+  loadDerivedTotals,
+  weekStart,
+} from './board-metrics'
 import { mockCompanies } from '@/lib/mock-data/companies'
 import { mockContacts } from '@/lib/mock-data/contacts'
 import { mockOpportunities } from '@/lib/mock-data/opportunities'
@@ -149,6 +154,24 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
 
   const sql = getDb()
 
+  const now = new Date()
+
+  /**
+   * Close out any week that has ended before counting this one.
+   *
+   * There is no scheduler in this app, and the wallpaper reloading all day is a
+   * more dependable trigger than one would be: the first load after Monday
+   * midnight freezes the week that just finished. Failing to archive must not
+   * take the board down with it — a missing history row is worth far less than
+   * the board itself — so this is caught and logged rather than thrown.
+   */
+  try {
+    await archiveFinishedWeeks(now)
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause)
+    console.error('[khyte] weekly archive skipped:', message)
+  }
+
   // The counted numbers are read in the same pass as the rows they belong to,
   // so a goal and its count always describe the same instant.
   const [goals, metrics, personalGoals, weeklyCounts, totals] = await withDbErrors(() =>
@@ -156,7 +179,7 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
       sql`select * from goals order by section, sort_order`,
       sql`select * from goal_metrics order by sort_order`,
       sql`select * from personal_goals order by colleague, sort_order`,
-      countEventsSince(weekStart(new Date())),
+      countEventsSince(weekStart(now)),
       loadDerivedTotals(),
     ])
   )
