@@ -1,12 +1,12 @@
 'use server'
 
-import type { FocusItem, Goal, GoalMetric } from '@/lib/types'
+import type { PersonalGoal, Goal, GoalMetric } from '@/lib/types'
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase/server'
 import { isRetryableWrite, withRetry } from '@/lib/db/retry'
 import { requireAuth } from '@/lib/auth/guard'
 import {
-  toFocusItemInsert,
-  toFocusItemUpdate,
+  toPersonalGoalInsert,
+  toPersonalGoalUpdate,
   toGoalInsert,
   toGoalMetricInsert,
   toGoalMetricUpdate,
@@ -123,28 +123,28 @@ export async function deleteGoalMetric(id: string): Promise<ActionResult> {
 
 // --- focus items -----------------------------------------------------------
 
-export async function createFocusItem(item: FocusItem): Promise<ActionResult> {
+export async function createPersonalGoal(item: PersonalGoal): Promise<ActionResult> {
   if (skipUnconfigured()) return guardedOk()
-  return run('focus_items', async () =>
-    getSupabase().from('focus_items').insert(toFocusItemInsert(item))
+  return run('personal_goals', async () =>
+    getSupabase().from('personal_goals').insert(toPersonalGoalInsert(item))
   )
 }
 
-export async function updateFocusItem(
+export async function updatePersonalGoal(
   id: string,
-  updates: Partial<FocusItem>
+  updates: Partial<PersonalGoal>
 ): Promise<ActionResult> {
   if (skipUnconfigured()) return guardedOk()
-  const payload = toFocusItemUpdate(updates)
+  const payload = toPersonalGoalUpdate(updates)
   if (Object.keys(payload).length === 0) return guardedOk()
-  return run('focus_items', async () =>
-    getSupabase().from('focus_items').update(payload).eq('id', id)
+  return run('personal_goals', async () =>
+    getSupabase().from('personal_goals').update(payload).eq('id', id)
   )
 }
 
-export async function deleteFocusItem(id: string): Promise<ActionResult> {
+export async function deletePersonalGoal(id: string): Promise<ActionResult> {
   if (skipUnconfigured()) return guardedOk()
-  return run('focus_items', async () =>
-    getSupabase().from('focus_items').delete().eq('id', id)
+  return run('personal_goals', async () =>
+    getSupabase().from('personal_goals').delete().eq('id', id)
   )
 }

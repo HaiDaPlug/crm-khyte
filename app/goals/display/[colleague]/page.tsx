@@ -46,21 +46,30 @@ export default async function GoalsDisplayPage({
     notFound()
   }
 
-  const { goals, metrics, focusItems } = await loadGoals()
+  const { goals, metrics, personalGoals } = await loadGoals()
+
+  // One clock reading for the whole render, so the period label and every
+  // deadline countdown are computed against the same instant.
+  const now = new Date()
 
   return (
     <>
       <BoardRefresh seconds={REFRESH_SECONDS} />
-      {/* Centred and letterboxed: Lively hands this whatever the monitor's
-          aspect ratio is, and the board is authored at exactly 16:9. On a
-          21:9 ultrawide the bars are the wallpaper's background, not a bug. */}
-      <div className="flex min-h-dvh items-center justify-center bg-[#0D0B0A]">
+      {/* Exactly the viewport, and nothing but. The board fills this rather
+          than being centred inside it — Lively hands over the whole monitor,
+          so letterboxing a fixed 16:9 box into it would waste the edges of
+          every screen that is not exactly 16:9.
+          `overflow-hidden` because a wallpaper has no scrollbar and nobody to
+          drive one: anything that does not fit has to be a visible layout
+          problem here, not content silently cut off below the fold. */}
+      <div className="h-dvh w-screen overflow-hidden">
         <DisplayBoard
           colleague={colleague as ColleagueId}
           goals={goals}
           metrics={metrics}
-          focusItems={focusItems}
-          period={currentPeriod(new Date())}
+          personalGoals={personalGoals}
+          period={currentPeriod(now)}
+          now={now}
         />
       </div>
     </>

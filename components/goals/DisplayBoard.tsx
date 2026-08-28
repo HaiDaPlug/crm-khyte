@@ -1,9 +1,8 @@
-import type { ColleagueId, FocusItem, Goal, GoalMetric, GoalStatus } from '@/lib/types'
+import type { ColleagueId, PersonalGoal, Goal, GoalMetric, GoalStatus } from '@/lib/types'
 import { colleagues } from '@/lib/colleagues'
-import { cn } from '@/lib/utils'
 
 /**
- * The wallpaper. A fixed 16:9 board, no chrome, no controls, no interactivity.
+ * The wallpaper. Fills the screen, no chrome, no controls, no interactivity.
  *
  * Design is code, content is data — changing a quarter priority changes what
  * gets printed into a region, never the layout. That is what makes one design
@@ -14,10 +13,16 @@ import { cn } from '@/lib/utils'
  * below is fixed rather than user-configurable, because a desktop background
  * has no user to configure it.
  *
- * Sized in `cqw` units against a container query rather than `vw`, so the
- * board scales as one piece to whatever resolution Lively hands it: a 4K
- * monitor gets the same composition as a 1080p one, just larger. Nothing here
- * wraps responsively — a wallpaper has exactly one shape.
+ * WHAT IS DELIBERATELY NOT HERE. Principles and the "not now" list are stored
+ * and editable at /goals but never drawn, and every list is capped (see CAPS).
+ * A wallpaper is read in half-second glances from across a room while doing
+ * something else — it is not a document. Everything on it earns its place by
+ * being worth that glance, and the fastest way to make it worthless is to let
+ * it fill up. The editor is where the full picture lives.
+ *
+ * Every length is a multiple of `--u`, so the composition scales as one piece
+ * to whatever Lively hands it — a 4K monitor gets the same board as a 1080p
+ * one, just larger. Nothing wraps responsively or hits a breakpoint.
  */
 
 /** Fixed hex, not theme tokens — same reasoning as `priorityDot`: the board is
@@ -30,21 +35,26 @@ const statusColor: Record<GoalStatus, string> = {
 }
 
 /**
- * Swedish formatting, fixed rather than read from settings.
+ * How many rows each region will draw.
  *
- * `sv-SE` uses non-breaking spaces as the thousands separator, which is
- * correct but renders as a visible gap at wallpaper scale; normalised to a
- * thin space so large sums stay tight.
+ * Hard caps rather than "however many exist", because the layout's proportions
+ * are the design — a fourth quarter priority does not make the board more
+ * informative, it makes every line smaller. Overflow is silently dropped here
+ * and still visible in the editor, which is the right place for the long tail.
  */
+const CAPS = { quarter: 3, personal: 3, metrics: 3 } as const
+
+/** `sv-SE` separates thousands with a non-breaking space, which reads as a gap
+ *  at wallpaper scale; a thin space keeps large sums tight. */
 function formatNumber(value: number): string {
-  return new Intl.NumberFormat('sv-SE').format(value).replace(/ /g, ' ')
+  return new Intl.NumberFormat('sv-SE').format(value).replace(/ /g, ' ')
 }
 
 function formatMetric(value: number, unit: GoalMetric['unit']): string {
   if (unit === 'percent') return `${formatNumber(value)}%`
   if (unit !== 'currency') return formatNumber(value)
-  // Sums on a board are read at a glance from across a room — 182k carries
-  // the same meaning as 182 000 and leaves room for the target beside it.
+  // Read at a glance from across a room: 182k carries the same meaning as
+  // 182 000 and leaves room for the target beside it.
   if (Math.abs(value) >= 1_000_000) {
     return `${formatNumber(Math.round(value / 100_000) / 10)}M`
   }
@@ -54,38 +64,54 @@ function formatMetric(value: number, unit: GoalMetric['unit']): string {
   return formatNumber(value)
 }
 
-function Section({
-  label,
-  className,
-  children,
-}: {
-  label: string
-  className?: string
-  children: React.ReactNode
-}) {
+/**
+ * A deadline as time remaining, not as a date.
+ *
+ * "4 månader" is the thing you actually want to know from a wallpaper;
+ * "2026-12-01" makes you do the subtraction yourself every time you glance at
+ * it. Months until the target, floored, with days taking over under one month
+ * because that is when the number starts mattering daily.
+ */
+function untilLabel(targetDate: string, now: Date): string | undefined {
+  const target = new Date(`${targetDate}T00:00:00`)
+  if (Number.isNaN(target.getTime())) return undefined
+
+  const days = Math.ceil((target.getTime() - now.getTime()) / 86_400_000)
+  if (days < 0) return 'försenat'
+  if (days === 0) return 'idag'
+  if (days === 1) return 'imorgon'
+  if (days < 31) return `${days} dagar`
+
+  const months = Math.round(days / 30.44)
+  return months === 1 ? '1 månad' : `${months} månader`
+}
+
+/** Section heading. One typographic treatment, used four times. */
+function Label({ children }: { children: React.ReactNode }) {
   return (
-    <section className={cn('flex min-h-0 flex-col', className)}>
-      <h2
-        className="mb-[1.1cqw] shrink-0 font-mono uppercase text-[color:var(--board-dim)]"
-        style={{ fontSize: '0.82cqw', letterSpacing: '0.22em' }}
-      >
-        {label}
-      </h2>
+    <h2
+      className="shrink-0 font-mono uppercase text-[color:var(--dim)]"
+      style={{
+        fontSize: 'calc(0.62 * var(--u))',
+        letterSpacing: '0.26em',
+        marginBottom: 'calc(1.5 * var(--u))',
+      }}
+    >
       {children}
-    </section>
+    </h2>
   )
 }
 
-/** The thin rule under a progress figure. Rendered for `progress === 0` too —
- *  an empty bar is a statement; a missing bar means "not measured". */
-function ProgressBar({ value }: { value: number }) {
+/** Hairline progress rule. Rendered at 0 too — an empty bar is a statement,
+ *  a missing bar means "not measured". */
+function Bar({ value }: { value: number }) {
   return (
     <div
-      className="w-full overflow-hidden rounded-full bg-white/8"
-      style={{ height: '0.22cqw' }}
+      className="w-full overflow-hidden rounded-full bg-white/10"
+      style={{ height: 'calc(0.14 * var(--u))' }}
     >
       <div
-        className="h-full rounded-full bg-[color:var(--board-accent)]"
+        className="h-full rounded-full bg-[color:var(--accent)]"
         style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
       />
     </div>
@@ -96,307 +122,291 @@ export interface DisplayBoardProps {
   colleague: ColleagueId
   goals: Goal[]
   metrics: GoalMetric[]
-  focusItems: FocusItem[]
+  personalGoals: PersonalGoal[]
   /** Rendered in the header — the quarter/period label, e.g. "Q3 2026". */
   period: string
+  /** Injected rather than read from the clock here, so the countdown and the
+   *  period label agree and the component stays a pure function of its props. */
+  now: Date
 }
 
 export function DisplayBoard({
   colleague,
   goals,
   metrics,
-  focusItems,
+  personalGoals,
   period,
+  now,
 }: DisplayBoardProps) {
   const bySection = (section: Goal['section']) =>
     goals.filter((g) => g.section === section).sort((a, b) => a.order - b.order)
 
   const northStar = bySection('north_star')[0]
-  const annual = bySection('annual')
-  const quarter = bySection('quarter')
-  const principles = bySection('principle')
-  const notNow = bySection('not_now')
+  const quarter = bySection('quarter').slice(0, CAPS.quarter)
 
   const person = colleagues[colleague]
-  const focus = focusItems
-    .filter((f) => f.colleague === colleague)
+  const personal = personalGoals
+    .filter((p) => p.colleague === colleague)
     .sort((a, b) => a.order - b.order)
+    .slice(0, CAPS.personal)
+
+  const scoreboard = metrics
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .slice(0, CAPS.metrics)
 
   return (
     <div
       data-theme="dark"
-      className="board-surface relative aspect-video w-full overflow-hidden"
+      className="board-surface relative h-full w-full overflow-hidden"
       style={
         {
-          containerType: 'inline-size',
-          '--board-accent': '#D4943C',
-          '--board-dim': 'rgba(255,255,255,0.42)',
+          // Fills the frame rather than fitting a 16:9 box inside it. A
+          // wallpaper IS the screen — letterboxing wastes the edges of every
+          // monitor that is not exactly 16:9.
+          //
+          // `--u` is the type scale, and it is the whole trick to filling a
+          // frame whose shape is unknown. Sizing off width alone makes type
+          // enormous on a 21:9 ultrawide and cramped on a 16:10 laptop, because
+          // width stops predicting height. Blending both — weighted toward
+          // width, which is what a wide layout mostly follows — keeps the
+          // composition recognisably the same board on any monitor.
+          '--u': 'calc(0.78vw + 0.32vh)',
+          '--accent': '#D4943C',
+          '--dim': 'rgba(255,255,255,0.38)',
         } as React.CSSProperties
       }
     >
-      {/* Warm light from the top-left, the same gesture as .grain-card but at
-          wall scale — keeps a very dark board from reading as flat black. */}
+      {/* Warm light from the top-left — keeps a very dark board from reading
+          as flat black, and gives the north star something to sit against. */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            'radial-gradient(120% 90% at 8% -10%, rgba(138,59,14,0.30) 0%, transparent 58%),' +
-            'radial-gradient(80% 70% at 100% 110%, rgba(138,59,14,0.16) 0%, transparent 55%)',
+            'radial-gradient(115% 85% at 6% -12%, rgba(138,59,14,0.34) 0%, transparent 56%),' +
+            'radial-gradient(75% 65% at 102% 108%, rgba(138,59,14,0.14) 0%, transparent 52%)',
         }}
       />
 
       <div
         className="relative flex h-full flex-col"
-        style={{ padding: '4.4cqw 5cqw' }}
+        style={{ padding: 'calc(5.5 * var(--u)) calc(6 * var(--u))' }}
       >
-        {/* ——— header ——— */}
-        <header className="flex shrink-0 items-baseline justify-between">
-          <span
-            className="font-jakarta font-semibold text-white"
-            style={{ fontSize: '1.45cqw', letterSpacing: '0.16em' }}
-          >
-            KHYTE
-          </span>
-          <span
-            className="font-mono uppercase text-[color:var(--board-dim)]"
-            style={{ fontSize: '0.82cqw', letterSpacing: '0.22em' }}
-          >
-            {period}
-          </span>
-        </header>
-
-        {/* ——— north star ——— */}
+        {/* ——— north star: the one thing worth the biggest type on screen ——— */}
         {northStar && (
-          <div className="shrink-0" style={{ marginTop: '3.4cqw' }}>
-            <h2
-              className="mb-[1.1cqw] font-mono uppercase text-[color:var(--board-dim)]"
-              style={{ fontSize: '0.82cqw', letterSpacing: '0.22em' }}
-            >
-              Nordstjärna
-            </h2>
+          <div className="shrink-0">
+            <Label>Nordstjärna</Label>
             <p
-              className="font-display leading-[1.12] text-white"
-              style={{ fontSize: '3.15cqw' }}
+              className="font-display text-white"
+              style={{
+                fontSize: 'calc(3.6 * var(--u))',
+                lineHeight: 1.08,
+                // Held short of the full width. A line of display type that
+                // runs the whole board is read as a paragraph; one that stops
+                // around two-thirds is read as a statement.
+                maxWidth: '62%',
+              }}
             >
               {northStar.title}
             </p>
-            {northStar.detail && (
-              <p
-                className="text-[color:var(--board-dim)]"
-                style={{ fontSize: '1cqw', marginTop: '0.9cqw' }}
-              >
-                {northStar.detail}
-              </p>
-            )}
           </div>
         )}
 
-        <div
-          aria-hidden
-          className="shrink-0 bg-white/10"
-          style={{ height: '1px', margin: '3.2cqw 0' }}
-        />
+        {/* The slack lives here, so the board breathes at any aspect ratio
+            instead of stretching the gaps between every row. */}
+        <div className="flex-1" />
 
-        {/* ——— the three columns: year · quarter · person ——— */}
+        {/* ——— quarter · personal ——— */}
         <div
-          className="grid min-h-0 flex-1"
-          style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: '4.2cqw' }}
+          className="grid shrink-0"
+          style={{ gridTemplateColumns: '1.35fr 1fr', gap: 'calc(7 * var(--u))' }}
         >
-          <Section label="2026">
-            <ul className="flex flex-col" style={{ gap: '1.5cqw' }}>
-              {annual.map((goal) => (
+          <section className="min-w-0" style={{ maxWidth: 'calc(34 * var(--u))' }}>
+            <Label>{period}</Label>
+            <ul className="flex flex-col" style={{ gap: 'calc(2.1 * var(--u))' }}>
+              {quarter.map((goal) => (
                 <li key={goal.id}>
                   <div
-                    className="flex items-baseline justify-between"
-                    style={{ gap: '1cqw' }}
+                    className="flex items-baseline"
+                    style={{ gap: 'calc(1.1 * var(--u))' }}
                   >
                     <span
-                      className="leading-snug text-white/92"
-                      style={{ fontSize: '1.08cqw' }}
+                      aria-hidden
+                      className="shrink-0 rounded-full"
+                      style={{
+                        width: 'calc(0.4 * var(--u))',
+                        height: 'calc(0.4 * var(--u))',
+                        background: statusColor[goal.status],
+                        // Nudged up to sit optically on the baseline rather
+                        // than hanging below it.
+                        transform: 'translateY(calc(-0.28 * var(--u)))',
+                      }}
+                    />
+                    <span
+                      className="min-w-0 flex-1 text-white/90"
+                      style={{ fontSize: 'calc(1.18 * var(--u))', lineHeight: 1.35 }}
                     >
                       {goal.title}
                     </span>
                     {goal.progress !== undefined && (
                       <span
-                        className="shrink-0 font-mono tabular-nums text-[color:var(--board-dim)]"
-                        style={{ fontSize: '0.9cqw' }}
+                        className="shrink-0 font-mono tabular-nums text-[color:var(--dim)]"
+                        style={{ fontSize: 'calc(0.8 * var(--u))' }}
                       >
                         {goal.progress}%
                       </span>
                     )}
                   </div>
                   {goal.progress !== undefined && (
-                    <div style={{ marginTop: '0.7cqw' }}>
-                      <ProgressBar value={goal.progress} />
+                    <div
+                      style={{
+                        marginTop: 'calc(0.75 * var(--u))',
+                        marginLeft: 'calc(1.5 * var(--u))',
+                      }}
+                    >
+                      <Bar value={goal.progress} />
                     </div>
                   )}
                 </li>
               ))}
             </ul>
-          </Section>
+          </section>
 
-          <Section label="Detta kvartal">
-            <ol className="flex flex-col" style={{ gap: '1.5cqw' }}>
-              {quarter.map((goal, index) => (
-                <li key={goal.id} className="flex" style={{ gap: '1.1cqw' }}>
-                  <span
-                    className="shrink-0 font-mono tabular-nums text-[color:var(--board-accent)]"
-                    style={{ fontSize: '0.9cqw', paddingTop: '0.15cqw' }}
-                  >
-                    {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    {/* The status dot rides in the text flow rather than as a
-                        flex sibling, so on a title that wraps it follows the
-                        last word instead of stranding itself at the column's
-                        right edge a line above. */}
-                    <p
-                      className="leading-snug text-white/92"
-                      style={{ fontSize: '1.08cqw' }}
+          {/* The private layer. Not Khyte's — this person's own life, on their
+              own board and nobody else's. Same visual weight as the quarter
+              column on purpose: it is not a footnote to the company's goals. */}
+          <section className="min-w-0" style={{ maxWidth: 'calc(30 * var(--u))' }}>
+            <Label>{person.name}</Label>
+            <ul className="flex flex-col" style={{ gap: 'calc(2.1 * var(--u))' }}>
+              {personal.map((goal) => {
+                const until = goal.targetDate
+                  ? untilLabel(goal.targetDate, now)
+                  : undefined
+                return (
+                  <li key={goal.id}>
+                    <div
+                      className="flex items-baseline"
+                      style={{ gap: 'calc(1.1 * var(--u))' }}
                     >
-                      {goal.title}
                       <span
                         aria-hidden
-                        className="ml-[0.8cqw] inline-block rounded-full align-middle"
+                        className="shrink-0 rounded-full"
                         style={{
-                          width: '0.42cqw',
-                          height: '0.42cqw',
-                          background: statusColor[goal.status],
+                          width: 'calc(0.4 * var(--u))',
+                          height: 'calc(0.4 * var(--u))',
+                          background: goal.done ? statusColor.done : person.color,
+                          transform: 'translateY(calc(-0.28 * var(--u)))',
                         }}
                       />
-                    </p>
-                    {goal.progress !== undefined && (
-                      <div style={{ marginTop: '0.7cqw' }}>
-                        <ProgressBar value={goal.progress} />
+                      <span
+                        className={
+                          goal.done
+                            ? 'min-w-0 flex-1 text-white/30 line-through decoration-white/20'
+                            : 'min-w-0 flex-1 text-white/90'
+                        }
+                        style={{ fontSize: 'calc(1.18 * var(--u))', lineHeight: 1.35 }}
+                      >
+                        {goal.title}
+                      </span>
+                      {/* A deadline and a bar are alternatives, not a pair —
+                          showing both would put two different answers to
+                          "how far along is this" on one line. */}
+                      {until && !goal.done && (
+                        <span
+                          className="shrink-0 font-mono tabular-nums text-[color:var(--dim)]"
+                          style={{ fontSize: 'calc(0.8 * var(--u))' }}
+                        >
+                          {until}
+                        </span>
+                      )}
+                      {!until && goal.progress !== undefined && (
+                        <span
+                          className="shrink-0 font-mono tabular-nums text-[color:var(--dim)]"
+                          style={{ fontSize: 'calc(0.8 * var(--u))' }}
+                        >
+                          {goal.progress}%
+                        </span>
+                      )}
+                    </div>
+                    {goal.progress !== undefined && !goal.done && (
+                      <div
+                        style={{
+                          marginTop: 'calc(0.75 * var(--u))',
+                          marginLeft: 'calc(1.5 * var(--u))',
+                        }}
+                      >
+                        <Bar value={goal.progress} />
                       </div>
                     )}
-                  </div>
-                </li>
-              ))}
-            </ol>
-          </Section>
-
-          {/* The personal layer — the only region that differs between the
-              boards. Everything left of here is identical for the whole team. */}
-          <Section label={`${person.name} — denna vecka`}>
-            <ul className="flex flex-col" style={{ gap: '1.35cqw' }}>
-              {focus.map((item) => (
-                <li
-                  key={item.id}
-                  className="flex items-baseline"
-                  style={{ gap: '1cqw' }}
-                >
-                  <span
-                    aria-hidden
-                    className="shrink-0 rounded-full"
-                    style={{
-                      width: '0.42cqw',
-                      height: '0.42cqw',
-                      marginTop: '0.42cqw',
-                      background: item.done ? statusColor.done : person.color,
-                    }}
-                  />
-                  <span
-                    className={cn(
-                      'leading-snug',
-                      item.done
-                        ? 'text-white/35 line-through decoration-white/25'
-                        : 'text-white/92'
-                    )}
-                    style={{ fontSize: '1.08cqw' }}
-                  >
-                    {item.title}
-                  </span>
-                </li>
-              ))}
+                  </li>
+                )
+              })}
             </ul>
-          </Section>
+          </section>
         </div>
 
         <div
           aria-hidden
-          className="shrink-0 bg-white/10"
-          style={{ height: '1px', margin: '3.2cqw 0' }}
+          className="shrink-0 bg-white/8"
+          style={{ height: '1px', margin: 'calc(4.5 * var(--u)) 0' }}
         />
 
-        {/* ——— scoreboard ——— */}
+        {/* ——— scoreboard: the numbers, given room to be big ——— */}
         <div
           className="grid shrink-0"
           style={{
-            gridTemplateColumns: `repeat(${Math.max(metrics.length, 1)}, minmax(0, 1fr))`,
-            gap: '3.2cqw',
+            gridTemplateColumns: `repeat(${Math.max(scoreboard.length, 1)}, minmax(0, 1fr))`,
+            gap: 'calc(6 * var(--u))',
           }}
         >
-          {metrics
-            .slice()
-            .sort((a, b) => a.order - b.order)
-            .map((metric) => {
-              const pct =
-                metric.targetValue && metric.targetValue > 0
-                  ? Math.round((metric.currentValue / metric.targetValue) * 100)
-                  : undefined
-              return (
-                <div key={metric.id}>
-                  <p
-                    className="font-mono uppercase text-[color:var(--board-dim)]"
-                    style={{ fontSize: '0.72cqw', letterSpacing: '0.2em' }}
-                  >
-                    {metric.label}
-                  </p>
-                  <p
-                    className="font-jakarta font-semibold tabular-nums text-white"
-                    style={{ fontSize: '2.35cqw', marginTop: '0.55cqw', lineHeight: 1 }}
-                  >
-                    {formatMetric(metric.currentValue, metric.unit)}
-                    {metric.targetValue !== undefined && (
-                      <span
-                        className="font-mono font-normal text-[color:var(--board-dim)]"
-                        style={{ fontSize: '1cqw', marginLeft: '0.55cqw' }}
-                      >
-                        / {formatMetric(metric.targetValue, metric.unit)}
-                      </span>
-                    )}
-                  </p>
-                  {pct !== undefined && (
-                    // Fixed track width rather than the full grid cell. The
-                    // columns are sized by their labels, so a full-width bar
-                    // made 18% under a short label longer than 33% under a
-                    // long one — the one comparison a scoreboard has to get
-                    // right.
-                    <div style={{ marginTop: '0.9cqw', width: '11cqw' }}>
-                      <ProgressBar value={pct} />
-                    </div>
+          {scoreboard.map((metric) => {
+            const pct =
+              metric.targetValue && metric.targetValue > 0
+                ? Math.round((metric.currentValue / metric.targetValue) * 100)
+                : undefined
+            return (
+              <div key={metric.id}>
+                <p
+                  className="font-mono uppercase text-[color:var(--dim)]"
+                  style={{ fontSize: 'calc(0.62 * var(--u))', letterSpacing: '0.26em' }}
+                >
+                  {metric.label}
+                </p>
+                <p
+                  className="font-jakarta font-semibold tabular-nums text-white"
+                  style={{
+                    fontSize: 'calc(2.9 * var(--u))',
+                    marginTop: 'calc(0.7 * var(--u))',
+                    lineHeight: 1,
+                  }}
+                >
+                  {formatMetric(metric.currentValue, metric.unit)}
+                  {metric.targetValue !== undefined && (
+                    <span
+                      className="font-mono font-normal text-[color:var(--dim)]"
+                      style={{
+                        fontSize: 'calc(0.95 * var(--u))',
+                        marginLeft: 'calc(0.6 * var(--u))',
+                      }}
+                    >
+                      / {formatMetric(metric.targetValue, metric.unit)}
+                    </span>
                   )}
-                </div>
-              )
-            })}
+                </p>
+                {pct !== undefined && (
+                  // Fixed track rather than the full grid cell: the columns are
+                  // sized by their labels, so a full-width bar would make 18%
+                  // under a short label longer than 33% under a long one — the
+                  // one comparison a scoreboard has to get right.
+                  <div style={{ marginTop: 'calc(1.1 * var(--u))', width: 'calc(13 * var(--u))' }}>
+                    <Bar value={pct} />
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
-
-        {/* ——— footer: principles and what we are not doing ——— */}
-        {(principles.length > 0 || notNow.length > 0) && (
-          <footer
-            className="flex shrink-0 items-baseline justify-between"
-            style={{ marginTop: '3.2cqw', gap: '4cqw' }}
-          >
-            {principles.length > 0 && (
-              <p
-                className="font-display italic text-white/70"
-                style={{ fontSize: '1.15cqw' }}
-              >
-                {principles.map((p) => p.title).join('   ·   ')}
-              </p>
-            )}
-            {notNow.length > 0 && (
-              <p
-                className="shrink-0 text-right font-mono uppercase text-white/28"
-                style={{ fontSize: '0.72cqw', letterSpacing: '0.18em' }}
-              >
-                Inte nu: {notNow.map((n) => n.title).join(' · ')}
-              </p>
-            )}
-          </footer>
-        )}
       </div>
     </div>
   )

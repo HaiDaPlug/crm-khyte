@@ -135,11 +135,13 @@ export interface GoalMetricRow {
   updated_at: string
 }
 
-export interface FocusItemRow {
+export interface PersonalGoalRow {
   id: string
   owner_id: string | null
   colleague: ColleagueId
   title: string
+  target_date: string | null
+  progress: number | null
   done: boolean
   sort_order: number
   created_at: string

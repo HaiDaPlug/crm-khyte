@@ -13,11 +13,11 @@ import { mockLeads } from '@/lib/mock-data/leads'
 import { mockNotes } from '@/lib/mock-data/notes'
 import { mockStrategyCards, mockStrategyColumns } from '@/lib/mock-data/strategy'
 import { mockTasks } from '@/lib/mock-data/tasks'
-import { mockFocusItems, mockGoalMetrics, mockGoals } from '@/lib/mock-data/goals'
+import { mockPersonalGoals, mockGoalMetrics, mockGoals } from '@/lib/mock-data/goals'
 import {
   fromCompanyRow,
   fromContactRow,
-  fromFocusItemRow,
+  fromPersonalGoalRow,
   fromGoalMetricRow,
   fromGoalRow,
   fromLeadRow,
@@ -30,7 +30,7 @@ import {
 import type {
   CompanyRow,
   ContactRow,
-  FocusItemRow,
+  PersonalGoalRow,
   GoalMetricRow,
   GoalRow,
   LeadRow,
@@ -140,24 +140,24 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
     return {
       goals: mockGoals,
       metrics: mockGoalMetrics,
-      focusItems: mockFocusItems,
+      personalGoals: mockPersonalGoals,
     }
   }
 
   const sql = getDb()
 
-  const [goals, metrics, focusItems] = await withDbErrors(() =>
+  const [goals, metrics, personalGoals] = await withDbErrors(() =>
     Promise.all([
       sql`select * from goals order by section, sort_order`,
       sql`select * from goal_metrics order by sort_order`,
-      sql`select * from focus_items order by colleague, sort_order`,
+      sql`select * from personal_goals order by colleague, sort_order`,
     ])
   )
 
   return {
     goals: (goals as unknown as GoalRow[]).map(fromGoalRow),
     metrics: (metrics as unknown as GoalMetricRow[]).map(fromGoalMetricRow),
-    focusItems: (focusItems as unknown as FocusItemRow[]).map(fromFocusItemRow),
+    personalGoals: (personalGoals as unknown as PersonalGoalRow[]).map(fromPersonalGoalRow),
   }
 }
 

@@ -9,7 +9,7 @@ import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
 import { cn } from '@/lib/utils'
 import type {
   ColleagueId,
-  FocusItem,
+  PersonalGoal,
   Goal,
   GoalMetric,
   GoalSection,
@@ -50,10 +50,10 @@ const SECTION_LABELS: Record<GoalSection, string> = {
 
 const SECTION_HINTS: Record<GoalSection, string> = {
   north_star: 'En mening. Den enda raden högst upp på tavlan.',
-  annual: 'Vad året ska ha gett. Håll det till tre.',
-  quarter: 'Vad som faktiskt görs nu. Numreras på tavlan.',
-  principle: 'Hur ni arbetar. Visas längst ner, kursivt.',
-  not_now: 'Medvetet bortvalt. Lika viktigt som målen.',
+  annual: 'Vad året ska ha gett. Sparas här — ritas inte på tavlan.',
+  quarter: 'Vad som faktiskt görs nu. De tre första hamnar på tavlan.',
+  principle: 'Hur ni arbetar. Sparas här — ritas inte på tavlan.',
+  not_now: 'Medvetet bortvalt. Sparas här — ritas inte på tavlan.',
 }
 
 const STATUS_LABELS: Record<GoalStatus, string> = {
@@ -124,7 +124,7 @@ function RemoveButton({ onClick, label }: { onClick: () => void; label: string }
 export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
   const [goals, setGoals] = useState<Goal[]>(initial.goals)
   const [metrics, setMetrics] = useState<GoalMetric[]>(initial.metrics)
-  const [focusItems, setFocusItems] = useState<FocusItem[]>(initial.focusItems)
+  const [personalGoals, setPersonalGoals] = useState<PersonalGoal[]>(initial.personalGoals)
   const [error, setError] = useState<string | null>(null)
 
   /**
@@ -192,27 +192,27 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
 
   // --- focus ---------------------------------------------------------------
 
-  const addFocus = (colleague: ColleagueId) => {
-    const siblings = focusItems.filter((f) => f.colleague === colleague)
-    const item: FocusItem = {
+  const addPersonalGoal = (colleague: ColleagueId) => {
+    const siblings = personalGoals.filter((f) => f.colleague === colleague)
+    const item: PersonalGoal = {
       id: crypto.randomUUID(),
       colleague,
       title: '',
       done: false,
       order: siblings.length,
     }
-    setFocusItems((prev) => [...prev, item])
-    persist(() => api.createFocusItem(item))
+    setPersonalGoals((prev) => [...prev, item])
+    persist(() => api.createPersonalGoal(item))
   }
 
-  const editFocus = (id: string, updates: Partial<FocusItem>) => {
-    setFocusItems((prev) => prev.map((f) => (f.id === id ? { ...f, ...updates } : f)))
-    persist(() => api.updateFocusItem(id, updates))
+  const editPersonalGoal = (id: string, updates: Partial<PersonalGoal>) => {
+    setPersonalGoals((prev) => prev.map((f) => (f.id === id ? { ...f, ...updates } : f)))
+    persist(() => api.updatePersonalGoal(id, updates))
   }
 
-  const removeFocus = (id: string) => {
-    setFocusItems((prev) => prev.filter((f) => f.id !== id))
-    persist(() => api.deleteFocusItem(id))
+  const removePersonalGoal = (id: string) => {
+    setPersonalGoals((prev) => prev.filter((f) => f.id !== id))
+    persist(() => api.deletePersonalGoal(id))
   }
 
   // --- rendering -----------------------------------------------------------
@@ -369,7 +369,7 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
       {/* --- scoreboard --- */}
       <SectionShell
         title="Resultattavla"
-        hint="Siffrorna längst ner på tavlan. Lämna målet tomt för att bara visa värdet."
+        hint="De tre första visas längst ner på tavlan. Lämna målet tomt för att bara visa värdet."
         addLabel="Lägg till"
         onAdd={addMetric}
       >
@@ -470,45 +470,102 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
       <div className="grid gap-4 lg:grid-cols-3">
         {COLLEAGUE_IDS.map((id) => {
           const person = colleagues[id]
-          const items = focusItems
+          const items = personalGoals
             .filter((f) => f.colleague === id)
             .sort((a, b) => a.order - b.order)
 
           return (
             <SectionShell
               key={id}
-              title={`${person.name} — denna vecka`}
-              hint="Visas bara på den här personens tavla."
+              title={person.name}
+              hint="Egna mål. Syns bara på den här personens tavla — inte Khytes."
               addLabel="Lägg till"
-              onAdd={() => addFocus(id)}
+              onAdd={() => addPersonalGoal(id)}
             >
               {items.length === 0 ? (
                 <p className="py-2 text-[13.5px] text-foreground/40">Inget här ännu.</p>
               ) : (
-                <ul className="flex flex-col gap-2">
+                <ul className="flex flex-col gap-3">
                   {items.map((item) => (
-                    <li key={item.id} className="flex items-center gap-2">
+                    <li key={item.id} className="flex items-start gap-2">
                       <input
                         type="checkbox"
                         checked={item.done}
-                        onChange={(e) => editFocus(item.id, { done: e.target.checked })}
+                        onChange={(e) => editPersonalGoal(item.id, { done: e.target.checked })}
                         aria-label="Klar"
-                        className="h-4 w-4 shrink-0 accent-[var(--accent)]"
+                        className="mt-3 h-4 w-4 shrink-0 accent-[var(--accent)]"
                       />
-                      <input
-                        className={cn(inputClass, item.done && 'text-foreground/45 line-through')}
-                        value={item.title}
-                        placeholder="Vad är fokus?"
-                        onChange={(e) =>
-                          setFocusItems((prev) =>
-                            prev.map((f) =>
-                              f.id === item.id ? { ...f, title: e.target.value } : f
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <input
+                          className={cn(inputClass, item.done && 'text-foreground/45 line-through')}
+                          value={item.title}
+                          placeholder="T.ex. Flytta ut i december"
+                          onChange={(e) =>
+                            setPersonalGoals((prev) =>
+                              prev.map((f) =>
+                                f.id === item.id ? { ...f, title: e.target.value } : f
+                              )
                             )
-                          )
-                        }
-                        onBlur={(e) => editFocus(item.id, { title: e.target.value })}
-                      />
-                      <RemoveButton onClick={() => removeFocus(item.id)} label="Ta bort" />
+                          }
+                          onBlur={(e) => editPersonalGoal(item.id, { title: e.target.value })}
+                        />
+                        {/* Both optional and independent: a deadline goal, a
+                            measurable one, or neither. The board shows the date
+                            as a countdown and prefers it over the bar when both
+                            are set. */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="flex items-center gap-2">
+                            <span className="label-mono">Datum</span>
+                            <input
+                              type="date"
+                              className={cn(inputClass, 'h-9 w-auto text-[14px]')}
+                              value={item.targetDate ?? ''}
+                              onChange={(e) =>
+                                editPersonalGoal(item.id, {
+                                  // Empty clears the deadline; the mapper turns
+                                  // undefined into a null column write.
+                                  targetDate: e.target.value || undefined,
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="flex items-center gap-2">
+                            <span className="label-mono">%</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              className={cn(inputClass, 'h-9 w-20 text-[14px] tabular-nums')}
+                              value={item.progress ?? ''}
+                              placeholder="—"
+                              onChange={(e) =>
+                                setPersonalGoals((prev) =>
+                                  prev.map((f) =>
+                                    f.id === item.id
+                                      ? {
+                                          ...f,
+                                          progress:
+                                            e.target.value === ''
+                                              ? undefined
+                                              : Number(e.target.value),
+                                        }
+                                      : f
+                                  )
+                                )
+                              }
+                              onBlur={(e) =>
+                                editPersonalGoal(item.id, {
+                                  progress:
+                                    e.target.value === ''
+                                      ? undefined
+                                      : Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      <RemoveButton onClick={() => removePersonalGoal(item.id)} label="Ta bort" />
                     </li>
                   ))}
                 </ul>

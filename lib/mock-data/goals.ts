@@ -1,4 +1,4 @@
-import type { FocusItem, Goal, GoalMetric } from '@/lib/types'
+import type { PersonalGoal, Goal, GoalMetric } from '@/lib/types'
 
 /**
  * Demo direction board, served when there are no Supabase credentials — same
@@ -149,7 +149,7 @@ export const mockGoalMetrics: GoalMetric[] = [
   },
 ]
 
-export const mockFocusItems: FocusItem[] = [
+export const mockPersonalGoals: PersonalGoal[] = [
   { id: 'focus-hai-1', colleague: 'hai', title: '50 utgående kontakter', done: false, order: 0 },
   { id: 'focus-hai-2', colleague: 'hai', title: 'Stäng PR Städservice', done: false, order: 1 },
   { id: 'focus-hai-3', colleague: 'hai', title: 'Färdigställ Intenti goals-vyn', done: true, order: 2 },

@@ -1,7 +1,7 @@
 import type {
   Company,
   Contact,
-  FocusItem,
+  PersonalGoal,
   Goal,
   GoalMetric,
   Lead,
@@ -14,7 +14,7 @@ import type {
 import type {
   CompanyRow,
   ContactRow,
-  FocusItemRow,
+  PersonalGoalRow,
   GoalMetricRow,
   GoalRow,
   LeadRow,
@@ -481,32 +481,45 @@ export function toGoalMetricUpdate(updates: Partial<GoalMetric>) {
   ])
 }
 
-// --- focus items -----------------------------------------------------------
+// --- personal goals --------------------------------------------------------
 
-export function fromFocusItemRow(row: FocusItemRow): FocusItem {
+export function fromPersonalGoalRow(row: PersonalGoalRow): PersonalGoal {
   return {
     id: row.id,
     colleague: row.colleague,
     title: row.title,
+    ...(row.target_date ? { targetDate: dateOrEmpty(row.target_date) } : {}),
+    // Same contract as fromGoalRow: only null collapses to undefined, so an
+    // explicit 0 still draws an empty bar.
+    ...(row.progress === null ? {} : { progress: row.progress }),
     done: row.done,
     order: row.sort_order,
   }
 }
 
-export function toFocusItemInsert(item: FocusItem) {
+export function toPersonalGoalInsert(goal: PersonalGoal) {
   return {
-    id: item.id,
-    colleague: item.colleague,
-    title: item.title,
-    done: item.done,
-    sort_order: item.order,
+    id: goal.id,
+    colleague: goal.colleague,
+    title: goal.title,
+    target_date: nullIfBlank(goal.targetDate),
+    progress: goal.progress ?? null,
+    done: goal.done,
+    sort_order: goal.order,
   }
 }
 
-export function toFocusItemUpdate(updates: Partial<FocusItem>) {
-  return pickDefined<FocusItemRow>([
+export function toPersonalGoalUpdate(updates: Partial<PersonalGoal>) {
+  return pickDefined<PersonalGoalRow>([
     ['colleague', updates.colleague],
     ['title', updates.title],
+    // `in` rather than `=== undefined`: clearing a deadline or a bar passes the
+    // key with undefined, and both must reach the DB as null.
+    [
+      'target_date',
+      'targetDate' in updates ? nullIfBlank(updates.targetDate) : undefined,
+    ],
+    ['progress', 'progress' in updates ? (updates.progress ?? null) : undefined],
     ['done', updates.done],
     ['sort_order', updates.order],
   ])

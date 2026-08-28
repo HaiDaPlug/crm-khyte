@@ -181,11 +181,25 @@ export interface GoalMetric {
   order: number
 }
 
-/** One line of a single colleague's weekly focus — the personal layer. */
-export interface FocusItem {
+/**
+ * One person's own goal — the private layer of the board.
+ *
+ * Deliberately not linked to a company `Goal`. This is the operator's own life
+ * ("Flytta ut i december"), shown on their wallpaper and nobody else's; the two
+ * tracks share a screen without sharing a hierarchy. Privacy is by URL rather
+ * than enforced in the database — see the migration.
+ *
+ * Both measurements are optional and independent, which is what lets one row
+ * type carry a deadline goal, a measurable one, or a plain line of intent.
+ */
+export interface PersonalGoal {
   id: string
   colleague: ColleagueId
   title: string
+  /** `YYYY-MM-DD`. The board renders it as a countdown, not a date. */
+  targetDate?: string
+  /** 0–100, or undefined for "no bar" — same contract as `Goal.progress`. */
+  progress?: number
   done: boolean
   order: number
 }
@@ -199,7 +213,7 @@ export interface FocusItem {
 export interface GoalsSnapshot {
   goals: Goal[]
   metrics: GoalMetric[]
-  focusItems: FocusItem[]
+  personalGoals: PersonalGoal[]
 }
 
 /**
