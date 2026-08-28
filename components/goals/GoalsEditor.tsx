@@ -44,6 +44,7 @@ const SECTION_LABELS: Record<GoalSection, string> = {
   north_star: 'Nordstjärna',
   annual: '2026 — Årsmål',
   quarter: 'Detta kvartal',
+  weekly: 'Veckans icke-förhandlingsbara',
   principle: 'Principer',
   not_now: 'Inte nu',
 }
@@ -52,6 +53,8 @@ const SECTION_HINTS: Record<GoalSection, string> = {
   north_star: 'En mening. Den enda raden högst upp på tavlan.',
   annual: 'Vad året ska ha gett. Sparas här — ritas inte på tavlan.',
   quarter: 'Vad som faktiskt görs nu. De tre första hamnar på tavlan.',
+  weekly:
+    'Räknas automatiskt från aktivitet i Leads och Prospekt. Nollställs varje måndag.',
   principle: 'Hur ni arbetar. Sparas här — ritas inte på tavlan.',
   not_now: 'Medvetet bortvalt. Sparas här — ritas inte på tavlan.',
 }

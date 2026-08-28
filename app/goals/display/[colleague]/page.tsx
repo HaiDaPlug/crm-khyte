@@ -60,10 +60,11 @@ export default async function GoalsDisplayPage({
 
   // Read together: the version has to describe the same board that is about to
   // render, or the first check would see a difference and reload immediately.
-  const [{ goals, metrics, personalGoals }, version] = await Promise.all([
-    loadGoals(),
-    loadGoalsVersion(),
-  ])
+  const [{ goals, metrics, personalGoals, weeklyCounts, totals }, version] =
+    await Promise.all([
+      loadGoals(),
+      loadGoalsVersion(),
+    ])
 
   // One clock reading for the whole render, so the period label and every
   // deadline countdown are computed against the same instant.
@@ -89,6 +90,8 @@ export default async function GoalsDisplayPage({
           goals={goals}
           metrics={metrics}
           personalGoals={personalGoals}
+          weeklyCounts={weeklyCounts}
+          totals={totals}
           period={currentPeriod(now)}
           now={now}
         />

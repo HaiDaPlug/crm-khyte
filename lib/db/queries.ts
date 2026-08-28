@@ -6,6 +6,7 @@ import type { CRMSnapshot, GoalsSnapshot } from '@/lib/types'
 import { isSupabaseConfigured } from '@/lib/supabase/server'
 import { getDb, isDirectDbConfigured } from './pg'
 import { isClockSkew } from './retry'
+import { countEventsSince, loadDerivedTotals, weekStart } from './board-metrics'
 import { mockCompanies } from '@/lib/mock-data/companies'
 import { mockContacts } from '@/lib/mock-data/contacts'
 import { mockOpportunities } from '@/lib/mock-data/opportunities'
@@ -141,16 +142,22 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
       goals: mockGoals,
       metrics: mockGoalMetrics,
       personalGoals: mockPersonalGoals,
+      weeklyCounts: {},
+      totals: { revenue: 0, customers: 0, pipeline: 0 },
     }
   }
 
   const sql = getDb()
 
-  const [goals, metrics, personalGoals] = await withDbErrors(() =>
+  // The counted numbers are read in the same pass as the rows they belong to,
+  // so a goal and its count always describe the same instant.
+  const [goals, metrics, personalGoals, weeklyCounts, totals] = await withDbErrors(() =>
     Promise.all([
       sql`select * from goals order by section, sort_order`,
       sql`select * from goal_metrics order by sort_order`,
       sql`select * from personal_goals order by colleague, sort_order`,
+      countEventsSince(weekStart(new Date())),
+      loadDerivedTotals(),
     ])
   )
 
@@ -158,6 +165,8 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
     goals: (goals as unknown as GoalRow[]).map(fromGoalRow),
     metrics: (metrics as unknown as GoalMetricRow[]).map(fromGoalMetricRow),
     personalGoals: (personalGoals as unknown as PersonalGoalRow[]).map(fromPersonalGoalRow),
+    weeklyCounts,
+    totals,
   }
 }
 
@@ -211,6 +220,10 @@ export async function loadGoalsVersion(): Promise<string> {
         select updated_at from goal_metrics
         union all
         select updated_at from personal_goals
+        union all
+        -- Activity changes the counted numbers on the board just as much as
+        -- editing a goal does, so it has to move the stamp too.
+        select occurred_at as updated_at from crm_events
       ) as board
     `
   )

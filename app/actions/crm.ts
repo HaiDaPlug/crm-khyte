@@ -4,6 +4,7 @@ import type {
   Company,
   Contact,
   Lead,
+  Stage,
   Note,
   Opportunity,
   StrategyCard,
@@ -13,6 +14,7 @@ import type {
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase/server'
 import { isRetryableWrite, withRetry } from '@/lib/db/retry'
 import { requireAuth } from '@/lib/auth/guard'
+import { eventsForStageChange, recordEvents } from '@/lib/db/events'
 import {
   toCompanyInsert,
   toCompanyUpdate,
@@ -177,18 +179,72 @@ export async function updateOpportunity(
   if (skipUnconfigured()) return guardedOk()
   const payload = toOpportunityUpdate(updates)
   if (Object.keys(payload).length === 0) return guardedOk()
-  return run('opportunities', async () =>
+
+  /**
+   * A stage change is the CRM's only record that something happened, and the
+   * row about to be overwritten is the only place the previous stage exists.
+   * Read it first, or "moved into Meeting Booked" is unknowable a moment later.
+   *
+   * Only for stage changes: every other edit skips this round-trip entirely.
+   * The read is not transactional with the write, so two people moving the same
+   * deal at the same instant could both see the same `from` — acceptable for an
+   * activity counter on a three-person team, and the alternative is a stored
+   * procedure for a number on a wallpaper.
+   */
+  let previousStage: Stage | undefined
+  if (updates.stage !== undefined) {
+    const { data } = await getSupabase()
+      .from('opportunities')
+      .select('stage')
+      .eq('id', id)
+      .maybeSingle()
+    previousStage = (data as { stage: Stage } | null)?.stage
+  }
+
+  const result = await run('opportunities', async () =>
     getSupabase().from('opportunities').update(payload).eq('id', id)
   )
+
+  // Only after the write is known to have landed — see lib/db/events.ts.
+  if (result.ok && updates.stage !== undefined && previousStage) {
+    const kinds = eventsForStageChange(previousStage, updates.stage)
+    await recordEvents(
+      kinds.map((kind) => ({
+        kind,
+        subjectId: id,
+        colleague: updates.followedUpBy,
+        detail: { from: previousStage, to: updates.stage },
+      }))
+    )
+  }
+
+  return result
 }
 
 // --- leads -------------------------------------------------------------
 
 export async function createLead(lead: Lead): Promise<ActionResult> {
   if (skipUnconfigured()) return guardedOk()
-  return run('leads', async () =>
+
+  const result = await run('leads', async () =>
     getSupabase().from('leads').insert(toLeadInsert(lead))
   )
+
+  // Counted for the week's non-negotiables. Recorded rather than derived from
+  // leads.created_at because a lead promoted to a Prospect is deleted, and
+  // "we added 9 leads this week" must survive that.
+  if (result.ok) {
+    await recordEvents([
+      {
+        kind: 'lead_added',
+        subjectId: lead.id,
+        colleague: lead.followedUpBy,
+        detail: { companyName: lead.companyName },
+      },
+    ])
+  }
+
+  return result
 }
 
 export async function updateLead(

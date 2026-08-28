@@ -1,5 +1,6 @@
 import type {
   ColleagueId,
+  CrmEventKind,
   GoalSection,
   GoalStatus,
   MetricUnit,
@@ -117,6 +118,8 @@ export interface GoalRow {
   detail: string
   status: GoalStatus
   progress: number | null
+  metric_kind: CrmEventKind | null
+  metric_target: number | null
   sort_order: number
   created_at: string
   updated_at: string

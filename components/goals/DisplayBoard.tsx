@@ -42,7 +42,7 @@ const statusColor: Record<GoalStatus, string> = {
  * informative, it makes every line smaller. Overflow is silently dropped here
  * and still visible in the editor, which is the right place for the long tail.
  */
-const CAPS = { quarter: 3, personal: 3, metrics: 3 } as const
+const CAPS = { quarter: 3, weekly: 3, personal: 3, metrics: 3 } as const
 
 /** `sv-SE` separates thousands with a non-breaking space, which reads as a gap
  *  at wallpaper scale; a thin space keeps large sums tight. */
@@ -123,6 +123,14 @@ export interface DisplayBoardProps {
   goals: Goal[]
   metrics: GoalMetric[]
   personalGoals: PersonalGoal[]
+  /**
+   * This week's activity counts, keyed by event kind. A weekly non-negotiable
+   * reads its number from here rather than from its own row, which is what
+   * stops it drifting from what the CRM actually recorded.
+   */
+  weeklyCounts: Record<string, number>
+  /** Revenue, customers and open pipeline as the deals currently stand. */
+  totals: { revenue: number; customers: number; pipeline: number }
   /** Rendered in the header — the quarter/period label, e.g. "Q3 2026". */
   period: string
   /** Injected rather than read from the clock here, so the countdown and the
@@ -135,6 +143,8 @@ export function DisplayBoard({
   goals,
   metrics,
   personalGoals,
+  weeklyCounts,
+  totals,
   period,
   now,
 }: DisplayBoardProps) {
@@ -143,6 +153,7 @@ export function DisplayBoard({
 
   const northStar = bySection('north_star')[0]
   const quarter = bySection('quarter').slice(0, CAPS.quarter)
+  const weekly = bySection('weekly').slice(0, CAPS.weekly)
 
   const person = colleagues[colleague]
   const personal = personalGoals
@@ -150,10 +161,44 @@ export function DisplayBoard({
     .sort((a, b) => a.order - b.order)
     .slice(0, CAPS.personal)
 
-  const scoreboard = metrics
-    .slice()
-    .sort((a, b) => a.order - b.order)
-    .slice(0, CAPS.metrics)
+  /**
+   * The bottom row, derived rather than typed.
+   *
+   * Built here instead of read from `metrics` so the numbers cannot disagree
+   * with the CRM: each one is recomputed from the deals as they currently
+   * stand, which is why moving a deal out of Won lowers revenue again. The
+   * targets still come from the operator's own goal_metrics rows, matched by
+   * unit and label — a target is a decision, only the actual is a fact.
+   */
+  const targetFor = (label: string): number | undefined =>
+    metrics.find((m) => m.label.toLowerCase() === label)?.targetValue
+
+  const scoreboard: GoalMetric[] = [
+    {
+      id: 'derived-revenue',
+      label: 'Intäkt',
+      currentValue: totals.revenue,
+      targetValue: targetFor('intäkt'),
+      unit: 'currency' as const,
+      order: 0,
+    },
+    {
+      id: 'derived-pipeline',
+      label: 'Pipeline',
+      currentValue: totals.pipeline,
+      targetValue: targetFor('pipeline'),
+      unit: 'currency' as const,
+      order: 1,
+    },
+    {
+      id: 'derived-customers',
+      label: 'Kunder',
+      currentValue: totals.customers,
+      targetValue: targetFor('kunder'),
+      unit: 'number' as const,
+      order: 2,
+    },
+  ].slice(0, CAPS.metrics)
 
   return (
     <div
@@ -217,12 +262,15 @@ export function DisplayBoard({
             instead of stretching the gaps between every row. */}
         <div className="flex-1" />
 
-        {/* ——— quarter · personal ——— */}
+        {/* ——— quarter · this week · personal ——— */}
         <div
           className="grid shrink-0"
-          style={{ gridTemplateColumns: '1.35fr 1fr', gap: 'calc(7 * var(--u))' }}
+          style={{
+            gridTemplateColumns: '1.25fr 0.85fr 0.9fr',
+            gap: 'calc(5 * var(--u))',
+          }}
         >
-          <section className="min-w-0" style={{ maxWidth: 'calc(34 * var(--u))' }}>
+          <section className="min-w-0" style={{ maxWidth: 'calc(30 * var(--u))' }}>
             <Label>{period}</Label>
             <ul className="flex flex-col" style={{ gap: 'calc(2.1 * var(--u))' }}>
               {quarter.map((goal) => (
@@ -272,6 +320,61 @@ export function DisplayBoard({
               ))}
             </ul>
           </section>
+
+          {/* Counted, not typed. Each row's number comes from crm_events for
+              the current week, so it cannot disagree with what the CRM
+              recorded — and it resets on its own every Monday because the
+              window moves, not because anything is cleared. */}
+          {weekly.length > 0 && (
+            <section className="min-w-0">
+              <Label>Denna vecka</Label>
+              <ul className="flex flex-col" style={{ gap: 'calc(2.1 * var(--u))' }}>
+                {weekly.map((goal) => {
+                  const actual = goal.metricKind
+                    ? (weeklyCounts[goal.metricKind] ?? 0)
+                    : (goal.progress ?? 0)
+                  const target = goal.metricTarget
+                  const hit = target !== undefined && actual >= target
+
+                  return (
+                    <li key={goal.id}>
+                      <div
+                        className="flex items-baseline"
+                        style={{ gap: 'calc(1.1 * var(--u))' }}
+                      >
+                        <span
+                          className="min-w-0 flex-1 text-white/90"
+                          style={{ fontSize: 'calc(1.18 * var(--u))', lineHeight: 1.35 }}
+                        >
+                          {goal.title}
+                        </span>
+                        <span
+                          className="shrink-0 font-mono tabular-nums"
+                          style={{
+                            fontSize: 'calc(0.95 * var(--u))',
+                            // Green only once the week's number is met: the
+                            // one thing worth spotting from across a room is
+                            // which non-negotiables are still short.
+                            color: hit ? statusColor.on_track : '#FFFFFF',
+                          }}
+                        >
+                          {actual}
+                          {target !== undefined && (
+                            <span className="text-[color:var(--dim)]">/{target}</span>
+                          )}
+                        </span>
+                      </div>
+                      {target !== undefined && target > 0 && (
+                        <div style={{ marginTop: 'calc(0.75 * var(--u))' }}>
+                          <Bar value={(actual / target) * 100} />
+                        </div>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            </section>
+          )}
 
           {/* The private layer. Not Khyte's — this person's own life, on their
               own board and nobody else's. Same visual weight as the quarter

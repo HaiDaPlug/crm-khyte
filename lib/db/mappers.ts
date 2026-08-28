@@ -409,6 +409,8 @@ export function fromGoalRow(row: GoalRow): Goal {
     // Null is "no bar at all", which is not the same as 0 — an explicit 0
     // draws an empty bar. Only null collapses to undefined.
     ...(row.progress === null ? {} : { progress: row.progress }),
+    ...(row.metric_kind === null ? {} : { metricKind: row.metric_kind }),
+    ...(row.metric_target === null ? {} : { metricTarget: row.metric_target }),
     order: row.sort_order,
   }
 }
@@ -421,6 +423,8 @@ export function toGoalInsert(goal: Goal) {
     detail: goal.detail,
     status: goal.status,
     progress: goal.progress ?? null,
+    metric_kind: goal.metricKind ?? null,
+    metric_target: goal.metricTarget ?? null,
     sort_order: goal.order,
   }
 }
@@ -434,6 +438,13 @@ export function toGoalUpdate(updates: Partial<Goal>) {
     // `in` rather than `=== undefined`: clearing a progress bar passes
     // `{ progress: undefined }` and must reach the DB as null.
     ['progress', 'progress' in updates ? (updates.progress ?? null) : undefined],
+    // Same `in` treatment: clearing a counted metric passes the key undefined
+    // and must reach the DB as null, turning the goal back into a manual one.
+    ['metric_kind', 'metricKind' in updates ? (updates.metricKind ?? null) : undefined],
+    [
+      'metric_target',
+      'metricTarget' in updates ? (updates.metricTarget ?? null) : undefined,
+    ],
     ['sort_order', updates.order],
   ])
 }

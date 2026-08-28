@@ -149,8 +149,19 @@ export type GoalSection =
   | 'north_star'
   | 'annual'
   | 'quarter'
+  | 'weekly'
   | 'principle'
   | 'not_now'
+
+/**
+ * A CRM action worth counting. Recorded server-side when it happens — see
+ * lib/db/events.ts for why the log exists and why it is not derived.
+ */
+export type CrmEventKind =
+  | 'prospect_contacted'
+  | 'meeting_booked'
+  | 'lead_added'
+  | 'deal_won'
 
 export type GoalStatus = 'on_track' | 'at_risk' | 'off_track' | 'done'
 
@@ -164,6 +175,14 @@ export interface Goal {
   status: GoalStatus
   /** 0–100, or undefined for "no bar" — a principle has no progress. */
   progress?: number
+  /**
+   * When set, this goal's number is counted from CRM activity of this kind for
+   * the current week rather than read from `progress`. That is what makes a
+   * weekly non-negotiable unable to drift from reality.
+   */
+  metricKind?: CrmEventKind
+  /** The week's target for a counted goal, e.g. 15 meetings. */
+  metricTarget?: number
   order: number
 }
 
@@ -214,6 +233,14 @@ export interface GoalsSnapshot {
   goals: Goal[]
   metrics: GoalMetric[]
   personalGoals: PersonalGoal[]
+  /**
+   * Live counts for the current week, keyed by event kind. Computed on read
+   * rather than stored, so a counted goal cannot go stale.
+   */
+  weeklyCounts: Record<string, number>
+  /** Revenue, customers and open pipeline, recomputed from the deals as they
+   *  currently stand — see lib/db/board-metrics.ts. */
+  totals: { revenue: number; customers: number; pipeline: number }
 }
 
 /**
