@@ -269,7 +269,7 @@ function PipelineColumn({ stage, cards, onCardClick, availableLeads, onAddToStag
 interface PipelineBoardProps {
   rows: PipelineRow[]
   onCardClick: (row: PipelineRow) => void
-  onStageChange?: (opportunityId: string, newStage: Stage) => void
+  onStageChange?: (opportunityId: string, newStage: Stage, targetIndex?: number) => void
   /** Leads not yet on the board — offered by each column's empty-slot picker. */
   availableLeads: PipelineRow[]
   onAddToStage: (opportunityId: string, stage: Stage) => void
@@ -300,7 +300,9 @@ export function PipelineBoard({ rows, onCardClick, onStageChange, availableLeads
   // Cards derive straight from the store-backed rows so drags and newly
   // added leads stay in sync with every other page
   const getCardsByStage = (stage: Stage): PipelineRow[] => {
-    return rows.filter(r => r.opportunity.stage === stage)
+    return rows
+      .filter(r => r.opportunity.stage === stage)
+      .sort((a, b) => a.opportunity.order - b.opportunity.order)
   }
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -343,15 +345,25 @@ export function PipelineBoard({ rows, onCardClick, onStageChange, availableLeads
     const targetStage = STAGES.find(s => s === overId)
 
     let newStage: Stage | undefined
+    // Dropped on a card: land at that card's position, pushing it (and
+    // everything after) down one. Dropped on the empty column body instead
+    // (targetStage matched): there's no card to index against, so append.
+    let targetIndex: number | undefined
     if (targetStage) {
       newStage = targetStage
     } else {
       const targetRow = rows.find(r => r.opportunity.id === overId)
-      if (targetRow) newStage = targetRow.opportunity.stage
+      if (targetRow) {
+        newStage = targetRow.opportunity.stage
+        targetIndex = getCardsByStage(newStage)
+          .filter(r => r.opportunity.id !== draggedId)
+          .findIndex(r => r.opportunity.id === overId)
+        if (targetIndex === -1) targetIndex = undefined
+      }
     }
 
     if (newStage) {
-      onStageChange?.(draggedId, newStage)
+      onStageChange?.(draggedId, newStage, targetIndex)
     }
   }
 

@@ -101,7 +101,7 @@ async function readSnapshot(): Promise<CRMSnapshot> {
     Promise.all([
       sql`select * from companies order by created_at`,
       sql`select * from contacts order by created_at`,
-      sql`select * from opportunities order by created_at desc`,
+      sql`select * from opportunities order by stage, sort_order`,
       sql`select * from leads order by created_at desc`,
       sql`select * from notes order by created_at desc`,
       sql`select * from strategy_columns order by opportunity_id, sort_order`,

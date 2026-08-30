@@ -1,4 +1,4 @@
-﻿import { Opportunity } from '../types'
+import { Opportunity } from '../types'
 
 export const mockOpportunities: Opportunity[] = [
   {
@@ -10,6 +10,7 @@ export const mockOpportunities: Opportunity[] = [
     lastInteraction: '2026-03-24',
     tags: ['enterprise', 'high-intent'],
     notes: 'Elena responded positively to the demo. Main concern is onboarding timeline.',
+    order: 0,
   },
   {
     id: 'o2', companyId: 'c2', contactId: 'ct2',
@@ -20,6 +21,7 @@ export const mockOpportunities: Opportunity[] = [
     lastInteraction: '2026-03-22',
     tags: ['warm', 'decision-maker-engaged'],
     notes: 'Marcus connected via LinkedIn. They are evaluating 3 vendors.',
+    order: 0,
   },
   {
     id: 'o3', companyId: 'c3', contactId: 'ct3',
@@ -30,6 +32,7 @@ export const mockOpportunities: Opportunity[] = [
     lastInteraction: '2026-03-18',
     tags: ['cold'],
     notes: 'No reply yet. Sent intro email with case study.',
+    order: 0,
   },
   {
     id: 'o4', companyId: 'c4', contactId: 'ct4',
@@ -40,6 +43,7 @@ export const mockOpportunities: Opportunity[] = [
     lastInteraction: '2026-03-20',
     tags: ['proposal-sent'],
     notes: 'Priya asked for a 12-month contract option. Board decision next week.',
+    order: 0,
   },
   {
     id: 'o5', companyId: 'c5', contactId: 'ct5',
@@ -50,6 +54,7 @@ export const mockOpportunities: Opportunity[] = [
     lastInteraction: '2026-03-25',
     tags: ['new', 'referral'],
     notes: 'Referred by existing client. No contact made yet.',
+    order: 0,
   },
   {
     id: 'o6', companyId: 'c6', contactId: 'ct6',
@@ -60,6 +65,7 @@ export const mockOpportunities: Opportunity[] = [
     lastInteraction: '2026-03-23',
     tags: ['enterprise', 'slow-moving'],
     notes: 'Ingrid wants custom SLA terms. Legal is involved on their side.',
+    order: 0,
   },
   {
     id: 'o7', companyId: 'c1', contactId: 'ct1',
@@ -70,5 +76,6 @@ export const mockOpportunities: Opportunity[] = [
     lastInteraction: '2026-03-21',
     tags: ['researched'],
     notes: 'Secondary opportunity at Meridian Labs for their EU expansion team.',
+    order: 0,
   },
 ]

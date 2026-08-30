@@ -58,6 +58,7 @@ export interface OpportunityRow {
   tags: string[]
   notes: string
   followed_up_by: ColleagueId | null
+  sort_order: number
   created_at: string
   updated_at: string
 }

@@ -47,6 +47,8 @@ export interface Opportunity {
   notes: string
   /** Who on the team is following this prospect up, from the fixed colleague roster. */
   followedUpBy?: ColleagueId
+  /** Position within its stage's column on the pipeline board. */
+  order: number
 }
 
 /**

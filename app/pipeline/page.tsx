@@ -20,7 +20,7 @@ export default function PipelinePage() {
   const companies = useCRMStore((s) => s.companies)
   const contacts = useCRMStore((s) => s.contacts)
   const notes = useCRMStore((s) => s.notes)
-  const moveOpportunityStage = useCRMStore((s) => s.moveOpportunityStage)
+  const moveOpportunityCard = useCRMStore((s) => s.moveOpportunityCard)
   const addToPipeline = useCRMStore((s) => s.addToPipeline)
 
   const [selectedRow, setSelectedRow] = useState<PipelineRow | null>(null)
@@ -141,7 +141,7 @@ export default function PipelinePage() {
         <PipelineBoard
           rows={rows}
           onCardClick={(row) => setSelectedRow(row)}
-          onStageChange={moveOpportunityStage}
+          onStageChange={moveOpportunityCard}
           availableLeads={availableLeads}
           onAddToStage={addToPipeline}
         />

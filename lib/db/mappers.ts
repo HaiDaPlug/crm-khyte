@@ -153,6 +153,7 @@ export function fromOpportunityRow(row: OpportunityRow): Opportunity {
     tags: row.tags ?? [],
     notes: row.notes,
     ...(row.followed_up_by ? { followedUpBy: row.followed_up_by } : {}),
+    order: row.sort_order,
   }
 }
 
@@ -171,6 +172,7 @@ export function toOpportunityInsert(opportunity: Opportunity) {
     tags: opportunity.tags,
     notes: opportunity.notes,
     followed_up_by: opportunity.followedUpBy ?? null,
+    sort_order: opportunity.order,
   }
 }
 
@@ -194,6 +196,7 @@ export function toOpportunityUpdate(updates: Partial<Opportunity>) {
     ['tags', updates.tags],
     ['notes', updates.notes],
     ['followed_up_by', updates.followedUpBy === undefined ? undefined : (updates.followedUpBy ?? null)],
+    ['sort_order', updates.order],
   ])
 }
 

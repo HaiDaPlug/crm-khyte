@@ -5,10 +5,11 @@ import { Topbar } from '@/components/layout/Topbar'
 import { AddLeadModal } from '@/components/crm/AddLeadModal'
 import { AddProspectModal } from '@/components/crm/AddProspectModal'
 import { Button } from '@/components/crm/Button'
+import { ConfirmDialog } from '@/components/crm/ConfirmDialog'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useDialogBehavior } from '@/lib/hooks/useDialog'
-import { Sparkles, Plus, ArrowRight, Users, X } from 'lucide-react'
+import { Sparkles, Plus, ArrowRight, Users, X, Trash2 } from 'lucide-react'
 import { priorityDot } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
 import { Lead } from '@/lib/types'
@@ -19,20 +20,87 @@ interface LeadDrawerProps {
   lead: Lead | null
   onClose: () => void
   onPromote: (leadId: string) => void
+  onDelete: (leadId: string) => void
 }
 
-function LeadDrawer({ lead, onClose, onPromote }: LeadDrawerProps) {
+function LeadDrawer({ lead, onClose, onPromote, onDelete }: LeadDrawerProps) {
   const { t } = useTranslations()
   const fmt = useFormat()
+  const updateLead = useCRMStore((s) => s.updateLead)
   const isOpen = !!lead
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
-  useDialogBehavior({ open: isOpen, onClose, panelRef })
+  // Which single field is mid-edit, if any — mirrors DetailDrawer's inline
+  // editors: one field at a time, immediate commit, no draft/discard dance.
+  const [editingField, setEditingField] = useState<'contactName' | 'source' | 'notes' | null>(null)
+  const [contactNameDraft, setContactNameDraft] = useState('')
+  const [sourceDraft, setSourceDraft] = useState('')
+  const [notesDraft, setNotesDraft] = useState('')
+
+  useDialogBehavior({
+    open: isOpen,
+    onClose,
+    panelRef,
+    // A nested editor's Escape cancels that field instead of closing the whole
+    // drawer — same contract DetailDrawer relies on for its inline editors.
+    shouldIgnoreEscape: () => editingField !== null,
+  })
 
   useEffect(() => {
     if (isOpen) panelRef.current?.focus()
   }, [isOpen])
+
+  useEffect(() => {
+    setConfirmingDelete(false)
+    setEditingField(null)
+  }, [lead?.id])
+
+  const beginEditContactName = () => {
+    if (!lead) return
+    setContactNameDraft(lead.contactName ?? '')
+    setEditingField('contactName')
+  }
+
+  const saveContactName = () => {
+    if (!lead) return
+    const contactName = contactNameDraft.trim()
+    if (contactName !== (lead.contactName ?? '')) {
+      updateLead(lead.id, { contactName: contactName || undefined })
+    }
+    setEditingField(null)
+  }
+
+  const beginEditSource = () => {
+    if (!lead) return
+    setSourceDraft(lead.source ?? '')
+    setEditingField('source')
+  }
+
+  const saveSource = () => {
+    if (!lead) return
+    const source = sourceDraft.trim()
+    if (source !== (lead.source ?? '')) {
+      updateLead(lead.id, { source: source || undefined })
+    }
+    setEditingField(null)
+  }
+
+  const beginEditNotes = () => {
+    if (!lead) return
+    setNotesDraft(lead.notes ?? '')
+    setEditingField('notes')
+  }
+
+  const saveNotes = () => {
+    if (!lead) return
+    const notes = notesDraft.trim()
+    if (notes !== (lead.notes ?? '')) {
+      updateLead(lead.id, { notes })
+    }
+    setEditingField(null)
+  }
 
   return (
     <>
@@ -71,14 +139,24 @@ function LeadDrawer({ lead, onClose, onPromote }: LeadDrawerProps) {
                   <p className="mt-1 text-[13px] text-foreground/60 font-mono">{fmt.date(lead.createdAt)}</p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={onClose}
-                aria-label={t.crm.modal.closeDetails}
-                className="-mr-1 -mt-1 flex size-11 shrink-0 items-center justify-center rounded-xl text-foreground/60 transition-colors hover:bg-surface-raised hover:text-foreground sm:mr-0 sm:mt-0 sm:size-9 sm:rounded-lg"
-              >
-                <X size={15} />
-              </button>
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  aria-label={t.leads.delete}
+                  className="flex size-11 items-center justify-center rounded-xl text-foreground/60 transition-colors hover:bg-danger-muted hover:text-danger sm:size-9 sm:rounded-lg"
+                >
+                  <Trash2 size={15} />
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  aria-label={t.crm.modal.closeDetails}
+                  className="-mr-1 -mt-1 flex size-11 items-center justify-center rounded-xl text-foreground/60 transition-colors hover:bg-surface-raised hover:text-foreground sm:mr-0 sm:mt-0 sm:size-9 sm:rounded-lg"
+                >
+                  <X size={15} />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto pb-[env(safe-area-inset-bottom)]">
@@ -91,12 +169,30 @@ function LeadDrawer({ lead, onClose, onPromote }: LeadDrawerProps) {
                       <p className="text-[14.5px] font-medium text-foreground capitalize">{t.priorities[lead.priority]}</p>
                     </div>
                   </div>
-                  {lead.contactName && (
-                    <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
-                      <p className="label-mono mb-1">{t.crm.newLeadForm.contactName}</p>
-                      <p className="break-words text-[14.5px] font-medium text-foreground">{lead.contactName}</p>
-                    </div>
-                  )}
+                  <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                    <p className="label-mono mb-1">{t.crm.newLeadForm.contactName}</p>
+                    {editingField === 'contactName' ? (
+                      <input
+                        autoFocus
+                        aria-label={t.crm.newLeadForm.contactName}
+                        value={contactNameDraft}
+                        onChange={(e) => setContactNameDraft(e.target.value)}
+                        onBlur={saveContactName}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.preventDefault(); saveContactName() }
+                          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditingField(null) }
+                        }}
+                        className="w-full bg-transparent text-[14.5px] font-medium text-foreground outline-none border-b border-accent/50"
+                      />
+                    ) : (
+                      <p
+                        onClick={beginEditContactName}
+                        className="break-words text-[14.5px] font-medium text-foreground cursor-pointer hover:text-accent transition-colors"
+                      >
+                        {lead.contactName || <span className="text-foreground/50 font-normal">—</span>}
+                      </p>
+                    )}
+                  </div>
                   {lead.followedUpBy && (
                     <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
                       <p className="label-mono mb-1">{t.crm.newLeadForm.followedUpBy}</p>
@@ -123,20 +219,58 @@ function LeadDrawer({ lead, onClose, onPromote }: LeadDrawerProps) {
                   </div>
                 )}
 
-                {lead.source && (
-                  <div className="mt-3 min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
-                    <p className="label-mono mb-1">{t.crm.newLeadForm.source}</p>
-                    <p className="break-words text-[14.5px] text-foreground">{lead.source}</p>
-                  </div>
-                )}
+                <div className="mt-3 min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                  <p className="label-mono mb-1">{t.crm.newLeadForm.source}</p>
+                  {editingField === 'source' ? (
+                    <input
+                      autoFocus
+                      aria-label={t.crm.newLeadForm.source}
+                      value={sourceDraft}
+                      onChange={(e) => setSourceDraft(e.target.value)}
+                      onBlur={saveSource}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); saveSource() }
+                        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditingField(null) }
+                      }}
+                      className="w-full bg-transparent text-[14.5px] text-foreground outline-none border-b border-accent/50"
+                    />
+                  ) : (
+                    <p
+                      onClick={beginEditSource}
+                      className="break-words text-[14.5px] text-foreground cursor-pointer hover:text-accent transition-colors"
+                    >
+                      {lead.source || <span className="text-foreground/50">—</span>}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="px-4 py-4 sm:px-5">
                 <p className="label-mono mb-2.5">{t.leads.notes}</p>
-                {lead.notes ? (
-                  <p className="text-[14px] text-foreground/85 leading-relaxed whitespace-pre-wrap break-words">{lead.notes}</p>
+                {editingField === 'notes' ? (
+                  <textarea
+                    autoFocus
+                    aria-label={t.leads.notes}
+                    value={notesDraft}
+                    onChange={(e) => setNotesDraft(e.target.value)}
+                    onBlur={saveNotes}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditingField(null) }
+                    }}
+                    rows={4}
+                    className="w-full resize-y bg-transparent text-[14px] text-foreground/85 leading-relaxed outline-none border-b border-accent/50"
+                  />
+                ) : lead.notes ? (
+                  <p
+                    onClick={beginEditNotes}
+                    className="cursor-pointer text-[14px] text-foreground/85 leading-relaxed whitespace-pre-wrap break-words transition-colors hover:text-accent"
+                  >
+                    {lead.notes}
+                  </p>
                 ) : (
-                  <p className="text-[13.5px] text-foreground/60">{t.crm.notes.empty}</p>
+                  <p onClick={beginEditNotes} className="cursor-pointer text-[13.5px] text-foreground/60 hover:text-accent transition-colors">
+                    {t.crm.notes.empty}
+                  </p>
                 )}
               </div>
             </div>
@@ -150,6 +284,19 @@ function LeadDrawer({ lead, onClose, onPromote }: LeadDrawerProps) {
           </>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmingDelete}
+        title={t.leads.deleteTitle}
+        description={t.leads.deleteDescription}
+        confirmLabel={t.leads.delete}
+        onConfirm={() => {
+          if (!lead) return
+          setConfirmingDelete(false)
+          onDelete(lead.id)
+        }}
+        onCancel={() => setConfirmingDelete(false)}
+      />
     </>
   )
 }
@@ -158,6 +305,7 @@ export default function LeadsPage() {
   const { t } = useTranslations()
   const leads = useCRMStore((s) => s.leads)
   const searchQuery = useCRMStore((s) => s.searchQuery)
+  const removeLead = useCRMStore((s) => s.removeLead)
 
   const [addLeadOpen, setAddLeadOpen] = useState(false)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
@@ -265,6 +413,10 @@ export default function LeadsPage() {
         lead={selectedLead}
         onClose={() => setSelectedLeadId(null)}
         onPromote={beginPromote}
+        onDelete={(leadId) => {
+          setSelectedLeadId(null)
+          removeLead(leadId)
+        }}
       />
 
       <AddProspectModal

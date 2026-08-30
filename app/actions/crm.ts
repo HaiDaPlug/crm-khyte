@@ -221,6 +221,14 @@ export async function updateOpportunity(
   return result
 }
 
+/** Notes and strategy cards filed under it go with it (`on delete cascade`). */
+export async function deleteOpportunity(id: string): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk()
+  return run('opportunities', async () =>
+    getSupabase().from('opportunities').delete().eq('id', id)
+  )
+}
+
 // --- leads -------------------------------------------------------------
 
 export async function createLead(lead: Lead): Promise<ActionResult> {

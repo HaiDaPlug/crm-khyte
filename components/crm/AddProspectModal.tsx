@@ -75,6 +75,9 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
   const [dealValue, setDealValue] = useState('')
   const [nextStep, setNextStep] = useState('')
   const [followUpDate, setFollowUpDate] = useState(defaultFollowUp)
+  // Defaults to today, matching the value every prospect used to get baked in
+  // at creation — editable here now instead of only ever afterward in the drawer.
+  const [lastInteraction, setLastInteraction] = useState('')
   const [tags, setTags] = useState('')
   const [notesText, setNotesText] = useState('')
   const [followedUpBy, setFollowedUpBy] = useState<ColleagueId | undefined>(undefined)
@@ -113,6 +116,7 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
     setContactQuery(''); setContactId(null); setRole(''); setEmail('')
     setStage(null); setPriority('medium'); setDealValue(''); setNextStep('')
     setFollowUpDate(defaultFollowUp()); setTags(''); setNotesText('')
+    setLastInteraction(new Date().toISOString().slice(0, 10))
     setFollowedUpBy(undefined)
     setDiscardOpen(false)
     setLeadId(null); setLeadQuery('')
@@ -285,7 +289,6 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
 
   const handleSubmit = () => {
     if (!canSubmit) return
-    const today = new Date().toISOString().slice(0, 10)
 
     const companyName = companyQuery.trim()
     let company =
@@ -343,10 +346,12 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
       dealValue: Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : undefined,
       nextStep: nextStep.trim(),
       followUpDate,
-      lastInteraction: today,
+      lastInteraction: lastInteraction || new Date().toISOString().slice(0, 10),
       tags: parsedTags,
       notes: notesText.trim(),
       ...(followedUpBy ? { followedUpBy } : {}),
+      // addOpportunity assigns the real position within the destination stage.
+      order: 0,
     })
 
     // Promoting a lead removes it from the Leads list — it now exists only
@@ -577,7 +582,7 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
           </Field>
         </div>
 
-        <div className="mt-5 grid grid-cols-1 gap-4 sm:mt-6 sm:grid-cols-[1.35fr_1fr] sm:gap-5">
+        <div className="mt-5 grid grid-cols-1 gap-4 sm:mt-6 sm:grid-cols-[1.35fr_1fr_1fr] sm:gap-5">
           <Field label={copy.nextStep} htmlFor={`${formId}-next-step`}>
             <input
               id={`${formId}-next-step`}
@@ -593,6 +598,15 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
               onChange={(e) => setTags(e.target.value)}
               placeholder={copy.tagsPlaceholder}
               className={inputClass}
+            />
+          </Field>
+          <Field label={copy.lastInteraction} htmlFor={`${formId}-last-interaction`}>
+            <input
+              id={`${formId}-last-interaction`}
+              type="date"
+              value={lastInteraction}
+              onChange={(e) => setLastInteraction(e.target.value)}
+              className={cn(inputClass, 'font-mono text-[16px] sm:text-[14px]')}
             />
           </Field>
         </div>

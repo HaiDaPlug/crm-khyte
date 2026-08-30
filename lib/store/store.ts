@@ -72,9 +72,21 @@ export interface CRMStore {
 
   // Actions — Opportunities
   addOpportunity: (opportunity: Opportunity) => void
-  moveOpportunityStage: (opportunityId: string, newStage: Stage) => void
   updateOpportunity: (opportunityId: string, updates: Partial<Opportunity>) => void
   addToPipeline: (opportunityId: string, stage?: Stage) => void
+  /**
+   * Files a card under `newStage`, at `targetIndex` in that column or at the
+   * end when the index is omitted. Used for every pipeline-board drag, a
+   * same-stage reorder included — the column is rebuilt around the drop
+   * either way.
+   */
+  moveOpportunityCard: (
+    cardId: string,
+    newStage: Stage,
+    targetIndex?: number
+  ) => void
+  /** Permanent — for prospects created in error or otherwise no longer wanted. */
+  removeOpportunity: (opportunityId: string) => void
 
   // Actions — Notes
   addNote: (note: Note) => void
@@ -284,32 +296,62 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
       // Opportunities
       addOpportunity: (opportunity) => {
-        set((state) => ({ opportunities: [opportunity, ...state.opportunities] }))
-        persist('Save lead', () => api.createOpportunity(opportunity))
+        // Filed at the end of its stage's column, not wherever the caller's
+        // draft `order` happened to be — the same rule moveOpportunityCard
+        // enforces for a drag, so a brand-new card and a moved one land the
+        // same way.
+        const stageSiblings = get().opportunities.filter((o) => o.stage === opportunity.stage)
+        const placed = { ...opportunity, order: stageSiblings.length }
+        set((state) => ({ opportunities: [placed, ...state.opportunities] }))
+        persist('Save lead', () => api.createOpportunity(placed))
       },
 
       // Leads enter the board at 'New' by default — or straight into a given
       // stage, when added from that stage's column rather than the generic picker.
       addToPipeline: (opportunityId, stage = 'New') => {
+        const order = get().opportunities.filter(
+          (o) => o.stage === stage && o.id !== opportunityId
+        ).length
         set((state) => ({
           opportunities: state.opportunities.map((o) =>
-            o.id === opportunityId ? { ...o, inPipeline: true, stage } : o
+            o.id === opportunityId ? { ...o, inPipeline: true, stage, order } : o
           ),
         }))
         persist('Add to pipeline', () =>
-          api.updateOpportunity(opportunityId, { inPipeline: true, stage })
+          api.updateOpportunity(opportunityId, { inPipeline: true, stage, order })
         )
       },
 
-      moveOpportunityStage: (opportunityId, newStage) => {
+      // Board drag-and-drop: changes stage and position together. Rebuilds the
+      // destination column around the drop so `order` stays a dense 0..n-1
+      // sequence — same rationale as moveStrategyCard, which this mirrors.
+      moveOpportunityCard: (cardId, newStage, targetIndex) => {
+        const card = get().opportunities.find((o) => o.id === cardId)
+        if (!card) return
+
+        const column = get()
+          .opportunities.filter((o) => o.stage === newStage && o.id !== cardId)
+          .sort((a, b) => a.order - b.order)
+        column.splice(targetIndex ?? column.length, 0, { ...card, stage: newStage })
+
+        const moved = column
+          .map((o, order) =>
+            o.order === order && o.stage === newStage && o.id !== cardId
+              ? null
+              : { ...o, stage: newStage, order }
+          )
+          .filter((o): o is Opportunity => o !== null)
+        const byId = new Map(moved.map((o) => [o.id, o]))
+
         set((state) => ({
-          opportunities: state.opportunities.map((o) =>
-            o.id === opportunityId ? { ...o, stage: newStage } : o
-          ),
+          opportunities: state.opportunities.map((o) => byId.get(o.id) ?? o),
         }))
-        persist('Move stage', () =>
-          api.updateOpportunity(opportunityId, { stage: newStage })
-        )
+
+        for (const o of moved) {
+          persist('Move stage', () =>
+            api.updateOpportunity(o.id, { stage: o.stage, order: o.order })
+          )
+        }
       },
 
       updateOpportunity: (opportunityId, updates) => {
@@ -319,6 +361,18 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Update lead', () => api.updateOpportunity(opportunityId, updates))
+      },
+
+      // The database cascades notes and strategy cards; the local sets have to
+      // be pruned by hand or they would linger tied to a prospect that no
+      // longer exists — see removeStrategyColumn for the same shape.
+      removeOpportunity: (opportunityId) => {
+        set((state) => ({
+          opportunities: state.opportunities.filter((o) => o.id !== opportunityId),
+          notes: state.notes.filter((n) => n.opportunityId !== opportunityId),
+          strategyCards: state.strategyCards.filter((c) => c.opportunityId !== opportunityId),
+        }))
+        persist('Delete prospect', () => api.deleteOpportunity(opportunityId))
       },
 
       // Notes

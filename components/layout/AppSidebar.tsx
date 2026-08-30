@@ -153,25 +153,6 @@ export function AppSidebar() {
           {t.nav.collapse}
         </span>
       </button>
-
-      {/* Footer */}
-      <div className="shrink-0 px-3 py-3 border-t border-border-accent">
-        <div className={cn(
-          'flex items-center gap-2.5 overflow-hidden',
-          collapsed && 'justify-center'
-        )}>
-          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-accent/80 to-accent flex items-center justify-center shrink-0">
-            <span className="text-[10px] font-bold text-background">K</span>
-          </div>
-          <div className={cn(
-            'flex-1 min-w-0 overflow-hidden transition-all duration-300',
-            collapsed ? 'w-0 opacity-0' : 'w-auto opacity-100'
-          )}>
-            <p className="text-[12px] font-medium text-foreground truncate">{t.nav.workspace}</p>
-            <p className="text-[10.5px] text-muted truncate font-mono">khyte.io</p>
-          </div>
-        </div>
-      </div>
     </aside>
   )
 }

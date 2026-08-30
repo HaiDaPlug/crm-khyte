@@ -2,11 +2,12 @@
 
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { X, ExternalLink, Calendar, ArrowRight, ChevronDown } from 'lucide-react'
+import { X, ExternalLink, Calendar, ArrowRight, ChevronDown, Trash2 } from 'lucide-react'
 import { ColleagueId, Opportunity, Company, Contact, Note, Priority, Stage } from '@/lib/types'
 import { NotesTimeline } from './NotesTimeline'
 import { Button } from './Button'
 import { InlineSelect } from './FormFields'
+import { ConfirmDialog } from './ConfirmDialog'
 import { useCRMStore } from '@/lib/store'
 import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
 import { STAGES, priorityDot, stageColors } from '@/lib/stage-config'
@@ -61,13 +62,15 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
   const updateContact = useCRMStore((s) => s.updateContact)
   const addNote = useCRMStore((s) => s.addNote)
   const deleteNote = useCRMStore((s) => s.deleteNote)
+  const removeOpportunity = useCRMStore((s) => s.removeOpportunity)
   const [noteDraft, setNoteDraft] = useState('')
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   // Which single field is mid-edit, if any. Only one at a time — these are
   // small, immediate-commit editors, not a form, so there's no draft/discard
   // dance beyond "click away or Escape cancels this one field."
   const [editingField, setEditingField] = useState<
-    'companyName' | 'contactName' | 'dealValue' | 'followUp' | 'nextStep' | 'tags' | null
+    'companyName' | 'contactName' | 'dealValue' | 'followUp' | 'nextStep' | 'tags' | 'lastInteraction' | null
   >(null)
   const [companyNameDraft, setCompanyNameDraft] = useState('')
   const [contactNameDraft, setContactNameDraft] = useState('')
@@ -75,13 +78,23 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
   const [followUpDraft, setFollowUpDraft] = useState('')
   const [nextStepDraft, setNextStepDraft] = useState('')
   const [tagsDraft, setTagsDraft] = useState('')
+  const [lastInteractionDraft, setLastInteractionDraft] = useState('')
 
   // Never carry one lead's draft over to another, and drop the editors when
   // the drawer closes so it reopens in read mode.
   useEffect(() => {
     setNoteDraft('')
     setEditingField(null)
+    setConfirmingDelete(false)
   }, [opportunity?.id, isOpen])
+
+  const handleDelete = () => {
+    const id = payload?.opportunity.id
+    if (!id) return
+    setConfirmingDelete(false)
+    removeOpportunity(id)
+    onClose()
+  }
 
   /** Each submission is its own timeline entry — there's no single "the" note
    * to overwrite anymore, so this only ever adds. */
@@ -198,6 +211,23 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
     }
     updateOpportunity(id, { followUpDate: value })
     setPayload((p) => (p ? { ...p, opportunity: { ...p.opportunity, followUpDate: value } } : p))
+    setEditingField(null)
+  }
+
+  const beginEditLastInteraction = () => {
+    if (!payload) return
+    setLastInteractionDraft(payload.opportunity.lastInteraction)
+    setEditingField('lastInteraction')
+  }
+
+  const saveLastInteraction = (value: string) => {
+    const id = payload?.opportunity.id
+    if (!id || !value) {
+      setEditingField(null)
+      return
+    }
+    updateOpportunity(id, { lastInteraction: value })
+    setPayload((p) => (p ? { ...p, opportunity: { ...p.opportunity, lastInteraction: value } } : p))
     setEditingField(null)
   }
 
@@ -642,17 +672,62 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
             </div>
 
             <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border-subtle px-4 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4 sm:px-6 sm:py-4">
-              <p className="text-[13px] text-foreground/80">
-                {copy.lastInteraction}{' '}
-                <span className="text-foreground font-mono">
-                  {fmt.date(payload.opportunity.lastInteraction)}
+              {editingField === 'lastInteraction' ? (
+                <span className="flex items-center gap-1.5 text-[13px] text-foreground/80">
+                  {copy.lastInteraction}{' '}
+                  <input
+                    autoFocus
+                    aria-label={copy.lastInteraction}
+                    type="date"
+                    value={lastInteractionDraft}
+                    onChange={(e) => setLastInteractionDraft(e.target.value)}
+                    onBlur={(e) => saveLastInteraction(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { e.preventDefault(); saveLastInteraction(lastInteractionDraft) }
+                      else if (e.key === 'Escape') { e.preventDefault(); setEditingField(null) }
+                    }}
+                    className="bg-transparent font-mono text-[13px] text-foreground outline-none border-b border-accent/50"
+                  />
                 </span>
-              </p>
-              <span className="hidden text-[12px] text-foreground font-mono opacity-60 sm:inline">esc</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={beginEditLastInteraction}
+                  className="text-[13px] text-foreground/80 transition-colors hover:text-accent"
+                >
+                  {copy.lastInteraction}{' '}
+                  <span className="text-foreground font-mono">
+                    {fmt.date(payload.opportunity.lastInteraction)}
+                  </span>
+                </button>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  aria-label={copy.delete}
+                  className={cn(
+                    'flex h-11 w-11 shrink-0 touch-manipulation items-center justify-center rounded-lg text-foreground/45',
+                    'transition-colors duration-150 hover:bg-danger-muted hover:text-danger sm:h-8 sm:w-8'
+                  )}
+                >
+                  <Trash2 size={14} />
+                </button>
+                <span className="hidden text-[12px] text-foreground font-mono opacity-60 sm:inline">esc</span>
+              </div>
             </div>
           </>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmingDelete}
+        title={copy.deleteTitle}
+        description={copy.deleteDescription}
+        confirmLabel={copy.delete}
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmingDelete(false)}
+      />
     </>,
     document.body
   )
