@@ -26,6 +26,10 @@ export interface CompanyRow {
   size: string
   location: string
   tags: string[]
+  /** numeric(14,2) can arrive as a string, same as OpportunityRow.deal_value. */
+  revenue: number | string | null
+  employee_count: number | null
+  about: string | null
   created_at: string
   updated_at: string
 }

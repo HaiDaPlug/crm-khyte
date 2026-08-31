@@ -72,6 +72,10 @@ export function fromCompanyRow(row: CompanyRow): Company {
     size: row.size,
     location: row.location,
     tags: row.tags ?? [],
+    // numeric(14,2) can arrive as a string; same handling as Opportunity.dealValue
+    ...(row.revenue === null ? {} : { revenue: Number(row.revenue) }),
+    ...(row.employee_count === null ? {} : { employeeCount: row.employee_count }),
+    ...(row.about ? { about: row.about } : {}),
   }
 }
 
@@ -84,6 +88,9 @@ export function toCompanyInsert(company: Company) {
     size: company.size,
     location: company.location,
     tags: company.tags,
+    revenue: company.revenue ?? null,
+    employee_count: company.employeeCount ?? null,
+    about: nullIfBlank(company.about),
   }
 }
 
@@ -95,6 +102,9 @@ export function toCompanyUpdate(updates: Partial<Company>) {
     ['size', updates.size],
     ['location', updates.location],
     ['tags', updates.tags],
+    ['revenue', updates.revenue],
+    ['employee_count', updates.employeeCount],
+    ['about', updates.about === undefined ? undefined : nullIfBlank(updates.about)],
   ])
 }
 

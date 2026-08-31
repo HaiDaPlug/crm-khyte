@@ -172,6 +172,10 @@ const sv = {
     followUp: 'Uppföljning:',
     deals: 'Affärer:',
     empty: 'Inga företag matchar den här sökningen.',
+    revenue: 'Omsättning',
+    employeeCount: 'Anställda',
+    about: 'Om företaget',
+    aboutPlaceholder: 'Vad gör de, och vad är värt att komma ihåg?',
   },
   contacts: {
     title: 'Kontakter',
@@ -227,6 +231,10 @@ const sv = {
       location: 'Plats',
       tags: 'Taggar',
       tagsPlaceholder: 'företag, hög prioritet',
+      revenue: 'Omsättning',
+      employeeCount: 'Anställda',
+      about: 'Om företaget',
+      aboutPlaceholder: 'Vad gör de, och vad är värt att komma ihåg?',
     },
     contactForm: {
       title: 'Ny kontakt',
@@ -480,6 +488,8 @@ const en: Dictionary = {
     newCompany: 'New Company', industry: 'Industry', size: 'Size', location: 'Location', contacts: 'Contacts',
     opportunities: 'Opportunities', noContacts: 'No contacts linked.', noOpportunities: 'No active opportunities.',
     followUp: 'Follow-up:', deals: 'Deals:', empty: 'No companies match this search.',
+    revenue: 'Revenue', employeeCount: 'Employees', about: 'About',
+    aboutPlaceholder: "What do they do, and what's worth remembering?",
   },
   contacts: {
     title: 'Contacts', count: (count) => `${count} contacts`, filter: 'Filter contacts...', newContact: 'New Contact',
@@ -505,6 +515,8 @@ const en: Dictionary = {
       title: 'New Company', subtitle: 'Just the essentials — contacts and prospects can link to it.', add: 'Add Company',
       name: 'Name', domain: 'Domain', industry: 'Industry', size: 'Size', location: 'Location', tags: 'Tags',
       tagsPlaceholder: 'enterprise, high-intent',
+      revenue: 'Revenue', employeeCount: 'Employees', about: 'About',
+      aboutPlaceholder: "What do they do, and what's worth remembering?",
     },
     contactForm: {
       title: 'New Contact', subtitle: 'Just the essentials — link them to a prospect later.', add: 'Add Contact',

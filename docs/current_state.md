@@ -1,6 +1,6 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-08-28
+**Date:** 2026-08-30
 **Phase:** MVP + persistence + password gate + derived direction board
 (Supabase live; shared-password auth, no accounts)
 
@@ -13,7 +13,13 @@ date. Since the previous writing three landed for the direction board:
 `20260828120000_personal_goals` (renames `focus_items`, adds `target_date` and
 `progress`), `20260828140000_crm_events` (the activity log and the weekly
 archive) and `20260828140100_weekly_goal_section` (the `weekly` goal section
-plus `metric_kind`/`metric_target`).
+plus `metric_kind`/`metric_target`). Three more since:
+`20260829120000_opportunity_sort_order` (`opportunities.sort_order`, backfilled
+per-stage from the existing visual order — see Pipeline board interaction),
+`20260830120000_goal_target_date` (merges the `annual`/`quarter` sections into
+one dated `goal` family — see Goals timeline), and
+`20260830130000_company_enrichment` (`companies.revenue`/`employee_count`/`about`
+— see Company enrichment fields).
 
 **The board's numbers are now computed, not typed.** Revenue, customers and
 pipeline are recomputed from `opportunities` on every read, and the weekly
@@ -47,13 +53,14 @@ are actually marked Won.
 | `/login` | Functional | The password gate. Renders outside `AppShell` — no sidebar, no store, no database read. Single autofocused password field, `useActionState` error states (empty / invalid / throttled), `noindex`. See Auth gate |
 | `/` | Done | Redirects to `/dashboard` |
 | `/dashboard` | Functional | Command-center home. Desktop keeps the split pipeline/tasks + assistant composition; mobile switches to assistant-first reading order and natural vertical scrolling, with responsive greeting, composer, quick prompts and cards. The composer still supports Enter submit, autosize, mic dictation via Web Speech API, and mock replies keyed off lead names. |
-| `/leads` | Functional | New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button; each card also carries its own promote action. "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
-| `/prospects` | Functional | Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. Search and filters are wired, and table/board empty results now show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. |
+| `/leads` | Functional | New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button and a `Trash2` delete button (behind a `ConfirmDialog`, permanent via `removeLead`); each card also carries its own promote action. **Contact name, source and notes are now click-to-edit inline** in the drawer, mirroring `DetailDrawer`'s one-field-at-a-time editor exactly (single `editingField` state, commit on blur/Enter, Escape cancels the field rather than closing the drawer via `shouldIgnoreEscape`) — previously all three were plain read-only text with no way to fix a typo or add notes after capture short of deleting and re-adding the lead. Priority, connection and followed-by remain read-only from this drawer (unchanged, out of scope). "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
+| `/prospects` | Functional | Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. Search and filters are wired, and table/board empty results now show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. **Also gained a "Senaste kontakt" (last-contact) date field**, editable both at capture time (defaulting to today, same as the value every prospect used to get baked in silently) and afterward — see `Opportunity.lastInteraction` under Components: `DetailDrawer.tsx` below; before this it was write-once and could never be corrected or bumped forward without editing the database directly. |
 | `/pipeline` | Functional | Nine-stage dnd-kit kanban with mouse, delayed long-press touch and keyboard sensors. Mobile columns snap horizontally, expose a next-column peek/edge cue, and use natural page height instead of a locked viewport. Active value, drop feedback, off-board picker, background panning and drag-edge auto-scroll remain intact. Source data is Opportunities (Prospects), not the new Leads. |
 | `/strategy` | Functional | Opportunity selector + per-deal strategy board with add/rename/delete. The selector, summary and empty state reflow on phones; board columns snap/peek horizontally, touch actions stay visible, and drag supports mouse, long-press touch and keyboard input. |
-| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, 2026 outcomes, quarter priorities, weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. Top of the page carries the copyable wallpaper links, one per colleague. |
-| `/goals/display/[colleague]` | Functional | The wallpaper. Fills the screen edge to edge (no letterboxing) with zero chrome, rendered outside `AppShell` and sized off a single `--u` unit blending `vw` and `vh`, so the composition scales whole to any monitor. Bento header: the K mark left, three derived KPI tiles right, optional statement beneath the mark. Below it three columns — quarter priorities, this week's counted non-negotiables, and the viewer's own personal goals — every list hard-capped at three rows. Checks a version stamp every 5s and reloads only on change, with an unconditional 5-minute reload as backstop (`BoardRefresh.tsx`). Reachable with a session or a signed `?k=` display token. |
-| `/companies` | Functional | Responsive card grid with deal/contact counts and total value. Search has a localized no-result state and clear action. Detail view becomes a full-screen, safe-area-aware mobile dialog with focus trap, Escape close, body-scroll lock and focus restoration. "New Company" is a single-column mobile modal. |
+| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, one merged **`goal`** family (former `annual`+`quarter`, each with an optional `targetDate` — see Goals timeline below), weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. Top of the page carries the copyable wallpaper links, one per colleague, plus a link to `/goals/timeline`. |
+| `/goals/timeline` | Functional | New. Read view of every `goal`-family row, grouped by a period derived from its `targetDate` (see Goals timeline below) rather than by the `sort_order` the editor lists them in — the thing this page exists to answer is "what's coming up soonest", which the editor cannot show at all. No editing here; `GoalsEditor` already owns writes to these rows, and duplicating that would just be a second place the same field could go stale. |
+| `/goals/display/[colleague]` | Functional | The wallpaper. Fills the screen edge to edge (no letterboxing) with zero chrome, rendered outside `AppShell` and sized off a single `--u` unit blending `vw` and `vh`, so the composition scales whole to any monitor. Bento header: the wordmark left (scaled up, swapped from the bare K mark), three enlarged KPI tiles right with bolder eyebrow labels, a gradient divider beneath the header. The north star statement no longer renders here (see Goals timeline below — its section/editor/DB rows are untouched, it's just not drawn). Below the divider, three columns separated by hairline dividers between rows — the `goal` family's three soonest-by-date entries, this week's counted non-negotiables, and the viewer's own personal goals — every list hard-capped at three rows. Checks a version stamp every 5s and reloads only on change, with an unconditional 5-minute reload as backstop (`BoardRefresh.tsx`). Reachable with a session or a signed `?k=` display token. |
+| `/companies` | Functional | Responsive card grid with deal/contact counts and total value. Search has a localized no-result state and clear action. Detail view becomes a full-screen, safe-area-aware mobile dialog with focus trap, Escape close, body-scroll lock and focus restoration. "New Company" is a single-column mobile modal. **Gained three optional enrichment fields — revenue, employee count, about** — see Company enrichment fields below; both the add-company form and the detail drawer (click-to-edit inline, same pattern as everywhere else) support them, and an unset field shows an inviting empty state rather than nothing, since the whole point of these fields is somewhere for a future auto-scrape to land. |
 | `/contacts` | Functional | Responsive list with search, localized no-result recovery, and 44px mobile actions. The contact detail view is a full-screen, safe-area-aware mobile dialog with focus trap/Escape/scroll lock/focus return. "New Contact" uses a labelled company combobox and single-column mobile form. |
 | `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. |
 | `/settings` | Functional | Display preferences remain app-wide and `localStorage`-backed. The page now uses responsive cards, stacked controls and mobile-safe spacing while preserving dark/light, language, locale, currency, date, compact-number and sound settings. |
@@ -63,7 +70,7 @@ are actually marked Won.
 components/
   layout/
     AppShell.tsx       — client wrapper; mounts `CRMStoreProvider`, applies theme/language settings, reserves mobile top/bottom chrome space, adds horizontal safe-area insets, and closes the mobile menu on route change or when crossing into the desktop breakpoint
-    AppSidebar.tsx     — desktop-only (`lg+`) 232px → 64px collapsible sidebar; grain-nav burnt-orange treatment, theme toggle and shared exported nav definition used by the mobile chrome
+    AppSidebar.tsx     — desktop-only (`lg+`) 232px → 64px collapsible sidebar; grain-nav burnt-orange treatment, theme toggle and shared exported nav definition used by the mobile chrome. The footer's "Arbetsyta"/khyte.io workspace-identity block is gone from this desktop sidebar (unused chrome); `MobileChrome.tsx`'s own copy of the same block is untouched — that is a separate mobile nav drawer, not this component
     MobileChrome.tsx   — fixed mobile header + five-item bottom navigation (Dashboard, Prospects, Pipeline, Tasks, More). `primaryHrefs` lists `/prospects`, not the new lightweight `/leads` — Leads is reachable only via the `More` drawer. `More` opens an inert-while-closed, focus-trapped, Escape-dismissible navigation drawer with theme control; all chrome handles top/bottom/left/right safe-area insets
     Topbar.tsx         — optional sticky action bar; returns `null` when a route supplies no actions
   crm/
@@ -73,7 +80,7 @@ components/
     PipelineBoard.tsx  — dnd-kit kanban with mouse, delayed touch and keyboard sensors, drag overlay/drop feedback, mobile snap/peek columns and natural phone height. Shared `useBoardPan` and `useEdgeAutoScroll` behavior remains; empty slots still open the stage-scoped off-board picker
     LeadCard.tsx       — touch-safe kanban card with mobile-sized type/controls, visible focus treatment, company/contact/priority/value and amber hover glow
     StrategyBoard.tsx  — store-derived dnd-kit strategy board with mouse/touch/keyboard sensors, mobile snap/peek columns, visible phone actions, and responsive inline add/rename forms
-    DetailDrawer.tsx   — portaled slide-in drawer; full-width/full-`dvh` with square edges and left/right/top/bottom safe-area handling on phones, 520px on desktop. `role="dialog"`, focus trap, initial focus, Escape, body-scroll lock, focus return, `aria-hidden`/`inert` closed state and labelled inline editors. Retains its payload for the exit animation. Company name (h2 header) and Primary Contact's name are click-to-edit inline text fields that write through to the shared `Company`/`Contact` records via `updateCompany`/`updateContact`. Stage and Priority are inline-edited via the new `InlineSelect` popover (commits immediately, no draft). A 5th Deal tile, "Followed up by" (`followedUpBy` on Opportunity — who on the team is following this prospect up), is also an `InlineSelect`, using `''` as an unassigned sentinel since the component needs a real string value. Notes are a running, deletable log rather than one field to overwrite: a small compose textarea (⌘↵ or a button) calls `addNote()`, each submission becomes its own timeline entry, and the timeline renders a hover-visible delete button per entry via `NotesTimeline`'s `onDelete`. The old single-field notes editor and its dirty/discard `ConfirmDialog` flow are gone entirely
+    DetailDrawer.tsx   — portaled slide-in drawer; full-width/full-`dvh` with square edges and left/right/top/bottom safe-area handling on phones, 520px on desktop. `role="dialog"`, focus trap, initial focus, Escape, body-scroll lock, focus return, `aria-hidden`/`inert` closed state and labelled inline editors. Retains its payload for the exit animation. Company name (h2 header) and Primary Contact's name are click-to-edit inline text fields that write through to the shared `Company`/`Contact` records via `updateCompany`/`updateContact`. Stage and Priority are inline-edited via the new `InlineSelect` popover (commits immediately, no draft). A 5th Deal tile, "Followed up by" (`followedUpBy` on Opportunity — who on the team is following this prospect up), is also an `InlineSelect`, using `''` as an unassigned sentinel since the component needs a real string value. Notes are a running, deletable log rather than one field to overwrite: a small compose textarea (⌘↵ or a button) calls `addNote()`, each submission becomes its own timeline entry, and the timeline renders a hover-visible delete button per entry via `NotesTimeline`'s `onDelete`. The old single-field notes editor and its dirty/discard `ConfirmDialog` flow are gone entirely. The footer now also carries a delete (`Trash2`) button behind a `ConfirmDialog` — permanent, calls `removeOpportunity` then closes the drawer; the database cascades notes/strategy cards, and the store prunes both locally the same way `removeStrategyColumn` already did. "Senaste kontakt" (`lastInteraction`) in the footer is now also click-to-edit inline (a `type="date"` input, same pattern as `followUpDate`'s editor) — it used to be set once at creation by `AddProspectModal` and never touched again
     NotesTimeline.tsx  — chronological notes with AI-extracted indicator; takes an optional `onDelete?: (noteId: string) => void` that renders a hover-visible `Trash2` delete button per entry (omit the prop for a read-only timeline)
     FilterBar.tsx      — stage + priority filters with semantic expanded/pressed state, inert collapsed content, horizontally scrollable mobile chips and 44px phone targets
     ViewToggle.tsx     — labelled table/board toggle group with pressed states and full-width phone layout
@@ -231,6 +238,22 @@ gestures:
 the board also stayed permanently un-pannable. This predated the panning work
 and was only visible as a stuck highlight.
 
+**Reordering within a column now persists.** `Opportunity.order` (`sort_order`
+in Postgres, added by `20260829120000_opportunity_sort_order.sql`) is the
+missing piece that used to make a same-column drag snap back — `dnd-kit`'s
+`SortableContext` previewed the reorder during the drag, but nothing recorded
+a position, so the render right after `onDragEnd` fell back to stage-filter
+order and the card visibly returned to where it started. `getCardsByStage` now
+sorts by `order`, and `handleDragEnd` computes a `targetIndex` from the card
+dropped on (or `undefined`, meaning "append", when dropped on empty column
+space) and calls the store's `moveOpportunityCard(cardId, newStage,
+targetIndex)` — which resequences the destination column densely, the same
+`splice`-and-reindex approach `moveStrategyCard` already used for strategy
+cards. Replaces the old `moveOpportunityStage`, which only ever changed stage
+and never touched position. `addOpportunity` and `addToPipeline` both append
+new cards to the end of their destination stage rather than leaving `order`
+undefined or arbitrary.
+
 **Empty column slots open a picker of off-board prospects, not the "add
 prospect" modal.** A lightly-tinted, empty card silhouette (`bg-white/[0.04]`,
 dotted border) rather than a "Tomt"/"Empty" label — the tint alone signals a
@@ -379,10 +402,10 @@ actions, because Server Actions are reachable by direct POST and a request that
 never renders a page never passes through a page guard.
 
 **`requireAuth()` sits at the two choke points in `app/actions/crm.ts`, not in
-all 20 bodies** — inside `run()` (everything that touches the database) and
-`guardedOk()` (the early returns that never reach `run()`). A 21st action
+all 21 bodies** — inside `run()` (everything that touches the database) and
+`guardedOk()` (the early returns that never reach `run()`). A 22nd action
 cannot be added without a session check unless it bypasses both. Both early-out
-paths needed it: the 20 `skipUnconfigured()` returns would have been a real hole
+paths needed it: the 21 `skipUnconfigured()` returns would have been a real hole
 on a credential-less preview deploy, and the 8
 `Object.keys(payload).length === 0` returns answered `ok: true` to an
 unauthenticated probe.
@@ -552,6 +575,49 @@ re-checks the display token itself rather than trusting `proxy.ts` — a Route
 Handler is reachable by direct fetch — and returns only a timestamp and a
 count, so a leaked stamp reveals nothing but "something changed".
 
+### Goals timeline (lib/goal-period.ts + app/goals/timeline/)
+
+**`annual` and `quarter` were two hardcoded boxes with no date behind either
+— "this quarter" was a name a goal was typed into, never a real deadline.**
+That made the two bands impossible to sort against each other and gave neither
+anywhere to put "actually, this is due March 15th". They are now one merged
+`GoalSection` value, `'goal'`, carrying an optional `targetDate` (same
+convention as `PersonalGoal.targetDate`) instead of a picked cadence.
+`north_star`, `weekly`, `principle` and `not_now` are untouched — this only
+ever collapsed the two dated-but-undated bands.
+
+**The cadence label is derived, not stored.** `lib/goal-period.ts`'s
+`goalPeriodFor(targetDate, now)` buckets a date the way it actually gets
+tracked: within ~6 weeks groups by ISO week ("Vecka 35" — built on
+`weekStart()` from `board-metrics.ts` rather than reimplementing Monday
+alignment a second time), within the current year groups by quarter ("Q3
+2026"), further out groups by bare year. No month-level bucket exists — any
+date in the current calendar month is by construction within 31 days, which
+the week bucket always catches first, so a month bucket could never fire. A
+goal with no `targetDate` sorts into an explicit "Ingen deadline" group, always
+last regardless of how its key would otherwise sort.
+
+**`/goals/timeline` is a new read view**, grouping every `goal`-family row by
+that derived period, most-imminent group first. Deliberately not editable —
+`GoalsEditor` already owns writes to these rows in its one merged `Mål`
+section (title/status/progress/date, replacing the old two-column
+annual/quarter grid), and a second place to edit the same field would just be
+a second place it could go stale. The page exists for the one thing the editor
+cannot show: what's coming up soonest, since the editor lists rows in manual
+`sort_order`, not by date.
+
+**The wallpaper no longer draws the north star statement.** The section, its
+editor row, and the DB rows are all untouched — this is purely "stop drawing
+it", not a data change, done because the operator wants the header to read as
+pure current-state (wordmark + KPIs) rather than mixing in a directional
+statement. Its "quarter" column (still capped at 3, per the existing
+`CAPS.quarter` design rule) now sources from the merged `goal` family sorted by
+soonest `targetDate` — undated goals sort last — rather than the old fixed
+`quarter` section in whatever order it was typed. Migration:
+`20260830120000_goal_target_date.sql` — adds the enum value, adds the column,
+backfills existing `annual`/`quarter` rows to `goal` with `target_date` left
+null (neither section ever had a date to preserve).
+
 ### Dialog behaviour (lib/hooks/useDialog.ts)
 
 `useDialogBehavior({ open, onClose, panelRef, shouldIgnoreEscape?, suspended? })`
@@ -574,6 +640,42 @@ the listener stays stable:
 | `shouldIgnoreEscape()` | An inline editor inside the panel that owns Esc as *cancel* (the drawer's note editor). Returning true skips the close entirely |
 | `suspended()` | A dialog stacked *above* this one (`ConfirmDialog`). The outer dialog registers first, so without standing down its Esc would close the whole panel out from under the confirmation and its Tab trap would yank focus back down |
 
+### Company enrichment fields (lib/types, AddCompanyModal.tsx, app/companies/page.tsx)
+
+**Three new optional fields on `Company`: `revenue?: number`, `employeeCount?:
+number`, `about?: string`.** Explicitly prep for a future automatic-scraping
+pass — nothing scrapes anything yet, these are just plain fields a person (or
+later, an integration) can fill in, with no source/confidence tracking, since
+that only matters once something other than a person is writing to them.
+
+**`revenue` follows `Opportunity.dealValue`'s exact base-currency convention**
+— stored as a plain number in `BASE_CURRENCY` (SEK), converted at the
+display/input boundary only, via `useFormat()`'s `fmt.toBase()`/`fmt.fromBase()`.
+Getting this boundary wrong silently corrupts the figure the moment someone's
+display currency isn't SEK, the same risk `dealValue` already carries — see
+Display Settings and localization above. `employeeCount` is a plain integer,
+no conversion. `about` is free text.
+
+Editable in two places, both reusing existing patterns rather than inventing
+new ones: `AddCompanyModal.tsx` gained a revenue field with the same
+currency-prefixed-input treatment as `AddProspectModal`'s deal-value field
+(`symbolPadding()` lookup and all — duplicated locally rather than shared,
+same call `AddProspectModal` already made for having no third consumer yet),
+an employee-count number input, and an about textarea. `CompanyDrawer` (in
+`app/companies/page.tsx`) gained a companies-only click-to-edit inline section
+for all three, mirroring `DetailDrawer`'s one-field-at-a-time editor state
+machine exactly. An unset field renders an inviting empty state (a subtle
+placeholder, not blank space) rather than being omitted — the entire reason
+these fields exist is somewhere for a future scrape to land, so looking empty
+by design would read as a missing feature instead of an unfilled one.
+
+Migration: `20260830130000_company_enrichment.sql` — three nullable columns
+on `public.companies`, no backfill needed since every existing row is
+correctly `null` (unset) rather than needing a value.
+
+Contacts deliberately did **not** get the same treatment — scoped to companies
+only for now.
+
 ### Data Layer
 Full detail in `docs/database.md`. Shape of it:
 
@@ -584,8 +686,10 @@ Full detail in `docs/database.md`. Shape of it:
 | `supabase/migrations/20260824120000_task_assignee.sql` | `crm_colleague` enum (`erik`/`abdi`/`hai`), nullable `tasks.assignee` column — plain enum, not a foreign key, same reasoning as `crm_priority` (no real accounts yet, see Tasks) |
 | `supabase/migrations/20260824170000_task_archive.sql` | `tasks.archived_at`. Applied |
 | `supabase/migrations/20260825120000_leads.sql` | new `public.leads` table (`id`, `owner_id`, `company_name text not null`, `priority`, `notes`, timestamps), RLS + owner policy, index on `owner_id`, `updated_at` trigger. Deliberately no FK to companies/contacts — promoting a Lead to a Prospect is what creates those records, and the Lead row is deleted at that point. Applied |
-| `supabase/migrations/20260825140000_lead_contact_fields.sql` | adds `contact_name`, `connection`, `source`, `followed_up_by crm_colleague` (reuses the enum from `task_assignee` above) to `public.leads` — pending |
-| `supabase/migrations/20260826120000_opportunity_followed_up_by.sql` | adds `followed_up_by crm_colleague` to `public.opportunities` — pending |
+| `supabase/migrations/20260825140000_lead_contact_fields.sql` | adds `contact_name`, `connection`, `source`, `followed_up_by crm_colleague` (reuses the enum from `task_assignee` above) to `public.leads`. Applied |
+| `supabase/migrations/20260826120000_opportunity_followed_up_by.sql` | adds `followed_up_by crm_colleague` to `public.opportunities`. Applied |
+| `supabase/migrations/20260826140000_goals.sql`, `20260828120000_personal_goals.sql`, `20260828140000_crm_events.sql`, `20260828140100_weekly_goal_section.sql` | the direction-board schema — see Derived board metrics. Applied |
+| `supabase/migrations/20260829120000_opportunity_sort_order.sql` | adds `opportunities.sort_order`, backfilled per-stage from `created_at desc` so no card visibly moved. Applied |
 | `supabase/seed.sql` | the former mock data as real rows, fixed UUIDs, re-runnable |
 | `supabase/config.toml` | local CLI config from `supabase init`; not a project link |
 | `scripts/supabase.mjs` | `npm run supabase -- <cmd>` — runs any CLI command with `SUPABASE_ACCESS_TOKEN` taken from `.env.local`, which overrides the machine-global `~/.supabase/access-token` |
@@ -595,7 +699,7 @@ Full detail in `docs/database.md`. Shape of it:
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
 | `lib/db/queries.ts` | `loadSnapshot()` — reads all eight CRM tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing. **`loadGoals()`** is a second, deliberately separate read for the direction-board tables (`goals`, `goal_metrics`, `personal_goals`) — not a key on `CRMSnapshot`, and its rows never enter the CRM store. It also returns the current week's event counts and the derived revenue/customers/pipeline totals in the same pass, so a goal and its number always describe the same instant, and archives any finished week before counting this one. **`loadGoalsVersion()`** is the cheap change-stamp the wallpaper polls. The wallpaper reloads every 5 minutes; folding it into the snapshot would drag the whole working set through Postgres on each refresh to render three small tables |
-| `app/actions/crm.ts` | 20 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks, returning `{ ok }` rather than throwing. Every one is gated on the session via `run()`/`guardedOk()` — see Auth gate |
+| `app/actions/crm.ts` | 21 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks/opportunities, returning `{ ok }` rather than throwing. Every one is gated on the session via `run()`/`guardedOk()` — see Auth gate |
 | `app/actions/auth.ts` | `login` / `logout`. Kept separate from `crm.ts`: those are narrow writes the store calls after an optimistic update, these are form handlers that set cookies and redirect |
 | `lib/store/provider.tsx` | `CRMStoreProvider` — builds one store per request **containing** the snapshot, so the server HTML and the hydration pass both render real rows; `useCRMStore` resolves it from context |
 
@@ -630,11 +734,8 @@ silently. Demo mode still needs them.
 | `npm run db:link -- --project-ref <ref>` | links the CLI to a project |
 | `npm run supabase -- <cmd>` | any other CLI command, same scoped auth |
 
-Seven migration files exist; five are applied to `wmnobqhypkocirfybqsj`
-(`init`, `strategy_headlines`, `task_assignee`, `task_archive`, `leads`). Two are
-**pending** — `20260825140000_lead_contact_fields` and
-`20260826120000_opportunity_followed_up_by`, confirmed via `npm run db:status`
-— run `npm run db:push`. The headline migration was pushed through the
+Twelve migration files exist; all are applied to `wmnobqhypkocirfybqsj` (see the
+opening summary for the most recent ones). The headline migration was pushed through the
 `SUPABASE_DB_URL` path while the access token was stale, which is exactly the
 fallback that path exists for — schema changes never need a Management API
 token. `task_assignee` reached the database the same way; its `--yes` push was
@@ -680,15 +781,16 @@ promptly. See the fixed entry under Known issues.
 Every data mutation below also persists via the matching Server Action; failures
 land in `syncError` and are logged, without rolling back the optimistic change.
 Actions:
-- `addOpportunity` — new prospect from `AddProspectModal`
-- `addToPipeline` — sets `inPipeline: true` and resets stage to `'New'`
-- `moveOpportunityStage`, `updateOpportunity` — drag/drop pipeline updates and general field edits (stage/priority/followedUpBy/dealValue/followUpDate/nextStep/tags from `DetailDrawer`'s inline editors)
+- `addOpportunity` — new prospect from `AddProspectModal`; files it at the end of its stage's column rather than trusting the caller's placeholder `order`
+- `addToPipeline` — sets `inPipeline: true`, resets stage to `'New'` (or a given stage), and appends to that stage's column
+- `moveOpportunityCard`, `updateOpportunity` — drag/drop pipeline stage changes and reordering (resequences the destination column so `order` stays dense, same as `moveStrategyCard`), and general field edits (stage/priority/followedUpBy/dealValue/followUpDate/nextStep/tags from `DetailDrawer`'s inline editors)
+- `removeOpportunity` — permanent prospect delete from `DetailDrawer`'s footer; prunes the opportunity's own notes/strategy cards locally (the database cascades them)
 - `addNote`, `dismissNote`, `applyNote`, `deleteNote` — note management; apply updates matching opportunity, delete backs `NotesTimeline`'s per-entry delete button
 - `addStrategyColumn`, `renameStrategyColumn`, `removeStrategyColumn` — strategy headlines (removing one prunes its cards locally; the database cascades)
 - `moveStrategyCard`, `addStrategyCard` — strategy card management; a move resequences the destination lane so `order` stays dense
 - `addTask`, `toggleTaskComplete` — task management
-- `addCompany`, `updateCompany`, `addContact`, `updateContact` — company/contact records; the update pair backs `DetailDrawer`'s click-to-edit company/contact name fields
-- `addLead`, `updateLead`, `removeLead` — the new lightweight Lead entity; `removeLead` is permanent, used both when a lead is promoted into a Prospect and when removed outright
+- `addCompany`, `updateCompany`, `addContact`, `updateContact` — company/contact records; `updateCompany` backs both `DetailDrawer`'s click-to-edit company-name field and `CompanyDrawer`'s click-to-edit enrichment fields (revenue/employeeCount/about); `updateContact` backs `DetailDrawer`'s contact-name field
+- `addLead`, `updateLead`, `removeLead` — the new lightweight Lead entity; `updateLead` backs `LeadDrawer`'s click-to-edit contact name/source/notes fields; `removeLead` is permanent, used both when a lead is promoted into a Prospect and when removed outright
 - `syncError` / `clearSyncError` — last failed write (set and logged, not yet rendered)
 - `toggleSidebar`, `setSearchQuery` — UI state
 - `toggleTheme`, `setSetting`, `resetSettings`, `hydrateSettings` — display preferences and interface language, persisted to `localStorage` key `khyte-settings` (`khyte-theme` is still read as a legacy fallback for pre-settings builds)
@@ -720,9 +822,9 @@ on the `sounds` setting; the module itself does not read settings.
 - `Priority` — `'low' | 'medium' | 'high' | 'critical'`
 - `Stage` — 9 pipeline stages
 - `ColleagueId` — `'erik' | 'abdi' | 'hai'`, the fixed assignment roster (see Tasks); metadata (name, avatar color) lives in `lib/colleagues.ts`, not this file
-- `Company`, `Contact`, `Opportunity` (with `inPipeline` — prospects only appear on the pipeline board once explicitly added, and now `followedUpBy?: ColleagueId` — who on the team is following this prospect up), `Lead` (new: `{ id, companyName (required), contactName?, connection?, source?, followedUpBy?: ColleagueId, priority, notes, createdAt }` — raw, unqualified interest with no company/contact/opportunity records until promoted to a Prospect, at which point the Lead row is deleted; `Lead.followedUpBy` means who *added* the lead, a different scope from `Opportunity.followedUpBy`'s "who's following it up"), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
+- `Company` (with three new optional enrichment fields: `revenue?: number` — base-currency, same convention as `Opportunity.dealValue`; `employeeCount?: number`; `about?: string` — see Company enrichment fields above), `Contact`, `Opportunity` (with `inPipeline` — prospects only appear on the pipeline board once explicitly added, `followedUpBy?: ColleagueId` — who on the team is following this prospect up, `order: number` — position within its stage's column on the pipeline board, see Pipeline board interaction — and `lastInteraction` is now editable after creation, not just set once at capture time), `Lead` (new: `{ id, companyName (required), contactName?, connection?, source?, followedUpBy?: ColleagueId, priority, notes, createdAt }` — raw, unqualified interest with no company/contact/opportunity records until promoted to a Prospect, at which point the Lead row is deleted; `Lead.followedUpBy` means who *added* the lead, a different scope from `Opportunity.followedUpBy`'s "who's following it up"), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
 - `PipelineStage`
-- **Direction board (Khyte-internal):** `GoalSection` — `'north_star' | 'annual' | 'quarter' | 'weekly' | 'principle' | 'not_now'`, a closed set because the wallpaper has fixed regions and a goal in an unknown section has nowhere to be drawn; `GoalStatus` — `'on_track' | 'at_risk' | 'off_track' | 'done'`; `MetricUnit` — `'currency' | 'number' | 'percent'`, a rendering hint rather than a stored format. `Goal` (`progress?` undefined means "no bar" — distinct from `0`, which draws an empty one), `GoalMetric` (`targetValue?` undefined means "just show the number"), `PersonalGoal` (keyed to a `ColleagueId`; carries an optional `targetDate` and `progress`, and is deliberately **not** linked to a company `Goal` — it is the operator's own life shown on their own wallpaper, not a contribution rolling up into a Khyte objective). `Goal` also carries `metricKind`/`metricTarget` for counted weekly rows. `CrmEventKind` names the four countable CRM actions. `GoalsSnapshot` bundles the rows plus `weeklyCounts` and `totals` for `loadGoals()` — deliberately **not** part of `CRMSnapshot`
+- **Direction board (Khyte-internal):** `GoalSection` — `'north_star' | 'goal' | 'weekly' | 'principle' | 'not_now'` (the former `'annual' | 'quarter'` pair is merged into one dated `'goal'` family — see Goals timeline above), a closed set because the wallpaper has fixed regions and a goal in an unknown section has nowhere to be drawn; `GoalStatus` — `'on_track' | 'at_risk' | 'off_track' | 'done'`; `MetricUnit` — `'currency' | 'number' | 'percent'`, a rendering hint rather than a stored format. `Goal` (`progress?` undefined means "no bar" — distinct from `0`, which draws an empty one; `targetDate?: string`, same convention as `PersonalGoal.targetDate`, only meaningful on the `goal` family), `GoalMetric` (`targetValue?` undefined means "just show the number"), `PersonalGoal` (keyed to a `ColleagueId`; carries an optional `targetDate` and `progress`, and is deliberately **not** linked to a company `Goal` — it is the operator's own life shown on their own wallpaper, not a contribution rolling up into a Khyte objective). `Goal` also carries `metricKind`/`metricTarget` for counted weekly rows. `CrmEventKind` names the four countable CRM actions. `GoalsSnapshot` bundles the rows plus `weeklyCounts` and `totals` for `loadGoals()` — deliberately **not** part of `CRMSnapshot`
 - `Settings` — display preferences (`theme`, `currency`, `locale`, `dateFormat`, `compactNumbers`), plus `CurrencyCode`, `LocaleCode`, `DateFormat`
 
 ### Design System — "Darkroom Operator"
@@ -877,13 +979,17 @@ prospects board's cards separate from the page.
   `20260819120000_init.sql` still have no session to scope against, and the
   secret key still bypasses them. Per-user auth is unchanged as a next step —
   what landed is a lock on the door, not a user model.
-- Delete flows for companies, contacts, opportunities and strategy content —
-  those are still create + update only. Tasks, notes, leads and everything on
-  the direction board are the exceptions: `deleteTask` (reachable only from the
-  task archive), `deleteNote` (the per-entry `Trash2` button in `NotesTimeline`,
-  wired only in `DetailDrawer`), `deleteLead` (permanent — used both when a lead
-  is promoted into a Prospect, via `removeLead`, and when discarded outright)
-  and `deleteGoal`/`deleteGoalMetric`/`deletePersonalGoal` (the per-row `Trash2` in
+- Delete flows for companies, contacts and strategy content — those are still
+  create + update only. Tasks, notes, leads, opportunities (prospects) and
+  everything on the direction board are the exceptions: `deleteTask` (reachable
+  only from the task archive), `deleteNote` (the per-entry `Trash2` button in
+  `NotesTimeline`, wired only in `DetailDrawer`), `deleteLead` (permanent — the
+  `Trash2` button behind a `ConfirmDialog` in `LeadDrawer`, and used when a lead
+  is promoted into a Prospect via `removeLead`), `deleteOpportunity` (permanent
+  — the `Trash2` button behind a `ConfirmDialog` in `DetailDrawer`'s footer via
+  `removeOpportunity`; notes and strategy cards cascade in the database and are
+  pruned locally the same way `removeStrategyColumn` prunes its cards) and
+  `deleteGoal`/`deleteGoalMetric`/`deletePersonalGoal` (the per-row `Trash2` in
   `GoalsEditor`, immediate and unconfirmed — a goal row is cheap to retype) all
   exist end to end (store or local state → Server Action → `delete().eq('id', …)`)
 - Realtime — two open tabs do not see each other's changes until reload
@@ -895,14 +1001,18 @@ prospects board's cards separate from the page.
 - Dedicated edit flows for companies, contacts, opportunities (add modals
   exist; there is still no "Edit Company"/"Edit Contact" modal). `DetailDrawer`
   now covers most of this piecemeal instead: opportunity stage, priority,
-  followed-up-by, deal value, follow-up date, next step and tags are all
-  click-to-edit inline, and the company name / primary contact name write
-  through to the shared `Company`/`Contact` records. Notes are no longer a
-  single editable field — they're an append-only, individually deletable log
-  (see Components: `DetailDrawer.tsx`). What remains genuinely uneditable:
-  company industry/size/location/tags, contact role/email/linkedin/phone, and
-  everything on Lead outside its own drawer/promote flow. **Tasks** remain
-  fully editable inline behind the pencil
+  followed-up-by, deal value, follow-up date, last-contact date, next step and
+  tags are all click-to-edit inline, and the company name / primary contact
+  name write through to the shared `Company`/`Contact` records. Notes are no
+  longer a single editable field — they're an append-only, individually
+  deletable log (see Components: `DetailDrawer.tsx`). `CompanyDrawer` (in
+  `app/companies/page.tsx`) picked up the same click-to-edit treatment for its
+  three new enrichment fields (revenue/employee count/about — see Company
+  enrichment fields above), and `LeadDrawer` (in `app/leads/page.tsx`) picked
+  it up for contact name, source and notes. What remains genuinely
+  uneditable: company industry/size/location/tags, contact
+  role/email/linkedin/phone, and Lead's priority/connection/followed-by.
+  **Tasks** remain fully editable inline behind the pencil
 - Loading states, and per-route `error.tsx` boundaries (only the root `global-error.tsx` exists)
 - **Reordering on the direction board.** `sort_order` exists on all the goals
   tables and every read honours it, but nothing in `GoalsEditor` writes it —
@@ -953,6 +1063,172 @@ prospects board's cards separate from the page.
 7. **Physical mobile acceptance pass** — validate long-press board drag/drop,
    notch/home-indicator insets and virtual-keyboard resizing on real iOS and
    Android hardware. Browser viewport QA is complete; this is feel/hardware QA
+8. **Tasks ↔ weekly momentum view.** Not the wallpaper — the operator decided
+   tasks connecting to the wallpaper would be redundant with the non-negotiables
+   already there. Instead, `/tasks` (or a new view beside it) should show which
+   tasks were *completed* within the same Monday-start week window
+   `weekStart()` (`lib/db/board-metrics.ts`) already uses for the CRM event
+   counters, per colleague, next to that week's non-negotiable counts — "here's
+   what each person actually did this week" beside "here's what the team
+   counted this week". `Task` has no `completedAt`, only `completed: boolean`
+   and `dueDate` — a task finished today and one finished three weeks ago look
+   identical, so this needs a `completed_at timestamptz` column before the
+   window filter means anything. Small, additive migration; not started
+9. **Weekly AI summary.** A scheduled (cron-driven, weekly) job that reads the
+   past week's `crm_events`, completed tasks (see #8) and notes, and writes a
+   short digest: strongest team result, strongest individual contribution, and
+   suggested next steps. Explicitly a step *after* #8 — a summary of "who did
+   what" needs the completed-tasks-by-week data to exist first. Not started;
+   see the **AI Assistant design** section below for the shared reasoning layer
+   this and the assistant in #10 should both be built on, rather than each
+   rolling its own prompt-and-fetch logic
+10. **Context-aware assistant ("Donna").** The highest-leverage and
+    highest-risk item on this list — worth its own design pass rather than a
+    one-line bullet. See **AI Assistant design (Donna)** immediately below.
+
+---
+
+## AI Assistant design (Donna)
+
+**Priority: build this before anything else in "Next logical steps" once
+accounts (#1) land.** Everything else on that list is a bounded, mechanical
+change to one file or one table. This one is not — it reads across the entire
+CRM, and getting the *retrieval* and *trust* boundaries wrong produces an
+assistant that is confidently, plausibly wrong, which is worse than no
+assistant. An agent picking this up should treat this section as the spec, not
+as inspiration for a fresh design — the constraints below come from mistakes
+that are cheap to describe in advance and expensive to discover in production.
+
+**What it's for.** Not a chatbot bolted onto the dashboard. The brief was
+"a context-aware agent like Donna in Suits" — someone who has read everything,
+remembers what everyone else forgot, and taps you on the shoulder with the one
+thing you were about to miss. Concretely: surfacing loose ends (a prospect gone
+quiet, a follow-up date that passed with no note, a task overdue against a deal
+that's supposedly "Won this quarter") and opportunities still worth developing
+(a Contacted-stage lead with no activity in three weeks, a strategy card marked
+important with no task behind it). It is a **read-and-suggest** layer, not a
+read-and-act one — see Guardrails below for why.
+
+### Why this is hard to get right (read before designing anything else)
+
+- **Accuracy compounds against the CRM's own honesty rules.** The rest of this
+  codebase draws a hard line between *current state* (recomputed from
+  `opportunities` every read — moving a deal out of Won lowers revenue again)
+  and *events* (append-only facts in `crm_events` that never change once
+  logged — see Derived board metrics above). An assistant that blends these
+  carelessly will say things that are true of neither: e.g. "you booked 5
+  meetings this week" read from current stage instead of from `crm_events`
+  would silently drop every meeting whose deal later moved past that stage.
+  **The assistant must inherit this same current-state-vs-event split**, never
+  invent a third way of reading the data.
+- **Context window vs. correctness.** "Context-aware" cannot mean "dump the
+  whole CRM into the prompt every time" — this is a live-editable, growing
+  dataset (opportunities, notes, tasks, strategy cards, goals, events), and an
+  LLM given too much loosely-relevant context degrades rather than improves
+  (it starts citing the wrong prospect, or a stale note, with total
+  confidence). This needs a **retrieval step before the reasoning step** —
+  pull only what's relevant to the question or the scheduled sweep, not
+  everything. See Architecture below.
+- **Silent staleness is worse than a visible gap.** The whole existing app is
+  built around "never show a number that could be lying" (see the derived
+  board metrics section, the read-your-own-write pattern in `updateOpportunity`
+  for stage-change events). An assistant that caches a summary of "what's going
+  on with Meridian Labs" and shows it three days stale, with no timestamp, is a
+  worse failure mode than not having the feature — it actively misleads someone
+  who trusts the app to always be honest. **Every surfaced insight needs a
+  visible "as of" timestamp and the specific records it was computed from**,
+  the same way the weekly non-negotiables show "2/5" rather than just "on
+  track".
+- **A false positive costs trust permanently.** A human ("did you follow up
+  with Nordvik?") tolerates being wrong sometimes. An automated system that is
+  wrong even once ("Nordvik has gone quiet" when Marcus called yesterday and
+  it just hadn't been logged as a note yet) trains the operator to ignore it
+  from then on, and the whole feature is dead the first time that happens.
+  Bias every heuristic toward **recall over precision for a first pass, but
+  require an explicit confidence/reasoning trail per suggestion** so a wrong
+  one is at least explicable and fixable rather than a mysterious black box.
+
+### Architecture
+
+Three layers, deliberately separate — this mirrors the "current state vs.
+events" split already proven out elsewhere in this codebase rather than
+inventing a new shape:
+
+1. **Fact layer (no LLM involved).** A set of plain SQL/TypeScript queries —
+   not prompts — that compute the boring, deterministic parts: "opportunities
+   with no note or stage change in N days", "tasks overdue by M days against
+   an open opportunity", "leads sitting in the inbox longer than the median
+   time-to-promotion", "strategy cards with no task referencing the same
+   opportunity". Each of these is small, testable, and exactly as trustworthy
+   as any other query in `lib/db/queries.ts` — because it *is* one. This layer
+   produces **candidates**, not prose. Reuses `crm_events` and the existing
+   snapshot reads; adds new narrow queries alongside `board-metrics.ts` rather
+   than a new subsystem.
+2. **Reasoning layer (LLM, narrow context per call).** Takes a *small*, fact-
+   layer-selected bundle — one prospect's full history (its notes, stage
+   changes, related tasks, strategy cards), not the whole CRM — and asks a
+   single, scoped question: "is this genuinely stalled, and why, in one
+   sentence." This is where the Claude API / Agent SDK belongs (see the
+   `claude-api` skill in this environment for current model/pricing/tool-use
+   guidance before building this). Never let this layer decide *what counts as
+   a candidate* — that's the fact layer's job, kept separate specifically so
+   the expensive, fuzzy part of the system can't silently change which
+   prospects even get looked at.
+3. **Delivery layer.** Where the output actually surfaces. Candidates for
+   this, roughly in order of how much of the rest of the app they reuse: a
+   dashboard card (the dashboard's `CaptureBox`/`SuggestionPreviewCard` pattern
+   already exists for "AI extracted this, apply or dismiss" — see Components
+   above, though both are currently orphaned since `/inbox` was removed and
+   would need re-homing here), a digest similar to the weekly AI summary
+   (#9), or a dedicated `/assistant` surface. Whichever is chosen, it must
+   carry the same apply/dismiss affordance `SuggestionPreviewCard` already
+   has — a suggestion is not a fact until a human confirms it, which is the
+   same trust boundary `applyNote()` already enforces for AI-extracted notes
+   today (see State Management: `applyNote`).
+
+**Scheduling.** There is no cron in this app today — the closest precedent is
+`archiveFinishedWeeks()` running opportunistically on read (wallpaper poll)
+rather than on a schedule (see Derived board metrics). The same
+run-on-next-read approach likely fits the weekly summary (#9); a `/assistant`
+sweep is more plausibly triggered on a real schedule (Vercel Cron or similar)
+since "tap someone on the shoulder within a day of a lead going quiet" doesn't
+tolerate waiting for an unrelated page load the way a weekly digest does. Pick
+per-feature; don't force one mechanism on both.
+
+### Guardrails (non-negotiable, not a nice-to-have)
+
+- **Read-and-suggest, never read-and-act.** This assistant must never call
+  `updateOpportunity`, `deleteTask`, or any other mutating Server Action
+  directly. It produces suggestions a human applies, mirroring `applyNote()`'s
+  existing apply/dismiss pattern exactly — not a new, more autonomous pattern.
+  The moment this assistant can silently change a stage or close a task on its
+  own judgment, a wrong inference becomes a wrong CRM record instead of an
+  ignorable notification.
+- **Every suggestion cites its sources.** Not "Nordvik looks stalled" — "no
+  note or stage change since {date}, last activity was {event}, opportunity
+  last touched by {colleague}". If the reasoning layer can't point at the
+  specific rows that produced a claim, don't ship the claim.
+- **No new implicit authority scope.** The whole app currently runs on one
+  shared password with no per-user identity (see Auth gate, and "What does NOT
+  exist: Accounts"). An assistant that reads across the entire team's
+  notes/tasks/deals is fine under that model *today*, but design its data
+  access as if per-user scoping (`owner_id`) already existed and will need to
+  filter by it — retrofitting an assistant that was built assuming
+  unrestricted read access, once accounts land, is much harder than building
+  it scoped from the start.
+- **Cost is a real constraint, not an afterthought.** A sweep over every
+  prospect on every page load would be both slow and expensive at LLM-call
+  cost. The fact layer's whole job is to make the reasoning layer's job small
+  — check candidate counts stay in the tens, not the hundreds, before wiring
+  this to a real schedule.
+
+**Sequencing recommendation for whoever builds this:** ship the fact layer
+first, entirely on its own, as a plain list ("N prospects with no activity in
+14+ days") with zero LLM involved — that alone is useful, immediately
+trustworthy (it's just a query), and proves out the candidate-selection logic
+before spending any LLM budget reasoning about it. Add the reasoning layer
+only once the fact layer's candidate list has been eyeballed against reality
+for a few weeks and found to actually track "things a person would flag."
 
 ---
 

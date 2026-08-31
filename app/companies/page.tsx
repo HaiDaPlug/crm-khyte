@@ -12,6 +12,14 @@ import { Company, Opportunity, Contact } from '@/lib/types'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 import { useDialogBehavior } from '@/lib/hooks/useDialog'
 
+/** Same lookup AddCompanyModal's revenue field uses — Tailwind needs whole
+ *  class names at build time, so the currency symbol's width can't interpolate. */
+function symbolPadding(symbol: string): string {
+  if (symbol.length <= 1) return 'pl-11'
+  if (symbol.length === 2) return 'pl-14'
+  return 'pl-[4.5rem]'
+}
+
 interface CompanyDrawerProps {
   company: Company | null
   opportunities: Opportunity[]
@@ -22,15 +30,74 @@ interface CompanyDrawerProps {
 function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDrawerProps) {
   const { t } = useTranslations()
   const fmt = useFormat()
+  const updateCompany = useCRMStore((s) => s.updateCompany)
   const isOpen = !!company
   const panelRef = useRef<HTMLDivElement>(null)
   const titleId = useId()
 
-  useDialogBehavior({ open: isOpen, onClose, panelRef })
+  // Same one-field-at-a-time inline editor as DetailDrawer — immediate
+  // commit, no draft/discard dance.
+  const [editingField, setEditingField] = useState<'revenue' | 'employeeCount' | 'about' | null>(null)
+  const [revenueDraft, setRevenueDraft] = useState('')
+  const [employeeCountDraft, setEmployeeCountDraft] = useState('')
+  const [aboutDraft, setAboutDraft] = useState('')
+
+  useDialogBehavior({
+    open: isOpen,
+    onClose,
+    panelRef,
+    shouldIgnoreEscape: () => editingField !== null,
+  })
 
   useEffect(() => {
     if (isOpen) panelRef.current?.focus()
   }, [isOpen])
+
+  useEffect(() => {
+    setEditingField(null)
+  }, [company?.id])
+
+  const beginEditRevenue = () => {
+    if (!company) return
+    setRevenueDraft(
+      company.revenue !== undefined ? String(Math.round(fmt.fromBase(company.revenue))) : ''
+    )
+    setEditingField('revenue')
+  }
+
+  const saveRevenue = () => {
+    if (!company) return
+    const raw = Number(revenueDraft.replace(/[^0-9.]/g, ''))
+    const revenue = Number.isFinite(raw) && raw > 0 ? fmt.toBase(raw) : undefined
+    updateCompany(company.id, { revenue })
+    setEditingField(null)
+  }
+
+  const beginEditEmployeeCount = () => {
+    if (!company) return
+    setEmployeeCountDraft(company.employeeCount !== undefined ? String(company.employeeCount) : '')
+    setEditingField('employeeCount')
+  }
+
+  const saveEmployeeCount = () => {
+    if (!company) return
+    const raw = Number(employeeCountDraft.replace(/[^0-9]/g, ''))
+    const employeeCount = Number.isFinite(raw) && raw > 0 ? raw : undefined
+    updateCompany(company.id, { employeeCount })
+    setEditingField(null)
+  }
+
+  const beginEditAbout = () => {
+    if (!company) return
+    setAboutDraft(company.about ?? '')
+    setEditingField('about')
+  }
+
+  const saveAbout = () => {
+    if (!company) return
+    updateCompany(company.id, { about: aboutDraft.trim() || undefined })
+    setEditingField(null)
+  }
 
   return (
     <>
@@ -104,6 +171,110 @@ function CompanyDrawer({ company, opportunities, contacts, onClose }: CompanyDra
                     ))}
                   </div>
                 )}
+              </div>
+
+              {/* Enrichment — click to set, same as DetailDrawer's inline
+                  editors. Blank today for most companies; the whole point of
+                  these fields existing is somewhere for a future scrape to
+                  land, so an empty state has to look inviting to fill in
+                  rather than like a missing feature. */}
+              <div className="border-b border-border-subtle px-4 py-4 sm:px-5">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                    <p className="label-mono mb-1">{t.companies.revenue}</p>
+                    {editingField === 'revenue' ? (
+                      <div className="relative">
+                        <span className="absolute left-0 top-1/2 -translate-y-1/2 text-[14.5px] text-foreground/70 pointer-events-none select-none">
+                          {fmt.symbol}
+                        </span>
+                        <input
+                          autoFocus
+                          aria-label={t.companies.revenue}
+                          inputMode="decimal"
+                          value={revenueDraft}
+                          onChange={(e) => setRevenueDraft(e.target.value)}
+                          onBlur={saveRevenue}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') { e.preventDefault(); saveRevenue() }
+                            else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditingField(null) }
+                          }}
+                          className={cn(
+                            'w-full bg-transparent text-[14.5px] font-medium tabular-nums text-foreground outline-none border-b border-accent/50',
+                            symbolPadding(fmt.symbol)
+                          )}
+                        />
+                      </div>
+                    ) : (
+                      <p
+                        onClick={beginEditRevenue}
+                        className="break-words text-[14.5px] font-medium text-foreground cursor-pointer hover:text-accent transition-colors tabular-nums"
+                      >
+                        {company.revenue !== undefined ? (
+                          fmt.currency(company.revenue, { compact: false })
+                        ) : (
+                          <span className="text-foreground/50 font-normal">—</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                  <div className="min-w-0 rounded-lg bg-background-raised px-3 py-2.5">
+                    <p className="label-mono mb-1">{t.companies.employeeCount}</p>
+                    {editingField === 'employeeCount' ? (
+                      <input
+                        autoFocus
+                        aria-label={t.companies.employeeCount}
+                        inputMode="numeric"
+                        value={employeeCountDraft}
+                        onChange={(e) => setEmployeeCountDraft(e.target.value)}
+                        onBlur={saveEmployeeCount}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { e.preventDefault(); saveEmployeeCount() }
+                          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditingField(null) }
+                        }}
+                        className="w-full bg-transparent text-[14.5px] font-medium tabular-nums text-foreground outline-none border-b border-accent/50"
+                      />
+                    ) : (
+                      <p
+                        onClick={beginEditEmployeeCount}
+                        className="break-words text-[14.5px] font-medium text-foreground cursor-pointer hover:text-accent transition-colors tabular-nums"
+                      >
+                        {company.employeeCount !== undefined ? (
+                          company.employeeCount
+                        ) : (
+                          <span className="text-foreground/50 font-normal">—</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <p className="label-mono mb-1">{t.companies.about}</p>
+                  {editingField === 'about' ? (
+                    <textarea
+                      autoFocus
+                      aria-label={t.companies.about}
+                      value={aboutDraft}
+                      onChange={(e) => setAboutDraft(e.target.value)}
+                      onBlur={saveAbout}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditingField(null) }
+                      }}
+                      placeholder={t.companies.aboutPlaceholder}
+                      rows={3}
+                      className="w-full resize-y bg-transparent text-[14px] text-foreground/85 leading-relaxed outline-none border-b border-accent/50"
+                    />
+                  ) : (
+                    <p
+                      onClick={beginEditAbout}
+                      className="cursor-pointer whitespace-pre-wrap break-words text-[14px] leading-relaxed transition-colors hover:text-accent"
+                    >
+                      {company.about || (
+                        <span className="text-[13.5px] text-foreground/50">{t.companies.aboutPlaceholder}</span>
+                      )}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="border-b border-border-subtle px-4 py-4 sm:px-5">

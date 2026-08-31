@@ -19,6 +19,15 @@ export interface Company {
   size: string
   location: string
   tags: string[]
+  /** Base-currency (SEK) figure, same convention as Opportunity.dealValue —
+   *  convert at the display/input boundary via useFormat(), never store a
+   *  display-currency amount. Prep for a future auto-scraping enrichment
+   *  pass; unset until then or until someone fills it in by hand. */
+  revenue?: number
+  /** Plain headcount — no currency conversion involved. */
+  employeeCount?: number
+  /** Free-text company description, e.g. pulled from a future scrape. */
+  about?: string
 }
 
 export interface Contact {
