@@ -10,8 +10,6 @@ import {
   Kanban,
   Target,
   Compass,
-  Building2,
-  Users,
   CheckSquare,
   Settings,
   ChevronsLeft,
@@ -31,8 +29,6 @@ export const navItems = [
   { href: '/pipeline', label: 'pipeline', icon: Kanban },
   { href: '/strategy', label: 'strategy', icon: Target },
   { href: '/goals', label: 'goals', icon: Compass },
-  { href: '/companies', label: 'companies', icon: Building2 },
-  { href: '/contacts', label: 'contacts', icon: Users },
   { href: '/tasks', label: 'tasks', icon: CheckSquare },
   { href: '/settings', label: 'settings', icon: Settings },
 ] as const

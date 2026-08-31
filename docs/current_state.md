@@ -64,9 +64,10 @@ are actually marked Won.
 | `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, one merged **`goal`** family (former `annual`+`quarter`, each with an optional `targetDate` — see Goals timeline below), weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. Top of the page carries the copyable wallpaper links, one per colleague, plus a link to `/goals/timeline`. |
 | `/goals/timeline` | Functional | New. Read view of every `goal`-family row, grouped by a period derived from its `targetDate` (see Goals timeline below) rather than by the `sort_order` the editor lists them in — the thing this page exists to answer is "what's coming up soonest", which the editor cannot show at all. No editing here; `GoalsEditor` already owns writes to these rows, and duplicating that would just be a second place the same field could go stale. |
 | `/goals/display/[colleague]` | Functional | The wallpaper. Fills the screen edge to edge (no letterboxing) with zero chrome, rendered outside `AppShell` and sized off a single `--u` unit blending `vw` and `vh`, so the composition scales whole to any monitor. Bento header: the wordmark left (scaled up, swapped from the bare K mark), three enlarged KPI tiles right with bolder eyebrow labels, a gradient divider beneath the header. The north star statement no longer renders here (see Goals timeline below — its section/editor/DB rows are untouched, it's just not drawn). Below the divider, three columns separated by hairline dividers between rows — the `goal` family's three soonest-by-date entries, this week's counted non-negotiables, and the viewer's own personal goals — every list hard-capped at three rows. Checks a version stamp every 5s and reloads only on change, with an unconditional 5-minute reload as backstop (`BoardRefresh.tsx`). Reachable with a session or a signed `?k=` display token. |
-| `/companies` | Functional | Responsive card grid with deal/contact counts and total value. Search has a localized no-result state and clear action. Detail view becomes a full-screen, safe-area-aware mobile dialog with focus trap, Escape close, body-scroll lock and focus restoration. "New Company" is a single-column mobile modal. **Gained three optional enrichment fields — revenue, employee count, about** — see Company enrichment fields below; both the add-company form and the detail drawer (click-to-edit inline, same pattern as everywhere else) support them, and an unset field shows an inviting empty state rather than nothing, since the whole point of these fields is somewhere for a future auto-scrape to land. |
-| `/contacts` | Functional | Responsive list with search, localized no-result recovery, and 44px mobile actions. The contact detail view is a full-screen, safe-area-aware mobile dialog with focus trap/Escape/scroll lock/focus return. "New Contact" uses a labelled company combobox and single-column mobile form. |
-| `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. |
+| `/companies` | **Archived** | Not deleted — moved to `_archived/app/companies/page.tsx`, outside the `app/` tree so Next stops routing it. Not linked from the sidebar (`AppSidebar.tsx`'s `navItems`, shared with `MobileChrome.tsx`) either. `AddCompanyModal.tsx` and the companies mock data are untouched and now unused until the page is restored. Prior description, kept for when it comes back: responsive card grid with deal/contact counts and total value, search with localized no-result state, full-screen mobile detail dialog, three enrichment fields (revenue/employee count/about) — see Company enrichment fields below. |
+| `/contacts` | **Archived** | Same treatment as `/companies` — moved to `_archived/app/contacts/page.tsx`, delinked from the sidebar. `AddContactModal.tsx` and the contacts mock data are untouched. Prior description: responsive list with search/localized no-result recovery, full-screen mobile detail dialog, single-column "New Contact" modal. |
+| `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. The board itself now lives in `components/crm/TaskBoard.tsx` (extracted so `/tasks/[colleagueId]` can reuse it — see Tasks below), and the header carries a `ColleaguePicker` dropdown next to "Add Task" for jumping to a colleague's filtered view. |
+| `/tasks/[colleagueId]` | Functional | New. Same three-column board, filtered to one colleague's tasks (`erik`/`abdi`/`hai`) via `task.assignee`. Server component validates the segment against `COLLEAGUE_IDS` and 404s on an unknown one, same convention as `/goals/display/[colleague]`; the actual filtering/rendering happens in the client `ColleagueTasksView.tsx`, since tasks live in the client-side store, not a server read. Header shows the colleague's avatar/name instead of "Tasks". |
 | `/settings` | Functional | Display preferences remain app-wide and `localStorage`-backed. The page now uses responsive cards, stacked controls and mobile-safe spacing while preserving dark/light, language, locale, currency, date, compact-number and sound settings. |
 
 ### Components
@@ -74,7 +75,7 @@ are actually marked Won.
 components/
   layout/
     AppShell.tsx       — client wrapper; mounts `CRMStoreProvider`, applies theme/language settings, reserves mobile top/bottom chrome space, adds horizontal safe-area insets, and closes the mobile menu on route change or when crossing into the desktop breakpoint
-    AppSidebar.tsx     — desktop-only (`lg+`) 232px → 64px collapsible sidebar; grain-nav burnt-orange treatment, theme toggle and shared exported nav definition used by the mobile chrome. The footer's "Arbetsyta"/khyte.io workspace-identity block is gone from this desktop sidebar (unused chrome); `MobileChrome.tsx`'s own copy of the same block is untouched — that is a separate mobile nav drawer, not this component
+    AppSidebar.tsx     — desktop-only (`lg+`) 232px → 64px collapsible sidebar; grain-nav burnt-orange treatment, theme toggle and shared exported nav definition used by the mobile chrome. The footer's "Arbetsyta"/khyte.io workspace-identity block is gone from this desktop sidebar (unused chrome); `MobileChrome.tsx`'s own copy of the same block is untouched — that is a separate mobile nav drawer, not this component. `navItems` no longer lists Companies/Contacts — see Routes above
     MobileChrome.tsx   — fixed mobile header + five-item bottom navigation (Dashboard, Prospects, Pipeline, Tasks, More). `primaryHrefs` lists `/prospects`, not the new lightweight `/leads` — Leads is reachable only via the `More` drawer. `More` opens an inert-while-closed, focus-trapped, Escape-dismissible navigation drawer with theme control; all chrome handles top/bottom/left/right safe-area insets
     Topbar.tsx         — optional sticky action bar; returns `null` when a route supplies no actions
   crm/
@@ -94,9 +95,11 @@ components/
     FormFields.tsx     — shared mobile-safe form primitives. Inputs are 44px/16px on phones (prevents iOS focus zoom); all modal `Field` labels are wired to stable control IDs, comboboxes retain full keyboard/listbox semantics, `AssigneePicker` has labelled group semantics, and `ColorSlider`/`DateStepper` remain keyboard operable. Gained `InlineSelect<T extends string>` — a small dark popover (button + absolutely-positioned `role="listbox"`, click-outside-to-close) standing in for native `<select>`; used by `DetailDrawer` for Stage/Priority/Followed-up-by, the general-purpose version of the popover pattern `/settings` already used
     AddLeadModal.tsx   — now the lightweight capture form for the new raw-interest `Lead` entity (company name required, contact name, connection, source, "Tillagd av"/Added-by via `AssigneePicker`, priority via `ColorSlider`, notes). No dirty-tracking or discard confirmation — it's a small form with little to lose. This filename previously held the rich Opportunity-capture modal; that component's content moved to the new `AddProspectModal.tsx` below
     AddProspectModal.tsx — the rich capture modal (renamed from the old `AddLeadModal.tsx`, unchanged behavior): single-column phone grids, 44px stage choices, labelled company/contact comboboxes, two-way autofill, pipeline membership, priority/deal/next step/follow-up/tags/notes, inline value/email validation and unsaved-changes confirmation (dirty-tracking + `ConfirmDialog`) all remain. Widened `w-[860px]` → `w-[1120px]`; the stage pill row is now `sm:flex-nowrap`/`whitespace-nowrap` so all 10 stage pills fit one line at desktop width instead of wrapping. Gained an optional "start from a lead" `Combobox` (shown only when `leads.length > 0`) that pre-fills company name/contact name/priority/notes from a `Lead` — folding the lead's connection/source into the notes text, since Opportunity has no dedicated field for either — and a `fromLeadId?: string | null` prop to open pre-filled directly. Submitting while promoted from a lead calls `removeLead(leadId)`, deleting it
-    AddContactModal.tsx — contact essentials in a single-column phone layout; labelled company combobox, mobile email/phone/URL keyboards and stacked actions
-    AddCompanyModal.tsx — company essentials in a single-column phone layout with labelled fields, URL keyboard hint and stacked actions
+    AddContactModal.tsx — contact essentials in a single-column phone layout; labelled company combobox, mobile email/phone/URL keyboards and stacked actions. Unused since `/contacts` was archived (see Routes) — its only caller was that page
+    AddCompanyModal.tsx — company essentials in a single-column phone layout with labelled fields, URL keyboard hint and stacked actions. Unused since `/companies` was archived (see Routes) — its only caller was that page
     AddTaskModal.tsx   — single-column phone task capture with labelled title/description/date/assignee controls, responsive priority/date layout and stacked actions
+    TaskBoard.tsx      — the three-column task board (On pace / Late / Completed) plus archive drawer, extracted from `app/tasks/page.tsx` so `/tasks` and `/tasks/[colleagueId]` render identical behavior off a `tasks: Task[]` prop instead of duplicating ~500 lines. Also exports `taskCounts()` for the header summary line. See Tasks below
+    ColleaguePicker.tsx — header dropdown for switching between the shared task board and a colleague's filtered one (`/tasks` ↔ `/tasks/[colleagueId]`). A plain popover (outside-click + Escape to close), not built on `useDialogBehavior` — that hook's focus trap and scroll lock are modal-dialog behavior, more than a small menu needs
     Button.tsx         — shared button with 44px touch targets and visible keyboard focus on phones; compact desktop sizes and grain variants remain unchanged
     ButtonGrainPatchy.tsx — byte-for-byte snapshot of an earlier, mottled grain treatment (`.btn-grain-patchy` in globals.css), kept for reference/reuse; not wired into any page
 ```
@@ -269,7 +272,36 @@ column's stage (`addToPipeline(id, stage)`) rather than always landing in
 explicit stacking the overlay could end up front of the button and swallow
 the second click.
 
-### Tasks (app/tasks/page.tsx)
+### Tasks (components/crm/TaskBoard.tsx, app/tasks/)
+
+**The board is a shared component, not page-local.** `TaskBoard.tsx` holds the
+column bucketing, `TaskItem`, the inline `TaskEditor`, `ArchivedRow` and the
+archive drawer; both `app/tasks/page.tsx` (all tasks) and
+`app/tasks/[colleagueId]/ColleagueTasksView.tsx` (one colleague's) render
+`<TaskBoard tasks={...} />` off their own filtered list. `taskCounts()` is
+exported alongside it for the header's active/completed summary line, since
+both pages need that count computed the same way.
+
+**Per-colleague views (`/tasks/[colleagueId]`).** A `ColleaguePicker` dropdown
+in the header (next to "Add Task" on both `/tasks` and the colleague pages)
+switches between the full board and `erik`/`abdi`/`hai`'s own, filtered by
+`task.assignee`. `app/tasks/[colleagueId]/page.tsx` is a server component that
+validates the segment against `COLLEAGUE_IDS` and 404s on an unknown one —
+same convention as `/goals/display/[colleague]` — then hands off to the client
+`ColleagueTasksView.tsx`, which does the actual filtering: tasks live in the
+client-side Zustand store, not a server read, so the filtering itself can't
+happen where the validation does. Unassigned tasks (`assignee` undefined) only
+ever surface in the "All" view — there's no colleague bucket for them.
+
+**The card leads with who and shows the whole what.** The assignee renders as
+a named chip (avatar + name) at the top of the card, not a small initial
+buried in the metadata row — the thing a glance needs first. The description
+used to be `line-clamp`-truncated (1–2 lines) and is now shown in full
+(`whitespace-pre-line`, no clamp) since cutting it off was hiding the point of
+the task. `critical`-priority tasks get a 3px accent-colored edge marker down
+the left of the card plus a solid `bg-danger-muted` badge in place of the flat
+6px priority dot other priorities still use — enough to read as urgent at a
+glance without adding a second checkbox-competing element.
 
 **Columns are derived, not stored.** `onPace` is everything open and not past
 due — today's work and what is ahead of it — so the middle column only ever

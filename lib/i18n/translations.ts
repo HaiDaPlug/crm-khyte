@@ -214,6 +214,7 @@ const sv = {
     archiveEmpty: 'Arkivet är tomt',
     markComplete: (title: string) => `Markera som slutförd: ${title}`,
     markIncomplete: (title: string) => `Markera som aktiv: ${title}`,
+    allColleagues: 'Alla',
   },
   crm: {
     modal: {
@@ -508,6 +509,7 @@ const en: Dictionary = {
     archiveLabel: 'Archive', restore: 'Restore', archiveEmpty: 'The archive is empty',
     markComplete: (title) => `Mark complete: ${title}`,
     markIncomplete: (title) => `Mark active: ${title}`,
+    allColleagues: 'All',
   },
   crm: {
     modal: { closeDialog: 'Close dialog', closeDetails: 'Close details' },
