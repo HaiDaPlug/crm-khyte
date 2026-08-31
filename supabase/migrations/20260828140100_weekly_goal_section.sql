@@ -6,10 +6,15 @@
 -- is only that its progress is counted rather than typed, which is one column.
 --
 -- Kept in its own file so the enum change is committed before anything depends
--- on it. Postgres 12+ does allow adding and using an enum value inside one
--- transaction (verified against this database before splitting), so this is
--- ordering hygiene rather than a hard requirement — but it keeps a failure in
--- the columns below from rolling back the section value too.
+-- on it. This file never actually reads the new 'weekly' value back (no
+-- `update ... set section = 'weekly'` here), so the "same transaction is
+-- fine" claim that used to be here was untested, not verified — and it is
+-- wrong: 20260830120000_goal_target_date.sql tried exactly that shape and hit
+-- Postgres's real rule, SQLSTATE 55P04, "unsafe use of new value of enum
+-- type" — a freshly added enum value cannot be used in the same transaction
+-- that added it. Splitting the enum-add into its own file, as done here, is
+-- not optional ordering hygiene; it is required whenever a later statement
+-- in the same push needs the new value.
 -- ---------------------------------------------------------------------------
 
 alter type goal_section add value 'weekly';

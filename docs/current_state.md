@@ -8,18 +8,22 @@ The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
 (eu-north-1); schema and seed applied; reads and writes verified end to end
 against the live API.
 
-**All migrations are applied.** `npm run db:status` reports the remote as up to
-date. Since the previous writing three landed for the direction board:
-`20260828120000_personal_goals` (renames `focus_items`, adds `target_date` and
-`progress`), `20260828140000_crm_events` (the activity log and the weekly
-archive) and `20260828140100_weekly_goal_section` (the `weekly` goal section
-plus `metric_kind`/`metric_target`). Three more since:
-`20260829120000_opportunity_sort_order` (`opportunities.sort_order`, backfilled
-per-stage from the existing visual order — see Pipeline board interaction),
-`20260830120000_goal_target_date` (merges the `annual`/`quarter` sections into
-one dated `goal` family — see Goals timeline), and
-`20260830130000_company_enrichment` (`companies.revenue`/`employee_count`/`about`
-— see Company enrichment fields).
+**Migrations, current state.** `20260829120000_opportunity_sort_order` is
+applied (`opportunities.sort_order`, backfilled per-stage from the existing
+visual order — see Pipeline board interaction). `20260830120000_goal_target_date`
+and `20260830130000_company_enrichment` are **pending** —
+`20260830120000` originally tried to add the `goal` enum value and read it
+back (`update ... set section = 'goal'`) in one file, which Postgres rejects
+(`SQLSTATE 55P04` — a freshly added enum value cannot be used in the same
+transaction that added it). Split into `20260830120000_goal_target_date`
+(just the enum add) and `20260830120100_goal_target_date_backfill` (the
+column and the backfill) — see Known issues for why the earlier
+`weekly_goal_section` migration's claim that this split was unnecessary was
+wrong. Run `npm run db:push` to apply the remaining three files. Earlier for
+the direction board: `20260828120000_personal_goals` (renames `focus_items`,
+adds `target_date` and `progress`), `20260828140000_crm_events` (the activity
+log and the weekly archive) and `20260828140100_weekly_goal_section` (the
+`weekly` goal section plus `metric_kind`/`metric_target`) — all applied.
 
 **The board's numbers are now computed, not typed.** Revenue, customers and
 pipeline are recomputed from `opportunities` on every read, and the weekly
@@ -613,10 +617,11 @@ pure current-state (wordmark + KPIs) rather than mixing in a directional
 statement. Its "quarter" column (still capped at 3, per the existing
 `CAPS.quarter` design rule) now sources from the merged `goal` family sorted by
 soonest `targetDate` — undated goals sort last — rather than the old fixed
-`quarter` section in whatever order it was typed. Migration:
-`20260830120000_goal_target_date.sql` — adds the enum value, adds the column,
-backfills existing `annual`/`quarter` rows to `goal` with `target_date` left
-null (neither section ever had a date to preserve).
+`quarter` section in whatever order it was typed. Migration, in two files —
+`20260830120000_goal_target_date.sql` (just the enum add, has to commit on its
+own — see Known issues) and `20260830120100_goal_target_date_backfill.sql`
+(the column and the backfill of existing `annual`/`quarter` rows to `goal`,
+`target_date` left null since neither section ever had a date to preserve).
 
 ### Dialog behaviour (lib/hooks/useDialog.ts)
 
@@ -1260,6 +1265,23 @@ for a few weeks and found to actually track "things a person would flag."
   progress to stderr, and PowerShell renders any native-command stderr as a red
   `NativeCommandError` block. The trailing JSON line is the real result — check
   that before assuming failure
+- **A newly added enum value cannot be used in the same migration transaction
+  that added it.** `20260830120000_goal_target_date.sql` originally did
+  `alter type goal_section add value 'goal'` followed by
+  `update ... set section = 'goal'` in one file — `db:push` runs a file as one
+  transaction, and Postgres rejected the `update` with `SQLSTATE 55P04`,
+  "unsafe use of new value of enum type", the first time this was actually
+  pushed. The earlier `20260828140100_weekly_goal_section.sql` had claimed
+  "Postgres 12+ does allow adding and using an enum value inside one
+  transaction (verified against this database)" — that migration never
+  actually tested the claim (it added `'weekly'` but never read it back in the
+  same file), so the comment was untested, not verified, and turned out to be
+  wrong. **Fix, and the rule going forward:** an `alter type ... add value`
+  that a later statement in the same push needs to read must live in its own
+  migration file, so it commits before the file that uses it runs. See
+  `20260830120000_goal_target_date.sql` (just the enum add) and
+  `20260830120100_goal_target_date_backfill.sql` (the column and backfill
+  that reads it) for the corrected shape
 - Passwords in `SUPABASE_DB_URL` must be percent-encoded (`@` → `%40`).
   `db:push` validates this and rejects a leftover `[YOUR-PASSWORD]` placeholder,
   because both failure modes otherwise surface as an opaque auth error
