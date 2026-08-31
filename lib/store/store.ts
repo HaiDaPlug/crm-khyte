@@ -65,6 +65,23 @@ export interface CRMStore {
   /** Message from the most recent failed write, if any. */
   syncError: string | null
   clearSyncError: () => void
+  /**
+   * Swaps the eight data collections for a freshly read snapshot, leaving
+   * every piece of UI state (settings, sidebar, search) alone.
+   *
+   * Returns false when the merge was refused rather than applied — a caller
+   * that gets `false` must not mark the incoming version as seen, or the
+   * change it was carrying is lost until the next unrelated write. See the
+   * implementation for the two things that refuse it.
+   */
+  applyRemoteSnapshot: (snapshot: CRMSnapshot) => boolean
+  /**
+   * Holds off remote merges during an interaction that must not have the
+   * ground moved under it — a pipeline drag, above all. Paired calls; the
+   * board resumes on drop and on cancel.
+   */
+  pauseRemoteSync: () => void
+  resumeRemoteSync: () => void
 
   // UI state
   sidebarCollapsed: boolean
@@ -213,12 +230,26 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
    */
   let writeQueue: Promise<unknown> = Promise.resolve()
 
+  /**
+   * How many writes have been fired but not yet settled.
+   *
+   * A remote snapshot read while this is above zero cannot see the write that
+   * is still in flight, so merging it would roll the user's own change back on
+   * screen a moment after they made it. Counted here rather than in store
+   * state because nothing renders it — only applyRemoteSnapshot reads it.
+   */
+  let pendingWrites = 0
+
+  /** Depth, not a boolean: nested pauses must not resume early. */
+  let syncPauseDepth = 0
+
   return createStore<CRMStore>()((set, get) => {
     /**
      * Fire a write without blocking the caller, recording any failure.
      * Deliberately not awaited — the optimistic update has already landed.
      */
     function persist(label: string, run: () => Promise<ActionResult>): void {
+      pendingWrites += 1
       writeQueue = writeQueue
         .then(run)
         .then((result) => {
@@ -231,6 +262,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           const message = cause instanceof Error ? cause.message : String(cause)
           console.error(`[khyte] ${label} failed:`, message)
           set({ syncError: `${label} — ${message}` })
+        })
+        .finally(() => {
+          pendingWrites -= 1
         })
     }
 
@@ -289,6 +323,43 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       syncError: null,
 
       clearSyncError: () => set({ syncError: null }),
+
+      applyRemoteSnapshot: (snapshot) => {
+        // A write of our own is still in the air. The snapshot on the wire was
+        // read before it landed, so applying it now would visibly undo the
+        // change the user just made. Refusing is cheap — the poll comes back.
+        if (pendingWrites > 0) return false
+
+        // Mid-drag, or any other interaction that holds a reference to a row
+        // it is moving. Rebuilding the collections underneath it is how a card
+        // ends up dropped into a column that no longer exists.
+        if (syncPauseDepth > 0) return false
+
+        // Only the eight data collections. Settings, sidebar, search query and
+        // syncError belong to this browser, not to the database, and a merge
+        // that reset the user's filters every time a colleague saved something
+        // would be worse than no sync at all.
+        set({
+          companies: snapshot.companies,
+          contacts: snapshot.contacts,
+          opportunities: snapshot.opportunities,
+          leads: snapshot.leads,
+          notes: snapshot.notes,
+          strategyColumns: snapshot.strategyColumns,
+          strategyCards: snapshot.strategyCards,
+          tasks: snapshot.tasks,
+        })
+
+        return true
+      },
+
+      pauseRemoteSync: () => {
+        syncPauseDepth += 1
+      },
+
+      resumeRemoteSync: () => {
+        syncPauseDepth = Math.max(0, syncPauseDepth - 1)
+      },
 
       // UI defaults
       sidebarCollapsed: false,

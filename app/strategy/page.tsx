@@ -102,7 +102,7 @@ export default function StrategyPage() {
             </div>
             <div>
               <p className="label-mono mb-1">{t.strategy.followUp}</p>
-              <p className="text-[15px] font-medium text-foreground font-mono tabular-nums leading-snug">{fmt.date(selectedOpp.followUpDate)}</p>
+              <p className="text-[15px] font-medium text-foreground font-mono tabular-nums leading-snug">{selectedOpp.followUpDate ? fmt.date(selectedOpp.followUpDate) : '—'}</p>
             </div>
             <div>
               <p className="label-mono mb-1">{t.strategy.priority}</p>

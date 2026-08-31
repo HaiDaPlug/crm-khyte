@@ -32,9 +32,6 @@ function symbolPadding(symbol: string): string {
   return 'pl-[4.5rem]'
 }
 
-const defaultFollowUp = () =>
-  new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
-
 interface AddProspectModalProps {
   open: boolean
   onClose: () => void
@@ -74,7 +71,7 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
   const [priority, setPriority] = useState<Priority>('medium')
   const [dealValue, setDealValue] = useState('')
   const [nextStep, setNextStep] = useState('')
-  const [followUpDate, setFollowUpDate] = useState(defaultFollowUp)
+  const [followUpDate, setFollowUpDate] = useState('')
   // Defaults to today, matching the value every prospect used to get baked in
   // at creation — editable here now instead of only ever afterward in the drawer.
   const [lastInteraction, setLastInteraction] = useState('')
@@ -115,7 +112,7 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
     setCompanyQuery(''); setCompanyId(null); setIndustry(''); setLocation('')
     setContactQuery(''); setContactId(null); setRole(''); setEmail('')
     setStage(null); setPriority('medium'); setDealValue(''); setNextStep('')
-    setFollowUpDate(defaultFollowUp()); setTags(''); setNotesText('')
+    setFollowUpDate(''); setTags(''); setNotesText('')
     setLastInteraction(new Date().toISOString().slice(0, 10))
     setFollowedUpBy(undefined)
     setDiscardOpen(false)
@@ -138,9 +135,8 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
   const selectedContact = contactId ? contacts.find((c) => c.id === contactId) ?? null : null
 
   // Anything the user typed is worth confirming before we throw it away.
-  // followUpDate is excluded — it's prefilled, not user-entered.
   const isDirty =
-    [companyQuery, industry, location, contactQuery, role, email, dealValue, nextStep, tags, notesText]
+    [companyQuery, industry, location, contactQuery, role, email, dealValue, nextStep, tags, notesText, followUpDate]
       .some((v) => v.trim().length > 0) || stage !== null
 
   // Anything typed is worth a beat of confirmation before it's thrown away.

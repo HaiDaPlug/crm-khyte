@@ -1,19 +1,22 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   useReactTable,
   getCoreRowModel,
   getSortedRowModel,
+  getPaginationRowModel,
   flexRender,
   ColumnDef,
   SortingState,
+  PaginationState,
 } from '@tanstack/react-table'
-import { ChevronsUpDown, ChevronUp, ChevronDown, Check } from 'lucide-react'
+import { ChevronsUpDown, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Opportunity, Company, Contact } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { stageColors, priorityDot } from '@/lib/stage-config'
+import { colleagues } from '@/lib/colleagues'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 import { useBoardPan } from '@/lib/hooks/useBoardPan'
 
@@ -28,10 +31,25 @@ interface CRMTableProps {
   onRowClick: (row: TableRow) => void
 }
 
+const PAGE_SIZE = 10
+
+/* Page numbers around the current one: 1 … 4 5 6 … 12. Everything fits
+   without a gap up to 7 pages, so only pad once the list outgrows that. */
+function pageWindow(current: number, total: number): (number | 'gap')[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1)
+  const wanted = [1, current - 1, current, current + 1, total]
+    .filter((p, i, arr) => p >= 1 && p <= total && arr.indexOf(p) === i)
+    .sort((a, b) => a - b)
+  return wanted.flatMap((p, i) =>
+    i > 0 && p - wanted[i - 1] > 1 ? ['gap' as const, p] : [p]
+  )
+}
+
 export function CRMTable({ data, onRowClick }: CRMTableProps) {
   const { t } = useTranslations()
   const fmt = useFormat()
   const [sorting, setSorting] = useState<SortingState>([])
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: PAGE_SIZE })
   const scrollRef = useRef<HTMLDivElement>(null)
   useBoardPan(scrollRef, { panExcludeSelector: 'tr, th' })
 
@@ -72,18 +90,26 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
       ),
     },
     {
-      id: 'pipeline',
-      accessorFn: (row) => (row.opportunity.inPipeline ? 1 : 0),
-      header: t.crm.table.pipeline,
-      cell: ({ row }) =>
-        row.original.opportunity.inPipeline ? (
-          <span className="inline-flex items-center gap-1.5 text-[14px] font-medium text-accent">
-            <Check size={14} />
-            {t.crm.table.onBoard}
-          </span>
-        ) : (
-          <span className="text-[14px] text-foreground/40">—</span>
-        ),
+      id: 'addedBy',
+      accessorFn: (row) =>
+        row.opportunity.followedUpBy ? colleagues[row.opportunity.followedUpBy].name : '',
+      header: t.crm.table.addedBy,
+      cell: ({ row }) => {
+        const addedBy = row.original.opportunity.followedUpBy
+        if (!addedBy) return <span className="text-[14px] text-foreground/40">—</span>
+        const person = colleagues[addedBy]
+        return (
+          <div className="flex items-center gap-2">
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+              style={{ background: person.color }}
+            >
+              {person.name.charAt(0)}
+            </span>
+            <span className="text-[14.5px] text-foreground/85">{person.name}</span>
+          </div>
+        )
+      },
     },
     {
       id: 'priority',
@@ -139,6 +165,7 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
       header: t.crm.table.followUp,
       cell: ({ row }) => {
         const date = row.original.opportunity.followUpDate
+        if (!date) return <span className="text-foreground/40 text-[15px]">—</span>
         const isPast = new Date(date) < new Date()
         return (
           <span className={cn(
@@ -172,20 +199,103 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
   const table = useReactTable({
     data,
     columns,
-    state: { sorting },
+    state: { sorting, pagination },
     onSortingChange: setSorting,
+    onPaginationChange: setPagination,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    // Editing a prospect re-creates the rows; TanStack's default would bounce
+    // the user back to page 1 on every save. Clamp out-of-range pages instead.
+    autoResetPageIndex: false,
   })
+
+  const pageCount = table.getPageCount()
+
+  useEffect(() => {
+    if (pageCount > 0 && pagination.pageIndex > pageCount - 1) {
+      setPagination(p => ({ ...p, pageIndex: pageCount - 1 }))
+    }
+  }, [pageCount, pagination.pageIndex])
+
+  const currentPage = pagination.pageIndex + 1
+  const firstOnPage = pagination.pageIndex * pagination.pageSize + 1
+  const lastOnPage = Math.min(firstOnPage + pagination.pageSize - 1, data.length)
+
+  const navButton = 'inline-flex h-9 min-w-9 items-center justify-center rounded-lg border border-border bg-surface px-2 text-foreground/70 transition-colors hover:border-border-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40'
 
   return (
     <div className="data-table">
+      {pageCount > 1 && (
+        <nav
+          aria-label={t.crm.table.pagination}
+          className="mb-3 flex items-center justify-between gap-3 rounded-xl border border-border bg-surface px-3 py-2 sm:px-4"
+        >
+          <span className="label-mono whitespace-nowrap tabular-nums">
+            {t.crm.table.range(firstOnPage, lastOnPage, data.length)}
+          </span>
+
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => table.previousPage()}
+              disabled={!table.getCanPreviousPage()}
+              aria-label={t.crm.table.previousPage}
+              className={navButton}
+            >
+              <ChevronLeft size={16} />
+            </button>
+
+            <span className="px-2 text-[14px] font-medium tabular-nums text-foreground/70 sm:hidden">
+              {currentPage} / {pageCount}
+            </span>
+
+            <div className="hidden items-center gap-1 sm:flex">
+              {pageWindow(currentPage, pageCount).map((page, i) =>
+                page === 'gap' ? (
+                  <span key={`gap-${i}`} className="px-1 text-[14px] text-foreground/40">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={page}
+                    type="button"
+                    onClick={() => table.setPageIndex(page - 1)}
+                    aria-label={t.crm.table.goToPage(page)}
+                    aria-current={page === currentPage ? 'page' : undefined}
+                    className={cn(
+                      'inline-flex h-9 min-w-9 items-center justify-center rounded-lg border px-2 text-[14px] font-medium tabular-nums transition-colors',
+                      page === currentPage
+                        ? 'bg-accent text-background border-accent'
+                        : 'bg-surface text-foreground/70 border-border hover:border-border-accent hover:text-foreground'
+                    )}
+                  >
+                    {page}
+                  </button>
+                )
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => table.nextPage()}
+              disabled={!table.getCanNextPage()}
+              aria-label={t.crm.table.nextPage}
+              className={navButton}
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+        </nav>
+      )}
+
       <div className="md:hidden">
         {table.getRowModel().rows.length > 0 ? (
           <ul role="list" className="space-y-2.5">
             {table.getRowModel().rows.map(row => {
               const { opportunity, company, contact } = row.original
-              const followUpPast = new Date(opportunity.followUpDate) < new Date()
+              const followUpPast =
+                !!opportunity.followUpDate && new Date(opportunity.followUpDate) < new Date()
 
               return (
                 <li key={row.id}>
@@ -252,14 +362,17 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
                             followUpPast ? 'font-medium text-danger' : 'text-foreground/70'
                           )}
                         >
-                          {fmt.date(opportunity.followUpDate)}
+                          {opportunity.followUpDate ? fmt.date(opportunity.followUpDate) : '—'}
                         </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-2">
-                        {opportunity.inPipeline && (
-                          <span className="inline-flex items-center gap-1 text-[12.5px] font-medium text-accent">
-                            <Check size={13} aria-hidden="true" />
-                            {t.crm.table.onBoard}
+                        {opportunity.followedUpBy && (
+                          <span
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                            style={{ background: colleagues[opportunity.followedUpBy].color }}
+                            title={colleagues[opportunity.followedUpBy].name}
+                          >
+                            {colleagues[opportunity.followedUpBy].name.charAt(0)}
                           </span>
                         )}
                         <span

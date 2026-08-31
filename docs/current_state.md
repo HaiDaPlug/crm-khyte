@@ -1,7 +1,8 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-08-30
-**Phase:** MVP + persistence + password gate + derived direction board
+**Date:** 2026-08-31
+**Phase:** MVP + persistence + password gate + derived direction board +
+cross-browser live sync
 (Supabase live; shared-password auth, no accounts)
 
 The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
@@ -11,7 +12,9 @@ against the live API.
 **Migrations, current state.** `20260829120000_opportunity_sort_order` is
 applied (`opportunities.sort_order`, backfilled per-stage from the existing
 visual order — see Pipeline board interaction). `20260830120000_goal_target_date`
-and `20260830130000_company_enrichment` are **pending** —
+and `20260830130000_company_enrichment` are now **applied** — all 15 files in
+`supabase/migrations/` are, verified against
+`supabase_migrations.schema_migrations` on 2026-08-31.
 `20260830120000` originally tried to add the `goal` enum value and read it
 back (`update ... set section = 'goal'`) in one file, which Postgres rejects
 (`SQLSTATE 55P04` — a freshly added enum value cannot be used in the same
@@ -19,7 +22,7 @@ transaction that added it). Split into `20260830120000_goal_target_date`
 (just the enum add) and `20260830120100_goal_target_date_backfill` (the
 column and the backfill) — see Known issues for why the earlier
 `weekly_goal_section` migration's claim that this split was unnecessary was
-wrong. Run `npm run db:push` to apply the remaining three files. Earlier for
+wrong. Earlier for
 the direction board: `20260828120000_personal_goals` (renames `focus_items`,
 adds `target_date` and `progress`), `20260828140000_crm_events` (the activity
 log and the weekly archive) and `20260828140100_weekly_goal_section` (the
@@ -58,7 +61,16 @@ are actually marked Won.
 | `/` | Done | Redirects to `/dashboard` |
 | `/dashboard` | Functional | Command-center home. Desktop keeps the split pipeline/tasks + assistant composition; mobile switches to assistant-first reading order and natural vertical scrolling, with responsive greeting, composer, quick prompts and cards. The composer still supports Enter submit, autosize, mic dictation via Web Speech API, and mock replies keyed off lead names. |
 | `/leads` | Functional | New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button and a `Trash2` delete button (behind a `ConfirmDialog`, permanent via `removeLead`); each card also carries its own promote action. **Contact name, source and notes are now click-to-edit inline** in the drawer, mirroring `DetailDrawer`'s one-field-at-a-time editor exactly (single `editingField` state, commit on blur/Enter, Escape cancels the field rather than closing the drawer via `shouldIgnoreEscape`) — previously all three were plain read-only text with no way to fix a typo or add notes after capture short of deleting and re-adding the lead. Priority, connection and followed-by remain read-only from this drawer (unchanged, out of scope). "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
-| `/prospects` | Functional | Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. Search and filters are wired, and table/board empty results now show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. **Also gained a "Senaste kontakt" (last-contact) date field**, editable both at capture time (defaulting to today, same as the value every prospect used to get baked in silently) and afterward — see `Opportunity.lastInteraction` under Components: `DetailDrawer.tsx` below; before this it was write-once and could never be corrected or bumped forward without editing the database directly. |
+| `/prospects` | Functional | Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. Search and filters are wired, and table/board empty results now show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. **Also gained a "Senaste kontakt" (last-contact) date field**, editable both at capture time (defaulting to today, same as the value every prospect used to get baked in silently) and afterward — see `Opportunity.lastInteraction` under Components: `DetailDrawer.tsx` below; before this it was write-once and could never be corrected or bumped forward without editing the database directly. **The table now pages at 10 rows**, with the
+pager at the top of the table rather than the foot — the full list arrived as
+one undifferentiated scroll once real prospects were loaded. **The
+Pipeline/"På tavlan" column has been replaced by "Tillagd"**, showing the
+colleague who added the prospect (`Opportunity.followedUpBy`, the same field
+`DetailDrawer` labels "Följt upp av"): every prospect is on the board, so the
+old column carried no information. **The follow-up date is no longer
+prefilled** — `AddProspectModal` used to bake in today + 7 days, which meant
+every prospect carried a follow-up nobody had chosen; it now opens empty and
+blank dates render as `—` wherever they appear. |
 | `/pipeline` | Functional | Nine-stage dnd-kit kanban with mouse, delayed long-press touch and keyboard sensors. Mobile columns snap horizontally, expose a next-column peek/edge cue, and use natural page height instead of a locked viewport. Active value, drop feedback, off-board picker, background panning and drag-edge auto-scroll remain intact. Source data is Opportunities (Prospects), not the new Leads. |
 | `/strategy` | Functional | Opportunity selector + per-deal strategy board with add/rename/delete. The selector, summary and empty state reflow on phones; board columns snap/peek horizontally, touch actions stay visible, and drag supports mouse, long-press touch and keyboard input. |
 | `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, one merged **`goal`** family (former `annual`+`quarter`, each with an optional `targetDate` — see Goals timeline below), weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. Top of the page carries the copyable wallpaper links, one per colleague, plus a link to `/goals/timeline`. |
@@ -81,7 +93,7 @@ components/
   crm/
     CaptureBox.tsx     — textarea input, Cmd+Enter submit, simulated AI extraction (800ms delay) — orphaned since /inbox was removed
     SuggestionPreviewCard.tsx — AI extraction card with Apply (updates matching opportunity) / Dismiss — orphaned since /inbox was removed
-    CRMTable.tsx       — sortable TanStack table at `md+`, backing `/prospects`; purpose-built mobile cards below `md` surface company, stage, contact, value, next step, follow-up, pipeline status and priority without horizontal page overflow
+    CRMTable.tsx       — sortable TanStack table at `md+`, backing `/prospects`; paged at 10 rows with the pager above the table (`getPaginationRowModel`, `autoResetPageIndex: false` plus a clamp, so saving an edit does not throw the user back to page 1); purpose-built mobile cards below `md` surface company, stage, contact, value, next step, follow-up, who added it and priority without horizontal page overflow
     PipelineBoard.tsx  — dnd-kit kanban with mouse, delayed touch and keyboard sensors, drag overlay/drop feedback, mobile snap/peek columns and natural phone height. Shared `useBoardPan` and `useEdgeAutoScroll` behavior remains; empty slots still open the stage-scoped off-board picker
     LeadCard.tsx       — touch-safe kanban card with mobile-sized type/controls, visible focus treatment, company/contact/priority/value and amber hover glow
     StrategyBoard.tsx  — store-derived dnd-kit strategy board with mouse/touch/keyboard sensors, mobile snap/peek columns, visible phone actions, and responsive inline add/rename forms
@@ -611,6 +623,67 @@ re-checks the display token itself rather than trusting `proxy.ts` — a Route
 Handler is reachable by direct fetch — and returns only a timestamp and a
 count, so a leaked stamp reveals nothing but "something changed".
 
+### CRM live updates (app/api/snapshot/ + components/layout/SnapshotSync.tsx)
+
+Three colleagues work in this CRM at once, and until now none of them could see
+each other. The working set is read once per full page load and then lives in
+the client store for the rest of the session, so a write by Abdi stayed
+invisible to Erik until somebody happened to reload. This closes that.
+
+Same shape as the wallpaper's loop above, aimed at the other half of the app.
+`loadSnapshotVersion()` returns `max(updated_at)` plus a row count across the
+eight working-set tables; `SnapshotSync` asks `/api/snapshot/version` every 12
+seconds and pulls `/api/snapshot` only when the stamp differs from the one it
+is holding. All eight tables carry a `set_updated_at` trigger — the six from
+the init migration plus `strategy_columns` and `leads` from their own — so the
+timestamp half is reliable across the set, and the count catches deletes, which
+lower no timestamp.
+
+**Not `location.reload()`, which is what the wallpaper does.** That board keeps
+no client state; this side keeps an open drawer, a half-typed note, the current
+filters, sort and page. Fresh rows are merged into the store instead and React
+re-renders what actually changed.
+
+**Not `router.refresh()` either**, which looks like the idiomatic answer and
+does nothing here: it re-runs the layout and hands `CRMStoreProvider` a new
+snapshot prop, but the provider builds the store in a `useState` initializer
+and never rebuilds it (see State Management). The store has to be told
+directly — `applyRemoteSnapshot()`.
+
+**A merge can be refused, and a refusal is not a failure.** Two things block
+it: a local write still in flight (the snapshot on the wire was read before it
+landed, so applying it would visibly undo the change the user just made), and
+an active pipeline drag (rebuilding the columns around the card dnd-kit is
+holding is how a card lands in a column that no longer exists —
+`PipelineBoard` brackets its drag with `pauseRemoteSync`/`resumeRemoteSync`).
+A refused merge deliberately leaves the seen-stamp untouched so the next tick
+retries the same change rather than dropping it.
+
+The stamp is read **before** the rows in both `/api/snapshot` and the root
+layout, and that ordering is load-bearing: a write landing between the two
+reads must leave the stamp behind the data (one redundant merge) rather than
+ahead of it (a change marked seen that never arrived).
+
+Polling pauses on a hidden tab and checks immediately on `visibilitychange`,
+so tabbing back is faster than the interval rather than slower. Failures are
+silent — a 401 means the shared session expired, and replacing a working CRM
+with a login form mid-edit is worse than showing slightly stale rows.
+
+**Still not Supabase Realtime**, for the reason already recorded above and on
+`loadGoalsVersion()`: it enforces RLS, every policy is scoped to
+`auth.uid() = owner_id`, and every row still has a null owner. Note that when
+per-user auth lands the policies will need a *workspace* shape rather than a
+per-owner one — all three colleagues are meant to see the same pipeline, so
+`owner_id = auth.uid()` is the wrong predicate even once accounts exist.
+
+**Verified 2026-08-31** against the live database and dev server: unauthenticated
+→ 307 to `/login`; authed → 200 with `no-store`. Touching a row moved the
+timestamp half of the stamp; deleting one inside a rolled-back transaction moved
+the count half (89 → 88) while the timestamp stood still, which is precisely the
+gap the count exists to close. Full loop driven end to end — baseline stamp, an
+out-of-band write, poll sees the change, snapshot carries the new value, and the
+following idle poll correctly fetches nothing.
+
 ### Goals timeline (lib/goal-period.ts + app/goals/timeline/)
 
 **`annual` and `quarter` were two hardcoded boxes with no date behind either
@@ -735,7 +808,9 @@ Full detail in `docs/database.md`. Shape of it:
 | `lib/db/pg.ts` | `getDb()` — direct Postgres client (`postgres.js`) over `SUPABASE_DB_URL`, for reads only. Cached on `globalThis`, not a module-level singleton — see Known issues |
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
-| `lib/db/queries.ts` | `loadSnapshot()` — reads all eight CRM tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing. **`loadGoals()`** is a second, deliberately separate read for the direction-board tables (`goals`, `goal_metrics`, `personal_goals`) — not a key on `CRMSnapshot`, and its rows never enter the CRM store. It also returns the current week's event counts and the derived revenue/customers/pipeline totals in the same pass, so a goal and its number always describe the same instant, and archives any finished week before counting this one. **`loadGoalsVersion()`** is the cheap change-stamp the wallpaper polls. The wallpaper reloads every 5 minutes; folding it into the snapshot would drag the whole working set through Postgres on each refresh to render three small tables |
+| `lib/db/queries.ts` | `loadSnapshot()` — reads all eight CRM tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing. **`loadGoals()`** is a second, deliberately separate read for the direction-board tables (`goals`, `goal_metrics`, `personal_goals`) — not a key on `CRMSnapshot`, and its rows never enter the CRM store. It also returns the current week's event counts and the derived revenue/customers/pipeline totals in the same pass, so a goal and its number always describe the same instant, and archives any finished week before counting this one. **`loadGoalsVersion()`** is the cheap change-stamp the wallpaper polls. The wallpaper reloads every 5 minutes; folding it into the snapshot would drag the whole working set through Postgres on each refresh to render three small tables. **`loadSnapshotVersion()`** is the same trick for the CRM's eight tables — the stamp every open browser polls so colleagues see each other's writes, see CRM live updates |
+| `app/api/snapshot/version/route.ts` | The pollable stamp. Re-checks the session in its own body (a Route Handler is reachable by direct fetch), `Cache-Control: no-store`, and returns only a timestamp and a count so a leaked stamp reveals nothing but "something changed" |
+| `app/api/snapshot/route.ts` | The re-read, reached only after the stamp moves. Returns `{ version, snapshot }` with the version read **first** — see CRM live updates for why the ordering matters. The first `app/api/` routes in the repo: these are app-wide data endpoints with no page to colocate against, unlike the wallpaper's `version` route |
 | `app/actions/crm.ts` | 21 Server Actions — create + update per entity, plus delete for leads/notes/strategy columns/tasks/opportunities, returning `{ ok }` rather than throwing. Every one is gated on the session via `run()`/`guardedOk()` — see Auth gate |
 | `app/actions/auth.ts` | `login` / `logout`. Kept separate from `crm.ts`: those are narrow writes the store calls after an optimistic update, these are form handlers that set cookies and redirect |
 | `lib/store/provider.tsx` | `CRMStoreProvider` — builds one store per request **containing** the snapshot, so the server HTML and the hydration pass both render real rows; `useCRMStore` resolves it from context |
@@ -828,7 +903,9 @@ Actions:
 - `addTask`, `toggleTaskComplete` — task management
 - `addCompany`, `updateCompany`, `addContact`, `updateContact` — company/contact records; `updateCompany` backs both `DetailDrawer`'s click-to-edit company-name field and `CompanyDrawer`'s click-to-edit enrichment fields (revenue/employeeCount/about); `updateContact` backs `DetailDrawer`'s contact-name field
 - `addLead`, `updateLead`, `removeLead` — the new lightweight Lead entity; `updateLead` backs `LeadDrawer`'s click-to-edit contact name/source/notes fields; `removeLead` is permanent, used both when a lead is promoted into a Prospect and when removed outright
-- `syncError` / `clearSyncError` — last failed write (set and logged, not yet rendered)
+- `applyRemoteSnapshot` — swaps the eight data collections for a freshly polled snapshot, leaving settings/sidebar/search alone; returns `false` and applies nothing while a local write is in flight or a drag is active. See CRM live updates
+- `pauseRemoteSync` / `resumeRemoteSync` — depth-counted hold on remote merges, bracketed around a pipeline drag
+- `syncError` / `clearSyncError` — last failed write (set and logged, not yet rendered). Now more visible a gap than it was: a write that fails leaves a local row the database never got, and the next remote merge erases it
 - `toggleSidebar`, `setSearchQuery` — UI state
 - `toggleTheme`, `setSetting`, `resetSettings`, `hydrateSettings` — display preferences and interface language, persisted to `localStorage` key `khyte-settings` (`khyte-theme` is still read as a legacy fallback for pre-settings builds)
 
@@ -1029,7 +1106,6 @@ prospects board's cards separate from the page.
   `deleteGoal`/`deleteGoalMetric`/`deletePersonalGoal` (the per-row `Trash2` in
   `GoalsEditor`, immediate and unconfirmed — a goal row is cheap to retype) all
   exist end to end (store or local state → Server Action → `delete().eq('id', …)`)
-- Realtime — two open tabs do not see each other's changes until reload
 - Surfacing failed writes in the UI (`syncError` is set and logged, nothing renders it)
 - Real AI extraction (mocked — picks random extraction for notes > 30 chars)
 - Email / calendar sync

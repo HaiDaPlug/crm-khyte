@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils'
 import { stageColors } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 import { useBoardPan } from '@/lib/hooks/useBoardPan'
+import { useCRMStore } from '@/lib/store'
 
 const STAGES: Stage[] = [
   'New', 'Researched', 'Contacted', 'Warm',
@@ -278,6 +279,8 @@ interface PipelineBoardProps {
 export function PipelineBoard({ rows, onCardClick, onStageChange, availableLeads, onAddToStage }: PipelineBoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overStage, setOverStage] = useState<string | null>(null)
+  const pauseRemoteSync = useCRMStore((s) => s.pauseRemoteSync)
+  const resumeRemoteSync = useCRMStore((s) => s.resumeRemoteSync)
   const boardRef = useRef<HTMLDivElement>(null)
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
@@ -305,7 +308,11 @@ export function PipelineBoard({ rows, onCardClick, onStageChange, availableLeads
       .sort((a, b) => a.opportunity.order - b.opportunity.order)
   }
 
+  // A remote snapshot merged mid-drag would rebuild the columns around the
+  // card being held — dnd-kit is tracking a row that the merge replaces. Held
+  // off for the length of the drag; both endings below resume it.
   const handleDragStart = (event: DragStartEvent) => {
+    pauseRemoteSync()
     setActiveId(event.active.id as string)
   }
 
@@ -329,12 +336,14 @@ export function PipelineBoard({ rows, onCardClick, onStageChange, availableLeads
   // Without it `activeId` never cleared: the column stayed highlighted and the
   // board stayed un-pannable until another drag started.
   const handleDragCancel = () => {
+    resumeRemoteSync()
     setActiveId(null)
     setOverStage(null)
   }
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event
+    resumeRemoteSync()
     setActiveId(null)
     setOverStage(null)
 

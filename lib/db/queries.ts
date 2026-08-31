@@ -256,6 +256,71 @@ export async function loadGoalsVersion(): Promise<string> {
 }
 
 /**
+ * A stamp that changes whenever anything in the CRM working set changes.
+ *
+ * The same trick loadGoalsVersion() plays for the wallpaper, aimed at the other
+ * half of the app. The working set is read once per full page load and then
+ * lives in the client store for the rest of the session (see lib/store), so
+ * until now a write by one colleague stayed invisible to the other two until
+ * somebody happened to reload. Polling this lets a browser find out that
+ * something moved without dragging all eight tables across the wire to
+ * discover that nothing did.
+ *
+ * WHY NOT SUPABASE REALTIME. Unchanged from the reasoning on loadGoalsVersion()
+ * above, and it applies with more force here: Realtime enforces RLS, every
+ * policy on these tables is scoped to `auth.uid() = owner_id`, and every row
+ * still has a null owner. A browser holding the publishable key connects as
+ * `anon` and receives nothing. Opening these tables to `anon` would put the
+ * whole pipeline on the public internet, since that key ships in the browser
+ * bundle. Revisit when per-user auth lands — and note the policies will need a
+ * workspace shape rather than a per-owner one, since all three colleagues are
+ * meant to see the same pipeline.
+ *
+ * Same `max(updated_at)` + `count(*)` construction, for the same two reasons:
+ * editing a row does not change a count, and deleting one does not lower a
+ * timestamp. Every table below carries a `set_updated_at` trigger — the six
+ * from the init migration plus `strategy_columns` and `leads` from theirs — so
+ * the timestamp half is reliable across all eight.
+ */
+export async function loadSnapshotVersion(): Promise<string> {
+  await connection()
+
+  // No database means the store is holding demo data that nothing can change,
+  // so a constant stamp is the honest answer and the client never polls.
+  if (!isSupabaseConfigured || !isDirectDbConfigured) return 'demo'
+
+  const sql = getDb()
+
+  const [row] = await withDbErrors(
+    () => sql`
+      select
+        coalesce(max(updated_at)::text, '') as stamp,
+        count(*)                            as total
+      from (
+        select updated_at from companies
+        union all
+        select updated_at from contacts
+        union all
+        select updated_at from opportunities
+        union all
+        select updated_at from leads
+        union all
+        select updated_at from notes
+        union all
+        select updated_at from strategy_columns
+        union all
+        select updated_at from strategy_cards
+        union all
+        select updated_at from tasks
+      ) as working_set
+    `
+  )
+
+  const { stamp, total } = row as unknown as { stamp: string; total: string | number }
+  return `${stamp}:${total}`
+}
+
+/**
  * Wraps the raw driver error with the same diagnostic shape `unwrap` used to
  * give the PostgREST path — a wrong connection string or an un-migrated
  * database should still fail loud and specific, not just "connection error".

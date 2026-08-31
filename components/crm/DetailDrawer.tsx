@@ -525,7 +525,7 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
                       >
                         <Calendar size={13} className="text-foreground/70 shrink-0" />
                         <span className="text-[14px] text-foreground font-mono tabular-nums">
-                          {fmt.date(payload.opportunity.followUpDate)}
+                          {payload.opportunity.followUpDate ? fmt.date(payload.opportunity.followUpDate) : '—'}
                         </span>
                       </button>
                     )}

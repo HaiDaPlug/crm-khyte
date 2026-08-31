@@ -8,22 +8,28 @@ import { cn } from '@/lib/utils'
 import { AppSidebar } from './AppSidebar'
 import { MobileChrome } from './MobileChrome'
 import { useTranslations } from '@/lib/hooks/useTranslations'
+import { SnapshotSync } from './SnapshotSync'
 
 /**
  * Root of the client tree.
  *
  * Nothing here reads the store directly — the chrome below does, and it has to
- * sit inside the provider to do so.
+ * sit inside the provider to do so. SnapshotSync is inside for the same
+ * reason: it merges fresh rows into the store, so it needs one.
  */
 export function AppShell({
   snapshot,
+  version,
   children,
 }: {
   snapshot: CRMSnapshot
+  /** The change-stamp `snapshot` was read at. See SnapshotSync. */
+  version: string
   children: React.ReactNode
 }) {
   return (
     <CRMStoreProvider snapshot={snapshot}>
+      <SnapshotSync version={version} />
       <AppShellChrome>{children}</AppShellChrome>
     </CRMStoreProvider>
   )

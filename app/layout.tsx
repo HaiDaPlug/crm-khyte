@@ -4,7 +4,7 @@ import { Geist, Geist_Mono, Barlow, Plus_Jakarta_Sans } from 'next/font/google'
 import { Instrument_Serif, Source_Serif_4 } from 'next/font/google'
 import './globals.css'
 import { AppShell } from '@/components/layout/AppShell'
-import { loadSnapshot } from '@/lib/db/queries'
+import { loadSnapshot, loadSnapshotVersion } from '@/lib/db/queries'
 import { isAuthenticated } from '@/lib/auth/guard'
 
 const geistSans = Geist({
@@ -89,6 +89,13 @@ export default async function RootLayout({
   // One read per full page load, handed to the client store below. Layouts do
   // not re-run on client-side navigation, so moving between routes costs
   // nothing — the store carries the data.
+  //
+  // The change-stamp is read first and sequentially, not in parallel with the
+  // rows. It is the baseline SnapshotSync polls against, and a write landing
+  // between the two reads must leave the stamp behind the data rather than
+  // ahead of it: behind costs one redundant merge, ahead silently swallows the
+  // change. One small aggregate is worth that ordering.
+  const version = authed && !isDisplay ? await loadSnapshotVersion() : null
   const snapshot = authed && !isDisplay ? await loadSnapshot() : null
 
   return (
@@ -105,7 +112,9 @@ export default async function RootLayout({
       </head>
       <body className="h-full antialiased">
         {snapshot ? (
-          <AppShell snapshot={snapshot}>{children}</AppShell>
+          <AppShell snapshot={snapshot} version={version ?? 'demo'}>
+            {children}
+          </AppShell>
         ) : (
           children
         )}
