@@ -119,6 +119,7 @@ export interface GoalRow {
   detail: string
   status: GoalStatus
   progress: number | null
+  target_date: string | null
   metric_kind: CrmEventKind | null
   metric_target: number | null
   sort_order: number

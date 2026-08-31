@@ -86,17 +86,31 @@ function untilLabel(targetDate: string, now: Date): string | undefined {
   return months === 1 ? '1 månad' : `${months} månader`
 }
 
-/** Section heading. One typographic treatment, used four times. */
+/**
+ * Section heading. One typographic treatment, used four times.
+ *
+ * A small accent tick gives it an edge to sit on rather than floating loose
+ * above the list — the same reason the KPI tiles read as a unit instead of
+ * three adjacent headings. Sized and weighted up from the original, which
+ * read as a footnote next to 1.5u goal text rather than the thing that names
+ * the column beneath it.
+ */
 function Label({ children }: { children: React.ReactNode }) {
   return (
     <h2
-      className="shrink-0 font-mono uppercase text-[color:var(--dim)]"
+      className="shrink-0 flex items-center font-mono font-semibold uppercase text-white/60"
       style={{
-        fontSize: 'calc(0.66 * var(--u))',
-        letterSpacing: '0.3em',
-        marginBottom: 'calc(2.2 * var(--u))',
+        fontSize: 'calc(0.86 * var(--u))',
+        letterSpacing: '0.24em',
+        marginBottom: 'calc(2.4 * var(--u))',
+        gap: 'calc(0.7 * var(--u))',
       }}
     >
+      <span
+        aria-hidden
+        className="shrink-0 rounded-full bg-[color:var(--accent)]"
+        style={{ width: 'calc(0.5 * var(--u))', height: 'calc(0.5 * var(--u))' }}
+      />
       {children}
     </h2>
   )
@@ -151,8 +165,14 @@ export function DisplayBoard({
   const bySection = (section: Goal['section']) =>
     goals.filter((g) => g.section === section).sort((a, b) => a.order - b.order)
 
-  const northStar = bySection('north_star')[0]
-  const quarter = bySection('quarter').slice(0, CAPS.quarter)
+  // The merged `goal` family (former annual + quarter) has no fixed cadence of
+  // its own any more, so "the three that belong on the wallpaper" means the
+  // three due soonest rather than the first three typed in. Undated goals sort
+  // last — a goal with nothing pressing about it is the last thing worth the
+  // one glance a wallpaper gets.
+  const quarter = [...bySection('goal')]
+    .sort((a, b) => (a.targetDate ?? '9999-99-99').localeCompare(b.targetDate ?? '9999-99-99'))
+    .slice(0, CAPS.quarter)
   const weekly = bySection('weekly').slice(0, CAPS.weekly)
 
   const person = colleagues[colleague]
@@ -233,7 +253,7 @@ export function DisplayBoard({
       }
     >
       {/* Warm light from the top-left — keeps a very dark board from reading
-          as flat black, and gives the north star something to sit against. */}
+          as flat black even with nothing but the mark sitting on it. */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
@@ -262,8 +282,8 @@ export function DisplayBoard({
           className="flex shrink-0 items-stretch"
           style={{ gap: 'calc(3.4 * var(--u))' }}
         >
-          <div className="flex min-w-0 flex-1 flex-col justify-between">
-            {/* The K mark. Served from /public, which proxy.ts exempts by
+          <div className="flex min-w-0 flex-1 flex-col justify-center">
+            {/* The wordmark. Served from /public, which proxy.ts exempts by
                 filename prefix — a browser fetching an <img> cannot carry the
                 display token in the page URL's query string, so without that
                 exemption the logo 307s to /login and Lively paints a broken
@@ -276,33 +296,15 @@ export function DisplayBoard({
                 next/image would route this through /_next/image, which is
                 gated; a plain img hits the exempted path directly. */}
             <img
-              src="/khyte-logo-mark.png"
+              src="/khyte-logo-text-png.png"
               alt="Khyte"
-              className="block object-contain mix-blend-screen"
-              style={{ width: 'calc(4.6 * var(--u))' }}
+              className="block object-contain object-left mix-blend-screen"
+              style={{ width: 'calc(16 * var(--u))' }}
             />
 
-            {northStar && (
-              <p
-                className="font-jakarta font-semibold text-white"
-                style={{
-                  fontSize: 'calc(2.6 * var(--u))',
-                  lineHeight: 1.1,
-                  letterSpacing: '-0.025em',
-                  marginTop: 'calc(2 * var(--u))',
-                  // The one element here whose height is unbounded — every
-                  // other region is capped at three rows. Clamped so an
-                  // over-long statement truncates at its own edge instead of
-                  // pushing the goals off a screen with no scrollbar.
-                  display: '-webkit-box',
-                  WebkitBoxOrient: 'vertical',
-                  WebkitLineClamp: 3,
-                  overflow: 'hidden',
-                }}
-              >
-                {northStar.title}
-              </p>
-            )}
+            {/* The north star statement used to render here. Dropped from the
+                wallpaper only — the section, its editor block and the DB rows
+                are untouched, so nothing is lost, it just no longer draws. */}
           </div>
 
           {/* Three tiles, sized to the numbers rather than stretched across
@@ -311,8 +313,8 @@ export function DisplayBoard({
           <div
             className="grid shrink-0"
             style={{
-              gridTemplateColumns: `repeat(${Math.max(scoreboard.length, 1)}, calc(13.5 * var(--u)))`,
-              gap: 'calc(1.1 * var(--u))',
+              gridTemplateColumns: `repeat(${Math.max(scoreboard.length, 1)}, calc(18 * var(--u)))`,
+              gap: 'calc(1.4 * var(--u))',
             }}
           >
             {scoreboard.map((metric) => {
@@ -323,31 +325,40 @@ export function DisplayBoard({
               return (
                 <div
                   key={metric.id}
-                  className="flex flex-col justify-between rounded-[calc(0.7*var(--u))] bg-white/[0.035]"
+                  className="flex flex-col justify-between rounded-[calc(0.9*var(--u))] bg-white/[0.035]"
                   style={{
-                    padding: 'calc(1.4 * var(--u)) calc(1.5 * var(--u))',
+                    padding: 'calc(1.8 * var(--u)) calc(2 * var(--u))',
                     // A hairline rather than a border colour: at wallpaper
                     // scale a 1px line is the difference between a tile and a
                     // rectangle of slightly lighter background.
-                    boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.06)',
+                    boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.07)',
                   }}
                 >
                   <p
-                    className="font-mono uppercase text-[color:var(--dim)]"
-                    style={{ fontSize: 'calc(0.58 * var(--u))', letterSpacing: '0.24em' }}
+                    className="flex items-center font-mono font-semibold uppercase text-white/60"
+                    style={{
+                      fontSize: 'calc(0.82 * var(--u))',
+                      letterSpacing: '0.22em',
+                      gap: 'calc(0.6 * var(--u))',
+                    }}
                   >
+                    <span
+                      aria-hidden
+                      className="shrink-0 rounded-full bg-[color:var(--accent)]"
+                      style={{ width: 'calc(0.42 * var(--u))', height: 'calc(0.42 * var(--u))' }}
+                    />
                     {metric.label}
                   </p>
                   <p
                     className="font-jakarta font-semibold tabular-nums text-white"
                     style={{
-                      fontSize: 'calc(2.7 * var(--u))',
+                      fontSize: 'calc(3.6 * var(--u))',
                       // Pushed to the bottom of the tile regardless of whether
                       // a bar follows it — `justify-between` made the figure's
                       // baseline depend on that, so a metric with no target sat
                       // lower than its neighbours.
                       marginTop: 'auto',
-                      paddingTop: 'calc(1.1 * var(--u))',
+                      paddingTop: 'calc(1.4 * var(--u))',
                       lineHeight: 1,
                       letterSpacing: '-0.02em',
                     }}
@@ -357,8 +368,8 @@ export function DisplayBoard({
                       <span
                         className="font-mono font-normal text-white/35"
                         style={{
-                          fontSize: 'calc(0.85 * var(--u))',
-                          marginLeft: 'calc(0.5 * var(--u))',
+                          fontSize: 'calc(1 * var(--u))',
+                          marginLeft: 'calc(0.6 * var(--u))',
                         }}
                       >
                         / {formatMetric(metric.targetValue, metric.unit)}
@@ -368,7 +379,7 @@ export function DisplayBoard({
                   {/* Rendered either way: a metric with no target still
                       reserves the bar's height, so the three tiles share one
                       bottom edge instead of ending at different depths. */}
-                  <div style={{ marginTop: 'calc(1.1 * var(--u))' }}>
+                  <div style={{ marginTop: 'calc(1.4 * var(--u))' }}>
                     {pct !== undefined ? (
                       <Bar value={pct} />
                     ) : (
@@ -381,10 +392,19 @@ export function DisplayBoard({
           </div>
         </div>
 
-        {/* Separates the two bands without a rule doing the work. Fixed
-            rather than a flex share: as a share it absorbed most of the spare
-            height and opened a void between the tiles and the goals. */}
-        <div className="shrink-0" style={{ height: 'calc(4.5 * var(--u))' }} />
+        {/* A real rule now, not just breathing room — the header (what is true
+            right now) and the goals below (what is being done about it) are
+            different registers, and the two used to be told apart only by a
+            gap. `--dim` at low opacity keeps it a whisper rather than a bar. */}
+        <div
+          className="shrink-0"
+          style={{
+            margin: 'calc(3 * var(--u)) 0',
+            height: 1,
+            background:
+              'linear-gradient(90deg, rgba(255,255,255,0.14), rgba(255,255,255,0.03) 70%, transparent)',
+          }}
+        />
 
         {/* ——— quarter · this week · personal ———
             Takes the remaining height and centres its rows in it. The band
@@ -405,9 +425,20 @@ export function DisplayBoard({
         >
           <section className="flex min-h-0 min-w-0 flex-col">
             <Label>{period}</Label>
-            <ul className="flex flex-col" style={{ gap: 'calc(3.4 * var(--u))' }}>
-              {quarter.map((goal) => (
-                <li key={goal.id}>
+            <ul className="flex flex-col">
+              {quarter.map((goal, i) => (
+                <li
+                  key={goal.id}
+                  style={
+                    i > 0
+                      ? {
+                          marginTop: 'calc(1.7 * var(--u))',
+                          paddingTop: 'calc(1.7 * var(--u))',
+                          borderTop: '1px solid rgba(255,255,255,0.08)',
+                        }
+                      : undefined
+                  }
+                >
                   <div
                     className="flex items-baseline"
                     style={{ gap: 'calc(1.1 * var(--u))' }}
@@ -460,8 +491,8 @@ export function DisplayBoard({
           {weekly.length > 0 && (
             <section className="flex min-h-0 min-w-0 flex-col">
               <Label>Denna vecka</Label>
-              <ul className="flex flex-col" style={{ gap: 'calc(3.4 * var(--u))' }}>
-                {weekly.map((goal) => {
+              <ul className="flex flex-col">
+                {weekly.map((goal, i) => {
                   const actual = goal.metricKind
                     ? (weeklyCounts[goal.metricKind] ?? 0)
                     : (goal.progress ?? 0)
@@ -469,7 +500,18 @@ export function DisplayBoard({
                   const hit = target !== undefined && actual >= target
 
                   return (
-                    <li key={goal.id}>
+                    <li
+                      key={goal.id}
+                      style={
+                        i > 0
+                          ? {
+                              marginTop: 'calc(1.7 * var(--u))',
+                              paddingTop: 'calc(1.7 * var(--u))',
+                              borderTop: '1px solid rgba(255,255,255,0.08)',
+                            }
+                          : undefined
+                      }
+                    >
                       <div
                         className="flex items-baseline"
                         style={{ gap: 'calc(1.1 * var(--u))' }}
@@ -517,13 +559,24 @@ export function DisplayBoard({
               column on purpose: it is not a footnote to the company's goals. */}
           <section className="flex min-h-0 min-w-0 flex-col">
             <Label>{person.name}</Label>
-            <ul className="flex flex-col" style={{ gap: 'calc(3.4 * var(--u))' }}>
-              {personal.map((goal) => {
+            <ul className="flex flex-col">
+              {personal.map((goal, i) => {
                 const until = goal.targetDate
                   ? untilLabel(goal.targetDate, now)
                   : undefined
                 return (
-                  <li key={goal.id}>
+                  <li
+                    key={goal.id}
+                    style={
+                      i > 0
+                        ? {
+                            marginTop: 'calc(1.7 * var(--u))',
+                            paddingTop: 'calc(1.7 * var(--u))',
+                            borderTop: '1px solid rgba(255,255,255,0.08)',
+                          }
+                        : undefined
+                    }
+                  >
                     <div
                       className="flex items-baseline"
                       style={{ gap: 'calc(1.1 * var(--u))' }}

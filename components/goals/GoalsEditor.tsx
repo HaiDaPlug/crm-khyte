@@ -43,8 +43,7 @@ import * as api from '@/app/actions/goals'
 
 const SECTION_LABELS: Record<GoalSection, string> = {
   north_star: 'Nordstjärna',
-  annual: '2026 — Årsmål',
-  quarter: 'Detta kvartal',
+  goal: 'Mål',
   weekly: 'Veckans icke-förhandlingsbara',
   principle: 'Principer',
   not_now: 'Inte nu',
@@ -53,8 +52,8 @@ const SECTION_LABELS: Record<GoalSection, string> = {
 const SECTION_HINTS: Record<GoalSection, string> = {
   north_star:
     'Valfri. Står under loggan på tavlan, max tre rader — längre text kapas.',
-  annual: 'Vad året ska ha gett. Sparas här — ritas inte på tavlan.',
-  quarter: 'De tre första ritas på tavlan. Resten sparas men syns inte.',
+  goal:
+    'Årsmål och kvartalsmål i ett — sätt ett datum så hamnar målet rätt på /goals/timeline. De tre närmast i tid ritas på tavlan, resten sparas men syns bara i tidslinjen.',
   weekly:
     'Räknas från aktivitet i Leads och Prospekt — kan inte skrivas in för hand. Veckan börjar om på måndagen och den gamla arkiveras.',
   principle: 'Hur ni arbetar. Sparas här — ritas inte på tavlan.',
@@ -126,7 +125,7 @@ function formatDerived(value: number, unit: MetricUnit): string {
 }
 
 /** Sections that take a progress bar. A principle has no percentage. */
-const PROGRESS_SECTIONS: GoalSection[] = ['annual', 'quarter']
+const PROGRESS_SECTIONS: GoalSection[] = ['goal']
 
 function SectionShell({
   title,
@@ -361,6 +360,24 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                     />
                     <span className="text-[13.5px] text-foreground/50">%</span>
                   </label>
+
+                  {/* Deadline, not a picked cadence — the timeline derives
+                      "Q3 2026" / "Vecka 35" / etc. from this rather than the
+                      goal being typed into a quarter-shaped box to begin
+                      with. See lib/goal-period.ts. */}
+                  <label className="flex items-center gap-2">
+                    <span className="label-mono">Datum</span>
+                    <input
+                      type="date"
+                      className={cn(inputClass, 'h-9 w-auto text-[14px]')}
+                      value={goal.targetDate ?? ''}
+                      onChange={(e) =>
+                        editGoal(goal.id, {
+                          targetDate: e.target.value || undefined,
+                        })
+                      }
+                    />
+                  </label>
                 </div>
               )}
             </div>
@@ -394,25 +411,14 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
         {renderGoalRows('north_star')}
       </SectionShell>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <SectionShell
-          title={SECTION_LABELS.annual}
-          hint={SECTION_HINTS.annual}
-          addLabel="Lägg till"
-          onAdd={() => addGoal('annual')}
-        >
-          {renderGoalRows('annual')}
-        </SectionShell>
-
-        <SectionShell
-          title={SECTION_LABELS.quarter}
-          hint={SECTION_HINTS.quarter}
-          addLabel="Lägg till"
-          onAdd={() => addGoal('quarter')}
-        >
-          {renderGoalRows('quarter')}
-        </SectionShell>
-      </div>
+      <SectionShell
+        title={SECTION_LABELS.goal}
+        hint={SECTION_HINTS.goal}
+        addLabel="Lägg till"
+        onAdd={() => addGoal('goal')}
+      >
+        {renderGoalRows('goal')}
+      </SectionShell>
 
       {/* --- weekly non-negotiables: counted, not typed --- */}
       <SectionShell

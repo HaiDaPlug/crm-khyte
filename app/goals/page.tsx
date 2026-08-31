@@ -1,3 +1,6 @@
+import Link from 'next/link'
+import { CalendarClock } from 'lucide-react'
+
 import { Topbar } from '@/components/layout/Topbar'
 import { GoalsEditor } from '@/components/goals/GoalsEditor'
 import { WallpaperLinks } from '@/components/goals/WallpaperLinks'
@@ -35,13 +38,23 @@ export default async function GoalsPage() {
     <>
       <Topbar />
       <main className="min-w-0 flex-1 px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:px-8 lg:py-8">
-        <div className="mb-5">
-          <h2 className="mb-1 text-[26px] font-jakarta font-semibold leading-none tracking-[-0.02em] text-foreground sm:text-[30px]">
-            Riktning
-          </h2>
-          <p className="text-[14.5px] text-foreground/55">
-            Vad vi försöker uppnå. Ändringar här syns på allas bakgrundsbild.
-          </p>
+        <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="mb-1 text-[26px] font-jakarta font-semibold leading-none tracking-[-0.02em] text-foreground sm:text-[30px]">
+              Riktning
+            </h2>
+            <p className="text-[14.5px] text-foreground/55">
+              Vad vi försöker uppnå. Ändringar här syns på allas bakgrundsbild.
+            </p>
+          </div>
+
+          <Link
+            href="/goals/timeline"
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3.5 text-[13.5px] font-medium text-foreground transition-colors hover:bg-surface"
+          >
+            <CalendarClock size={14} />
+            Tidslinje
+          </Link>
         </div>
 
         <WallpaperLinks links={links} />

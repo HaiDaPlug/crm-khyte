@@ -146,11 +146,16 @@ export interface Task {
  *
  * A closed set rather than free text because the wallpaper layout has fixed
  * regions — a goal in an unknown section has nowhere to be drawn.
+ *
+ * `annual` and `quarter` used to be separate bands, each with its own fixed
+ * cadence. They are now one `goal` family carrying an optional `targetDate`
+ * instead — a free date sorts and groups the same information without forcing
+ * every goal into exactly a year or exactly a quarter. See
+ * supabase/migrations/20260830120000_goal_target_date.sql.
  */
 export type GoalSection =
   | 'north_star'
-  | 'annual'
-  | 'quarter'
+  | 'goal'
   | 'weekly'
   | 'principle'
   | 'not_now'
@@ -177,6 +182,13 @@ export interface Goal {
   status: GoalStatus
   /** 0–100, or undefined for "no bar" — a principle has no progress. */
   progress?: number
+  /**
+   * `YYYY-MM-DD`, `goal`-section only. Same convention as
+   * `PersonalGoal.targetDate`. Absent means "no deadline yet" — every goal
+   * migrated from the old `annual`/`quarter` split starts this way, since
+   * neither had a date to preserve.
+   */
+  targetDate?: string
   /**
    * When set, this goal's number is counted from CRM activity of this kind for
    * the current week rather than read from `progress`. That is what makes a
