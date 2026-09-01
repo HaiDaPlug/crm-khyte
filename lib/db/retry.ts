@@ -44,9 +44,32 @@ import 'server-only'
  * is otherwise a full error screen on someone's first page load.
  */
 
-/** Faults worth retrying on a read. Reads are pure, so all of these are safe. */
+/**
+ * Faults worth retrying on a read. Reads are pure, so all of these are safe.
+ *
+ * Two eras of shapes live here, and both are still reachable. The fetch/HTTP
+ * strings came from the PostgREST read path; reads now go straight to Postgres
+ * (see ./pg), where the driver reports its own faults.
+ *
+ * What a dropped pooler connection actually looks like, measured against a
+ * proxy that kills the socket mid-query: a reset surfaces as `read ECONNRESET`
+ * and lands on the existing pattern. A *graceful* close never reaches this
+ * predicate at all — postgres.js re-queues the query on a fresh connection
+ * itself, and the read succeeds without a retry from us.
+ *
+ * `CONNECTION_CLOSED` and `CONNECT_TIMEOUT` are here for the cases the driver
+ * does surface — an exhausted `connect_timeout`, or a close it cannot re-queue
+ * around. Both are `write <CODE> host:port` in its wording, matched by nothing
+ * else in this set. Neither fired in the measurements above; they are the
+ * belt to ECONNRESET's braces, not the fix on their own.
+ *
+ * Deliberately absent: `CONNECTION_ENDED` and `CONNECTION_DESTROYED`. Those
+ * mean the pool object itself is gone rather than that a connection dropped,
+ * so no amount of retrying against it will reconnect — they should fail at
+ * once rather than spend the budget first.
+ */
 const TRANSIENT_READ =
-  /issued at future|not yet valid|fetch failed|socket hang up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|\b(?:502|503|504)\b/i
+  /issued at future|not yet valid|fetch failed|socket hang up|CONNECTION_CLOSED|CONNECT_TIMEOUT|ECONNRESET|ETIMEDOUT|EAI_AGAIN|\b(?:502|503|504)\b/i
 
 /**
  * Narrower set for writes.
