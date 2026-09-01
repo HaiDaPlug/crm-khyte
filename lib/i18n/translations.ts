@@ -19,6 +19,7 @@ const sv = {
     willBeCreated: 'Kommer att skapas',
     search: 'Sök...',
     clearFilters: 'Rensa filter',
+    clearSearch: 'Rensa sökningen',
   },
   nav: {
     dashboard: 'Översikt',
@@ -117,6 +118,8 @@ const sv = {
     allProspects: 'Alla prospekt',
     count: (filtered: number, total: number) => `${filtered} av ${total} affärsmöjligheter`,
     newProspect: 'Nytt prospekt',
+    search: 'Sök företag, kontakt, nästa steg...',
+    searchLabel: 'Sök prospekt',
   },
   leads: {
     title: 'Leads',
@@ -127,6 +130,9 @@ const sv = {
     priority: 'Prioritet',
     notes: 'Anteckningar',
     empty: 'Inga leads än. Dumpa in ett företag du vill återkomma till.',
+    search: 'Sök företag, kontakt, koppling...',
+    searchLabel: 'Sök leads',
+    noMatches: 'Inga leads matchar den här sökningen.',
     promoteToProspect: 'Gör till prospekt',
     delete: 'Ta bort',
     deleteTitle: 'Ta bort den här leaden?',
@@ -423,6 +429,7 @@ const en: Dictionary = {
     cancel: 'Cancel', save: 'Save', add: 'Add', edit: 'Edit', dismiss: 'Dismiss',
     keepEditing: 'Keep editing', required: '(required)', autofilled: 'Autofilled',
     willBeCreated: 'Will be created', search: 'Search...', clearFilters: 'Clear filters',
+    clearSearch: 'Clear search',
   },
   nav: {
     dashboard: 'Dashboard', leads: 'Leads', prospects: 'Prospects', pipeline: 'Pipeline', strategy: 'Strategy',
@@ -464,11 +471,17 @@ const en: Dictionary = {
       focus: 'Focus this week: Sable decision, Nordvik prep, Orin contract. Which one do you want to dig into?',
     },
   },
-  prospects: { title: 'Prospects', allProspects: 'All Prospects', count: (filtered, total) => `${filtered} of ${total} opportunities`, newProspect: 'New Prospect' },
+  prospects: {
+    title: 'Prospects', allProspects: 'All Prospects', count: (filtered, total) => `${filtered} of ${total} opportunities`,
+    newProspect: 'New Prospect',
+    search: 'Search company, contact, next step...', searchLabel: 'Search prospects',
+  },
   leads: {
     title: 'Leads', allLeads: 'All Leads', count: (filtered, total) => `${filtered} of ${total} leads`, newLead: 'New Lead',
     companyName: 'Company name', priority: 'Priority', notes: 'Notes',
     empty: 'No leads yet. Drop in a company you want to circle back to.',
+    search: 'Search company, contact, connection...', searchLabel: 'Search leads',
+    noMatches: 'No leads match this search.',
     promoteToProspect: 'Make it a prospect',
     delete: 'Delete', deleteTitle: 'Delete this lead?',
     deleteDescription: 'The lead is removed permanently and cannot be restored.',

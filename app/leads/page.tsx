@@ -6,10 +6,11 @@ import { AddLeadModal } from '@/components/crm/AddLeadModal'
 import { AddProspectModal } from '@/components/crm/AddProspectModal'
 import { Button } from '@/components/crm/Button'
 import { ConfirmDialog } from '@/components/crm/ConfirmDialog'
+import { SearchInput } from '@/components/crm/SearchInput'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useDialogBehavior } from '@/lib/hooks/useDialog'
-import { Sparkles, Plus, ArrowRight, Users, X, Trash2 } from 'lucide-react'
+import { Sparkles, Plus, ArrowRight, Users, X, Trash2, Search } from 'lucide-react'
 import { priorityDot } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
 import { Lead } from '@/lib/types'
@@ -304,17 +305,27 @@ function LeadDrawer({ lead, onClose, onPromote, onDelete }: LeadDrawerProps) {
 export default function LeadsPage() {
   const { t } = useTranslations()
   const leads = useCRMStore((s) => s.leads)
-  const searchQuery = useCRMStore((s) => s.searchQuery)
   const removeLead = useCRMStore((s) => s.removeLead)
 
+  // Local to this page rather than the store's global `searchQuery` — that field
+  // is shared, so a query typed on /prospects would follow you here.
+  const [searchQuery, setSearchQuery] = useState('')
   const [addLeadOpen, setAddLeadOpen] = useState(false)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [promoteLeadId, setPromoteLeadId] = useState<string | null>(null)
 
   const filtered = useMemo(() => {
-    if (!searchQuery) return leads
-    const q = searchQuery.toLowerCase()
-    return leads.filter((l) => l.companyName.toLowerCase().includes(q))
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return leads
+    // Everything the card and drawer surface as text, so what you can read you
+    // can search — company name alone missed contacts and connections entirely.
+    return leads.filter((l) =>
+      l.companyName.toLowerCase().includes(q) ||
+      (l.contactName?.toLowerCase().includes(q) ?? false) ||
+      (l.connection?.toLowerCase().includes(q) ?? false) ||
+      (l.source?.toLowerCase().includes(q) ?? false) ||
+      l.notes.toLowerCase().includes(q)
+    )
   }, [leads, searchQuery])
 
   const selectedLead = selectedLeadId ? leads.find((l) => l.id === selectedLeadId) ?? null : null
@@ -335,16 +346,41 @@ export default function LeadsPage() {
               {t.leads.count(filtered.length, leads.length)}
             </p>
           </div>
-          <Button onClick={() => setAddLeadOpen(true)} className="shrink-0">
-            <Plus size={15} />
-            {t.leads.newLead}
-          </Button>
+          <div className="flex w-full flex-col gap-2.5 sm:w-auto sm:flex-row sm:items-center">
+            <SearchInput
+              value={searchQuery}
+              onChange={setSearchQuery}
+              placeholder={t.leads.search}
+              label={t.leads.searchLabel}
+              className="w-full sm:w-64"
+            />
+            <Button onClick={() => setAddLeadOpen(true)} className="h-11 w-full shrink-0 sm:h-[38px] sm:w-auto">
+              <Plus size={15} />
+              {t.leads.newLead}
+            </Button>
+          </div>
         </div>
 
         {filtered.length === 0 ? (
           <div className="flex min-h-56 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-10 text-center">
-            <Sparkles size={20} className="mb-3 text-muted" aria-hidden="true" />
-            <p className="max-w-sm text-[15px] text-foreground/70">{t.leads.empty}</p>
+            {searchQuery.trim() ? (
+              <>
+                <Search size={20} className="mb-3 text-muted" aria-hidden="true" />
+                <p className="max-w-sm text-[15px] text-foreground/70">{t.leads.noMatches}</p>
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="mt-3 min-h-11 rounded-lg px-4 text-[14px] font-medium text-accent transition-colors hover:bg-accent-light"
+                >
+                  {t.common.clearSearch}
+                </button>
+              </>
+            ) : (
+              <>
+                <Sparkles size={20} className="mb-3 text-muted" aria-hidden="true" />
+                <p className="max-w-sm text-[15px] text-foreground/70">{t.leads.empty}</p>
+              </>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 stagger-children">

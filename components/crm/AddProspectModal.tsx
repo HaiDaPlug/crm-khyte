@@ -513,8 +513,10 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
               onClick={() => setStage(stage === s ? null : s)}
               className={cn(
                 'h-11 touch-manipulation whitespace-nowrap rounded-md border px-3.5 text-[14px] font-medium transition-all duration-150 sm:h-9 sm:px-3',
+                // The stage tag carries its own border now, so the selected chip
+                // keeps it — the accent ring alone marks the selection.
                 stage === s
-                  ? cn(stageColors[s], 'border-transparent ring-1 ring-accent/30')
+                  ? cn(stageColors[s], 'ring-1 ring-accent/30')
                   : 'text-foreground/80 border-border-subtle hover:text-foreground hover:border-border'
               )}
             >

@@ -4,6 +4,7 @@ import { useState, useMemo, useRef } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
 import { CRMTable, TableRow } from '@/components/crm/CRMTable'
 import { FilterBar } from '@/components/crm/FilterBar'
+import { SearchInput } from '@/components/crm/SearchInput'
 import { ViewToggle, ViewMode } from '@/components/crm/ViewToggle'
 import { DetailDrawer } from '@/components/crm/DetailDrawer'
 import { AddProspectModal } from '@/components/crm/AddProspectModal'
@@ -14,7 +15,7 @@ import { useBoardPan } from '@/lib/hooks/useBoardPan'
 import { Stage, Priority, Note } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Plus } from 'lucide-react'
-import { STAGES, stageColors, priorityDot } from '@/lib/stage-config'
+import { STAGES, stageColors, stageDot, priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export default function ProspectsPage() {
@@ -24,9 +25,11 @@ export default function ProspectsPage() {
   const companies = useCRMStore((s) => s.companies)
   const contacts = useCRMStore((s) => s.contacts)
   const notes = useCRMStore((s) => s.notes)
-  const searchQuery = useCRMStore((s) => s.searchQuery)
-  const setSearchQuery = useCRMStore((s) => s.setSearchQuery)
 
+  // Local to this page, not the store's global `searchQuery` — that one field is
+  // shared by every page that reads it, so a query typed here would follow you
+  // to /leads and silently filter it too.
+  const [searchQuery, setSearchQuery] = useState('')
   const [selectedStages, setSelectedStages] = useState<Stage[]>([])
   const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([])
   const [view, setView] = useState<ViewMode>('table')
@@ -47,10 +50,11 @@ export default function ProspectsPage() {
     return allRows.filter(row => {
       if (selectedStages.length > 0 && !selectedStages.includes(row.opportunity.stage)) return false
       if (selectedPriorities.length > 0 && !selectedPriorities.includes(row.opportunity.priority)) return false
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase()
+      const q = searchQuery.trim().toLowerCase()
+      if (q) {
         const match = row.company.name.toLowerCase().includes(q) ||
           row.contact.name.toLowerCase().includes(q) ||
+          row.contact.role.toLowerCase().includes(q) ||
           row.opportunity.nextStep.toLowerCase().includes(q)
         if (!match) return false
       }
@@ -95,13 +99,22 @@ export default function ProspectsPage() {
           </div>
         </div>
 
-        <div className="mb-4">
-          <FilterBar
-            selectedStages={selectedStages}
-            selectedPriorities={selectedPriorities}
-            onStageChange={setSelectedStages}
-            onPriorityChange={setSelectedPriorities}
+        <div className="mb-4 flex flex-col gap-2.5 sm:flex-row sm:items-start sm:gap-3">
+          <SearchInput
+            value={searchQuery}
+            onChange={setSearchQuery}
+            placeholder={t.prospects.search}
+            label={t.prospects.searchLabel}
+            className="w-full sm:w-72 sm:shrink-0"
           />
+          <div className="min-w-0 flex-1">
+            <FilterBar
+              selectedStages={selectedStages}
+              selectedPriorities={selectedPriorities}
+              onStageChange={setSelectedStages}
+              onPriorityChange={setSelectedPriorities}
+            />
+          </div>
         </div>
 
         {view === 'table' ? (
@@ -112,7 +125,7 @@ export default function ProspectsPage() {
         ) : filteredRows.length === 0 ? (
           <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-8 text-center">
             <p className="text-[15px] text-foreground/70">{t.crm.table.empty}</p>
-            {(selectedStages.length > 0 || selectedPriorities.length > 0 || searchQuery) && (
+            {(selectedStages.length > 0 || selectedPriorities.length > 0 || searchQuery.trim() !== '') && (
               <button
                 type="button"
                 onClick={() => {
@@ -133,7 +146,12 @@ export default function ProspectsPage() {
               .map(([stage, rows]) => (
                 <div key={stage} className="w-[min(82vw,280px)] shrink-0 snap-start sm:w-[260px]">
                   <div className="flex items-center gap-2 mb-3">
-                    <span className={cn('inline-flex items-center h-7 px-2.5 rounded-md text-[14px] font-medium', stageColors[stage])}>
+                    <span className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[14px] font-medium', stageColors[stage])}>
+                      <span
+                        className="size-1.5 shrink-0 rounded-full"
+                        style={{ background: stageDot[stage] }}
+                        aria-hidden="true"
+                      />
                       {t.stages[stage]}
                     </span>
                     <span className="text-[13px] font-mono text-foreground/60 tabular-nums">{rows.length}</span>

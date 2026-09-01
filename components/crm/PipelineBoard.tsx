@@ -50,12 +50,12 @@ const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates 
  *  shared `stageColors` pill, so this only carries the border. */
 const stageBorder: Record<Stage, string> = {
   'New': 'border-border-subtle',
-  'Ongoing': 'border-blue-500/40',
-  'Contacted': 'border-sky-500/40',
-  'Warm': 'border-orange-500/40',
-  'Meeting Booked': 'border-violet-500/40',
-  'Proposal Sent': 'border-amber-500/40',
-  'Negotiation': 'border-yellow-500/40',
+  'Ongoing': 'border-stage-ongoing-edge',
+  'Contacted': 'border-stage-contacted-edge',
+  'Warm': 'border-stage-warm-edge',
+  'Meeting Booked': 'border-stage-meeting-edge',
+  'Proposal Sent': 'border-stage-proposal-edge',
+  'Negotiation': 'border-stage-negotiation-edge',
   'Won': 'border-success/40',
   'Lost': 'border-danger/40',
 }

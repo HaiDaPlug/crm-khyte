@@ -15,7 +15,7 @@ import { ChevronsUpDown, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } fro
 import { Opportunity, Company, Contact } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useFormat } from '@/lib/hooks/useFormat'
-import { stageColors, priorityDot } from '@/lib/stage-config'
+import { stageColors, stageDot, priorityDot } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 import { useBoardPan } from '@/lib/hooks/useBoardPan'
@@ -82,9 +82,14 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
       header: t.crm.table.stage,
       cell: ({ row }) => (
         <span className={cn(
-          'inline-flex items-center h-7 px-2.5 rounded-md text-[14px] font-medium',
+          'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[14px] font-medium whitespace-nowrap',
           stageColors[row.original.opportunity.stage]
         )}>
+          <span
+            className="size-1.5 shrink-0 rounded-full"
+            style={{ background: stageDot[row.original.opportunity.stage] }}
+            aria-hidden="true"
+          />
           {t.stages[row.original.opportunity.stage]}
         </span>
       ),
@@ -320,10 +325,15 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
                       </span>
                       <span
                         className={cn(
-                          'inline-flex min-h-7 shrink-0 items-center rounded-md px-2.5 text-[13px] font-medium',
+                          'inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium',
                           stageColors[opportunity.stage]
                         )}
                       >
+                        <span
+                          className="size-1.5 shrink-0 rounded-full"
+                          style={{ background: stageDot[opportunity.stage] }}
+                          aria-hidden="true"
+                        />
                         {t.stages[opportunity.stage]}
                       </span>
                     </span>

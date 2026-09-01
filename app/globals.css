@@ -33,6 +33,29 @@
   --grain-hue: #8A3B0E;
   --grain-base-1: color-mix(in srgb, black 46%, var(--surface-raised));
   --grain-base-2: color-mix(in srgb, black 54%, var(--surface));
+
+  /* Stage tags — see `stageColors` in lib/stage-config.ts. Tokenised rather than
+     written as Tailwind `dark:` utilities because this app themes via a
+     [data-theme] attribute, while Tailwind 4's stock `dark:` follows
+     prefers-color-scheme and would fight the in-app toggle. */
+  --stage-ongoing-text:   #CBD5E1;
+  --stage-ongoing-fill:   rgba(100, 116, 139, 0.16);
+  --stage-ongoing-edge:   rgba(100, 116, 139, 0.42);
+  --stage-contacted-text: #7DD3FC;
+  --stage-contacted-fill: rgba(14, 165, 233, 0.14);
+  --stage-contacted-edge: rgba(14, 165, 233, 0.40);
+  --stage-warm-text:      #FDBA74;
+  --stage-warm-fill:      rgba(249, 115, 22, 0.16);
+  --stage-warm-edge:      rgba(249, 115, 22, 0.42);
+  --stage-meeting-text:   #C4B5FD;
+  --stage-meeting-fill:   rgba(139, 92, 246, 0.16);
+  --stage-meeting-edge:   rgba(139, 92, 246, 0.42);
+  --stage-proposal-text:  #FCD34D;
+  --stage-proposal-fill:  rgba(245, 158, 11, 0.16);
+  --stage-proposal-edge:  rgba(245, 158, 11, 0.42);
+  --stage-negotiation-text: #F0ABFC;
+  --stage-negotiation-fill: rgba(217, 70, 239, 0.16);
+  --stage-negotiation-edge: rgba(217, 70, 239, 0.42);
 }
 
 /* Same values as :root — duplicated so a nested element can force the dark
@@ -64,6 +87,25 @@
 
   --grain-base-1: color-mix(in srgb, black 46%, var(--surface-raised));
   --grain-base-2: color-mix(in srgb, black 54%, var(--surface));
+
+  --stage-ongoing-text:   #CBD5E1;
+  --stage-ongoing-fill:   rgba(100, 116, 139, 0.16);
+  --stage-ongoing-edge:   rgba(100, 116, 139, 0.42);
+  --stage-contacted-text: #7DD3FC;
+  --stage-contacted-fill: rgba(14, 165, 233, 0.14);
+  --stage-contacted-edge: rgba(14, 165, 233, 0.40);
+  --stage-warm-text:      #FDBA74;
+  --stage-warm-fill:      rgba(249, 115, 22, 0.16);
+  --stage-warm-edge:      rgba(249, 115, 22, 0.42);
+  --stage-meeting-text:   #C4B5FD;
+  --stage-meeting-fill:   rgba(139, 92, 246, 0.16);
+  --stage-meeting-edge:   rgba(139, 92, 246, 0.42);
+  --stage-proposal-text:  #FCD34D;
+  --stage-proposal-fill:  rgba(245, 158, 11, 0.16);
+  --stage-proposal-edge:  rgba(245, 158, 11, 0.42);
+  --stage-negotiation-text: #F0ABFC;
+  --stage-negotiation-fill: rgba(217, 70, 239, 0.16);
+  --stage-negotiation-edge: rgba(217, 70, 239, 0.42);
 }
 
 [data-theme="light"] {
@@ -99,6 +141,27 @@
 
   --grain-base-1: color-mix(in srgb, black 6%, var(--surface-raised));
   --grain-base-2: color-mix(in srgb, black 3%, var(--surface));
+
+  /* Deeper text and firmer edges than the dark theme — a 400-weight hue that
+     reads fine on #242220 washes out on this warm light surface. */
+  --stage-ongoing-text:   #45525F;
+  --stage-ongoing-fill:   rgba(100, 116, 139, 0.14);
+  --stage-ongoing-edge:   rgba(100, 116, 139, 0.40);
+  --stage-contacted-text: #0369A1;
+  --stage-contacted-fill: rgba(14, 165, 233, 0.13);
+  --stage-contacted-edge: rgba(14, 165, 233, 0.42);
+  --stage-warm-text:      #C2410C;
+  --stage-warm-fill:      rgba(249, 115, 22, 0.14);
+  --stage-warm-edge:      rgba(249, 115, 22, 0.44);
+  --stage-meeting-text:   #6D28D9;
+  --stage-meeting-fill:   rgba(139, 92, 246, 0.14);
+  --stage-meeting-edge:   rgba(139, 92, 246, 0.42);
+  --stage-proposal-text:  #A16207;
+  --stage-proposal-fill:  rgba(245, 158, 11, 0.16);
+  --stage-proposal-edge:  rgba(245, 158, 11, 0.46);
+  --stage-negotiation-text: #A21CAF;
+  --stage-negotiation-fill: rgba(217, 70, 239, 0.13);
+  --stage-negotiation-edge: rgba(217, 70, 239, 0.42);
 }
 
 @theme inline {
@@ -122,6 +185,24 @@
   --color-danger-muted: var(--danger-muted);
   --color-success: var(--success);
   --color-success-muted: var(--success-muted);
+  --color-stage-ongoing-text: var(--stage-ongoing-text);
+  --color-stage-ongoing-fill: var(--stage-ongoing-fill);
+  --color-stage-ongoing-edge: var(--stage-ongoing-edge);
+  --color-stage-contacted-text: var(--stage-contacted-text);
+  --color-stage-contacted-fill: var(--stage-contacted-fill);
+  --color-stage-contacted-edge: var(--stage-contacted-edge);
+  --color-stage-warm-text: var(--stage-warm-text);
+  --color-stage-warm-fill: var(--stage-warm-fill);
+  --color-stage-warm-edge: var(--stage-warm-edge);
+  --color-stage-meeting-text: var(--stage-meeting-text);
+  --color-stage-meeting-fill: var(--stage-meeting-fill);
+  --color-stage-meeting-edge: var(--stage-meeting-edge);
+  --color-stage-proposal-text: var(--stage-proposal-text);
+  --color-stage-proposal-fill: var(--stage-proposal-fill);
+  --color-stage-proposal-edge: var(--stage-proposal-edge);
+  --color-stage-negotiation-text: var(--stage-negotiation-text);
+  --color-stage-negotiation-fill: var(--stage-negotiation-fill);
+  --color-stage-negotiation-edge: var(--stage-negotiation-edge);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-display: var(--font-instrument-serif);
