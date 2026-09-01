@@ -5,7 +5,7 @@ import { connection } from 'next/server'
 import type { CRMSnapshot, GoalsSnapshot } from '@/lib/types'
 import { isSupabaseConfigured } from '@/lib/supabase/server'
 import { getDb, isDirectDbConfigured } from './pg'
-import { isClockSkew } from './retry'
+import { isClockSkew, isTransientRead, withRetry } from './retry'
 import {
   archiveFinishedWeeks,
   countEventsSince,
@@ -97,7 +97,7 @@ async function readSnapshot(): Promise<CRMSnapshot> {
     strategyColumns,
     strategyCards,
     tasks,
-  ] = await withDbErrors(() =>
+  ] = await withDbErrors('snapshot read', () =>
     Promise.all([
       sql`select * from companies order by created_at`,
       sql`select * from contacts order by created_at`,
@@ -174,14 +174,16 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
 
   // The counted numbers are read in the same pass as the rows they belong to,
   // so a goal and its count always describe the same instant.
-  const [goals, metrics, personalGoals, weeklyCounts, totals] = await withDbErrors(() =>
-    Promise.all([
-      sql`select * from goals order by section, sort_order`,
-      sql`select * from goal_metrics order by sort_order`,
-      sql`select * from personal_goals order by colleague, sort_order`,
-      countEventsSince(weekStart(now)),
-      loadDerivedTotals(),
-    ])
+  const [goals, metrics, personalGoals, weeklyCounts, totals] = await withDbErrors(
+    'goals read',
+    () =>
+      Promise.all([
+        sql`select * from goals order by section, sort_order`,
+        sql`select * from goal_metrics order by sort_order`,
+        sql`select * from personal_goals order by colleague, sort_order`,
+        countEventsSince(weekStart(now)),
+        loadDerivedTotals(),
+      ])
   )
 
   return {
@@ -233,6 +235,7 @@ export async function loadGoalsVersion(): Promise<string> {
   const sql = getDb()
 
   const [row] = await withDbErrors(
+    'goals version read',
     () => sql`
       select
         coalesce(max(updated_at)::text, '') as stamp,
@@ -292,6 +295,7 @@ export async function loadSnapshotVersion(): Promise<string> {
   const sql = getDb()
 
   const [row] = await withDbErrors(
+    'snapshot version read',
     () => sql`
       select
         coalesce(max(updated_at)::text, '') as stamp,
@@ -321,13 +325,25 @@ export async function loadSnapshotVersion(): Promise<string> {
 }
 
 /**
- * Wraps the raw driver error with the same diagnostic shape `unwrap` used to
- * give the PostgREST path — a wrong connection string or an un-migrated
- * database should still fail loud and specific, not just "connection error".
+ * Every read goes through here: transient faults are retried, and whatever
+ * survives is relabelled.
+ *
+ * The retry is what keeps a dropped pooler connection from becoming an error
+ * screen. `loadSnapshot()` runs in the root layout, so nothing above it can
+ * catch a throw except app/global-error.tsx, which replaces the whole
+ * document — a one-second blip and the operator loses the page. Reads are
+ * pure, so re-running one costs nothing but the wait, and ./retry caps that at
+ * a couple of seconds.
+ *
+ * Failing loud is unchanged for the cases that meant it. Anything that is not
+ * transient — a wrong connection string, an un-migrated database — still
+ * throws on the first attempt, and still throws with the diagnostic shape
+ * `unwrap` used to give the PostgREST path rather than a bare "connection
+ * error".
  */
-async function withDbErrors<T>(run: () => Promise<T>): Promise<T> {
+async function withDbErrors<T>(label: string, run: () => Promise<T>): Promise<T> {
   try {
-    return await run()
+    return await withRetry(label, run, isTransientRead)
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause)
 

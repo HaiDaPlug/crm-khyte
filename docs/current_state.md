@@ -432,8 +432,29 @@ there has nothing above it to catch it:
 
 | Layer | Handles |
 |---|---|
-| `lib/db/retry.ts` | Transient faults on **writes** only now (`app/actions/crm.ts`, via PostgREST). Bounded by *elapsed time*, not attempt count: 2.5s for auth-timing faults, waiting 250ms → 500ms → 1s → then a flat 750ms. Reads no longer go through this — see Data Layer and the clock-skew entry under Known issues |
+| `lib/db/retry.ts` | Transient faults on writes (`app/actions/crm.ts`, via PostgREST) **and, since 2026-09-01, on reads again** — `withDbErrors` in `queries.ts` now wraps every read in `withRetry(label, run, isTransientRead)`. Bounded by *elapsed time*, not attempt count: 2.5s for auth-timing faults, waiting 250ms → 500ms → 1s → then a flat 750ms. See "Read retries came back" below |
 | `app/global-error.tsx` | Everything a write's retry can't, plus any read failure — renders a themed screen with a working retry button |
+
+**Read retries came back, and the predicate that gates them was silently inert
+(2026-09-01).** `TRANSIENT_READ` still held only PostgREST-era shapes — `fetch
+failed`, `socket hang up`, HTTP 502/503/504. Reads had since moved off PostgREST
+to a direct Postgres connection (see Data Layer), and that driver names a
+dropped or never-established socket in its own words: `write CONNECTION_CLOSED
+host:port`, `write CONNECT_TIMEOUT host:port`. Nothing in the original set
+matched either, so on the read path that actually runs the predicate never
+returned true and one blip against the pooler was a full error screen. Both
+strings are now in the pattern, and `withDbErrors` retries reads rather than
+rethrowing immediately.
+
+`CONNECTION_ENDED` and `CONNECTION_DESTROYED` are deliberately **not** in the
+set: they mean the pool object itself is gone rather than that a connection
+dropped, so retrying against it cannot reconnect — better to fail at once than
+to spend the whole budget first. `withDbErrors` also now takes a `label`
+(`'snapshot read'`, `'goals read'`, `'snapshot version read'`, `'goals version
+read'`) so a retried fault says which read it came from. Non-transient faults —
+a wrong connection string, an un-migrated database — are unchanged: they still
+throw on the first attempt, still with `unwrap`'s diagnostic shape rather than a
+bare "connection error".
 
 **`global-error.tsx` is the only boundary in the app.** A segment `error.tsx`
 does not wrap the layout above it, and `loadSnapshot()` runs in
@@ -1639,6 +1660,13 @@ for a few weeks and found to actually track "things a person would flag."
   validated server-side), self-clearing, ~4s observed duration, trigger never
   identified — is preserved in `lib/db/retry.ts`'s header comment and in git
   history (`9c9cd60`, `8fc1933`'s predecessor) rather than duplicated here.
+
+  **Side effect found 2026-09-01:** moving reads to a different driver also
+  moved them out from under `TRANSIENT_READ`, whose patterns all described
+  PostgREST/fetch faults. The read path kept a retry predicate that could no
+  longer match anything it saw, trading a rare JWT fault for an unretried
+  connection blip. Fixed by teaching the pattern the driver's own error strings
+  — see "Read retries came back" under Error handling.
 
 - **New from the fix above: `postgres.js` must be cached on `globalThis`, not a
   module-level singleton.** Supabase's Session pooler caps concurrent clients per
