@@ -179,7 +179,13 @@ function RemoveButton({ onClick, label }: { onClick: () => void; label: string }
 export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
   // The live figures, so the editor shows the same numbers as the wallpaper
   // rather than a stale stored value the board no longer reads.
+  //
+  // Read straight from props on every render, deliberately, while the editable
+  // rows below are seeded into useState once. That split is what makes
+  // GoalsSync work: `router.refresh()` re-runs the server component and these
+  // two update, while a half-typed goal title in state is left untouched.
   const derived = initial.totals
+  const counts = initial.weeklyCounts
   const [goals, setGoals] = useState<Goal[]>(initial.goals)
   const [metrics, setMetrics] = useState<GoalMetric[]>(initial.metrics)
   const [personalGoals, setPersonalGoals] = useState<PersonalGoal[]>(initial.personalGoals)
@@ -431,69 +437,96 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
           <p className="py-2 text-[13.5px] text-foreground/40">Inget här ännu.</p>
         ) : (
           <ul className="flex flex-col gap-3">
-            {inSection('weekly').map((goal) => (
-              <li key={goal.id} className="flex items-start gap-2">
-                <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[1fr_auto_auto]">
-                  <input
-                    className={inputClass}
-                    value={goal.title}
-                    placeholder="T.ex. Möten bokade"
-                    onChange={(e) =>
-                      setGoals((prev) =>
-                        prev.map((g) =>
-                          g.id === goal.id ? { ...g, title: e.target.value } : g
+            {inSection('weekly').map((goal) => {
+              // Counted, not typed — the same resolution DisplayBoard uses, so
+              // the editor and the wallpaper cannot disagree about the week.
+              // An unbound row falls back to `progress` exactly as the board
+              // does, rather than silently reading 0.
+              const actual = goal.metricKind
+                ? (counts[goal.metricKind] ?? 0)
+                : (goal.progress ?? 0)
+              const hit = goal.metricTarget !== undefined && actual >= goal.metricTarget
+
+              return (
+                <li key={goal.id} className="flex items-start gap-2">
+                  <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
+                    <input
+                      className={inputClass}
+                      value={goal.title}
+                      placeholder="T.ex. Möten bokade"
+                      onChange={(e) =>
+                        setGoals((prev) =>
+                          prev.map((g) =>
+                            g.id === goal.id ? { ...g, title: e.target.value } : g
+                          )
                         )
-                      )
-                    }
-                    onBlur={(e) => editGoal(goal.id, { title: e.target.value })}
-                  />
-                  <select
-                    className={cn(inputClass, 'sm:w-52')}
-                    value={goal.metricKind ?? 'meeting_booked'}
-                    onChange={(e) =>
-                      editGoal(goal.id, { metricKind: e.target.value as CrmEventKind })
-                    }
-                  >
-                    {(Object.keys(METRIC_KIND_LABELS) as CrmEventKind[]).map((kind) => (
-                      <option key={kind} value={kind}>
-                        {METRIC_KIND_LABELS[kind]}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="number"
-                    min={0}
-                    className={cn(inputClass, 'sm:w-24', 'tabular-nums')}
-                    value={goal.metricTarget ?? ''}
-                    placeholder="Mål"
-                    onChange={(e) =>
-                      setGoals((prev) =>
-                        prev.map((g) =>
-                          g.id === goal.id
-                            ? {
-                                ...g,
-                                metricTarget:
-                                  e.target.value === ''
-                                    ? undefined
-                                    : Number(e.target.value),
-                              }
-                            : g
+                      }
+                      onBlur={(e) => editGoal(goal.id, { title: e.target.value })}
+                    />
+                    <select
+                      className={cn(inputClass, 'sm:w-52')}
+                      value={goal.metricKind ?? 'meeting_booked'}
+                      onChange={(e) =>
+                        editGoal(goal.id, { metricKind: e.target.value as CrmEventKind })
+                      }
+                    >
+                      {(Object.keys(METRIC_KIND_LABELS) as CrmEventKind[]).map((kind) => (
+                        <option key={kind} value={kind}>
+                          {METRIC_KIND_LABELS[kind]}
+                        </option>
+                      ))}
+                    </select>
+                    {/* Read-only: this is what the CRM recorded this week.
+                        Showing it as an input would invite edits that nothing
+                        stores — the number comes from crm_events, not from a
+                        column. Green once the target is met, the same single
+                        signal the wallpaper uses. */}
+                    <div className="flex items-center justify-end gap-2 sm:w-20">
+                      <span className="label-mono">Nu</span>
+                      <span
+                        className={cn(
+                          'font-mono text-[15px] tabular-nums',
+                          hit ? 'text-success' : 'text-foreground'
+                        )}
+                      >
+                        {actual}
+                      </span>
+                    </div>
+                    <input
+                      type="number"
+                      min={0}
+                      className={cn(inputClass, 'sm:w-24', 'tabular-nums')}
+                      value={goal.metricTarget ?? ''}
+                      placeholder="Mål"
+                      onChange={(e) =>
+                        setGoals((prev) =>
+                          prev.map((g) =>
+                            g.id === goal.id
+                              ? {
+                                  ...g,
+                                  metricTarget:
+                                    e.target.value === ''
+                                      ? undefined
+                                      : Number(e.target.value),
+                                }
+                              : g
+                          )
                         )
-                      )
-                    }
-                    onBlur={(e) =>
-                      editGoal(goal.id, {
-                        metricTarget:
-                          e.target.value === ''
-                            ? undefined
-                            : Math.max(0, Number(e.target.value) || 0),
-                      })
-                    }
-                  />
-                </div>
-                <RemoveButton onClick={() => removeGoal(goal.id)} label="Ta bort" />
-              </li>
-            ))}
+                      }
+                      onBlur={(e) =>
+                        editGoal(goal.id, {
+                          metricTarget:
+                            e.target.value === ''
+                              ? undefined
+                              : Math.max(0, Number(e.target.value) || 0),
+                        })
+                      }
+                    />
+                  </div>
+                  <RemoveButton onClick={() => removeGoal(goal.id)} label="Ta bort" />
+                </li>
+              )
+            })}
           </ul>
         )}
       </SectionShell>

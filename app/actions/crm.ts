@@ -14,7 +14,12 @@ import type {
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase/server'
 import { isRetryableWrite, withRetry } from '@/lib/db/retry'
 import { requireAuth } from '@/lib/auth/guard'
-import { eventsForStageChange, recordEvents } from '@/lib/db/events'
+import {
+  PIPELINE_START,
+  eventsForArrival,
+  recordEvents,
+  type RecordEventInput,
+} from '@/lib/db/events'
 import {
   toCompanyInsert,
   toCompanyUpdate,
@@ -167,9 +172,37 @@ export async function createOpportunity(
   opportunity: Opportunity
 ): Promise<ActionResult> {
   if (skipUnconfigured()) return guardedOk()
-  return run('opportunities', async () =>
+
+  const result = await run('opportunities', async () =>
     getSupabase().from('opportunities').insert(toOpportunityInsert(opportunity))
   )
+
+  /**
+   * A prospect added at a stage past the front of the pipeline has already
+   * been worked, and the log has to say so.
+   *
+   * This is the team's main way of recording outreach: they contact a company
+   * first and enter it afterwards, filed straight into Contacted with the date
+   * it happened. Recording only on stage *changes* missed all of it, so a day
+   * of calls read as zero on the board.
+   *
+   * Dated by `lastInteraction`, which is why adding a prospect contacted last
+   * week credits last week rather than today. AddProspectModal fills that field
+   * with today when it is left blank, which is the right default here: the
+   * stage decides whether anything is recorded at all, and the date only
+   * decides which week it lands in.
+   */
+  if (result.ok) {
+    await recordEvents(
+      eventsForArrival(PIPELINE_START, opportunity.stage, {
+        subjectId: opportunity.id,
+        colleague: opportunity.followedUpBy,
+        occurredOn: opportunity.lastInteraction,
+      })
+    )
+  }
+
+  return result
 }
 
 export async function updateOpportunity(
@@ -206,16 +239,45 @@ export async function updateOpportunity(
   )
 
   // Only after the write is known to have landed — see lib/db/events.ts.
-  if (result.ok && updates.stage !== undefined && previousStage) {
-    const kinds = eventsForStageChange(previousStage, updates.stage)
-    await recordEvents(
-      kinds.map((kind) => ({
-        kind,
+  if (result.ok) {
+    const events: RecordEventInput[] = []
+
+    if (updates.stage !== undefined && previousStage) {
+      events.push(
+        ...eventsForArrival(previousStage, updates.stage, {
+          subjectId: id,
+          colleague: updates.followedUpBy,
+          // A drag is dated now, not by lastInteraction: moving a card today
+          // is something that happened today, whatever date the deal carries.
+        })
+      )
+    }
+
+    /**
+     * Setting "senaste kontakt" is the other half of how outreach gets logged.
+     *
+     * Without this the counter only ever saw the pipeline drag, so a week spent
+     * working the phone and recording it in the drawer read as zero prospects
+     * contacted. Dated to the day entered rather than to now, so logging on
+     * Thursday that the call happened Tuesday files it in Tuesday's week.
+     *
+     * Update only, deliberately — not createOpportunity. AddProspectModal
+     * defaults this field to today when it is left blank (see its submit
+     * handler), so counting it on creation would score every prospect added as
+     * a prospect contacted, which is the one number this must not invent.
+     */
+    if (updates.lastInteraction) {
+      events.push({
+        kind: 'prospect_contacted',
         subjectId: id,
         colleague: updates.followedUpBy,
-        detail: { from: previousStage, to: updates.stage },
-      }))
-    )
+        detail: { loggedVia: 'last_interaction' },
+        occurredOn: updates.lastInteraction,
+        oncePerDay: true,
+      })
+    }
+
+    await recordEvents(events)
   }
 
   return result

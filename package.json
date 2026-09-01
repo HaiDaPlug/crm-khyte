@@ -9,6 +9,7 @@
     "db:push": "node scripts/db-push.mjs",
     "db:status": "node scripts/db-push.mjs --dry-run",
     "db:skew": "node scripts/skew-probe.mjs",
+    "backfill:events": "node scripts/backfill-events.mjs",
     "supabase": "node scripts/supabase.mjs",
     "db:link": "node scripts/supabase.mjs link"
   },

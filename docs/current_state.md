@@ -1,6 +1,6 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-08-31
+**Date:** 2026-09-01
 **Phase:** MVP + persistence + password gate + derived direction board +
 cross-browser live sync
 (Supabase live; shared-password auth, no accounts)
@@ -33,6 +33,18 @@ pipeline are recomputed from `opportunities` on every read, and the weekly
 non-negotiables are counted from `crm_events`. Nothing on the wallpaper can
 drift from what the CRM holds — which also means it reads 0 revenue until deals
 are actually marked Won.
+
+**Outreach is counted on arrival, not only on movement (2026-09-01).** The
+counters had been reading close to zero — 3 prospects contacted in a week the
+team had made 19 — because activity was recorded only when an opportunity's
+stage *changed*, and this team enters a company *after* calling it, filed
+straight into `Contacted`. Creation logged nothing at all. Prospects created at
+a stage now record the thresholds they arrive past, dated by `lastInteraction`
+so a prospect you called last week credits last week, deduped per prospect per
+day so logging the same call both ways counts once. `/goals` also now displays
+the weekly counts it had been receiving and discarding, and refreshes itself
+instead of freezing at first render. See Derived board metrics and Direction
+editor live updates.
 
 ---
 
@@ -73,7 +85,7 @@ every prospect carried a follow-up nobody had chosen; it now opens empty and
 blank dates render as `—` wherever they appear. |
 | `/pipeline` | Functional | Nine-stage dnd-kit kanban with mouse, delayed long-press touch and keyboard sensors. Mobile columns snap horizontally, expose a next-column peek/edge cue, and use natural page height instead of a locked viewport. Active value, drop feedback, off-board picker, background panning and drag-edge auto-scroll remain intact. Source data is Opportunities (Prospects), not the new Leads. |
 | `/strategy` | Functional | Opportunity selector + per-deal strategy board with add/rename/delete. The selector, summary and empty state reflow on phones; board columns snap/peek horizontally, touch actions stay visible, and drag supports mouse, long-press touch and keyboard input. |
-| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, one merged **`goal`** family (former `annual`+`quarter`, each with an optional `targetDate` — see Goals timeline below), weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. Top of the page carries the copyable wallpaper links, one per colleague, plus a link to `/goals/timeline`. |
+| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, one merged **`goal`** family (former `annual`+`quarter`, each with an optional `targetDate` — see Goals timeline below), weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. **Weekly non-negotiables now show their live count** beside the target, resolved exactly as `DisplayBoard` resolves it — the page had been handed `weeklyCounts` all along and rendered none of it, so a week of recorded outreach was invisible here no matter how often you reloaded. The page also keeps itself current now rather than freezing at first render; see Direction editor live updates below. Top of the page carries the copyable wallpaper links, one per colleague, plus a link to `/goals/timeline`. |
 | `/goals/timeline` | Functional | New. Read view of every `goal`-family row, grouped by a period derived from its `targetDate` (see Goals timeline below) rather than by the `sort_order` the editor lists them in — the thing this page exists to answer is "what's coming up soonest", which the editor cannot show at all. No editing here; `GoalsEditor` already owns writes to these rows, and duplicating that would just be a second place the same field could go stale. |
 | `/goals/display/[colleague]` | Functional | The wallpaper. Fills the screen edge to edge (no letterboxing) with zero chrome, rendered outside `AppShell` and sized off a single `--u` unit blending `vw` and `vh`, so the composition scales whole to any monitor. Bento header: the wordmark left (scaled up, swapped from the bare K mark), three enlarged KPI tiles right with bolder eyebrow labels, a gradient divider beneath the header. The north star statement no longer renders here (see Goals timeline below — its section/editor/DB rows are untouched, it's just not drawn). Below the divider, three columns separated by hairline dividers between rows — the `goal` family's three soonest-by-date entries, this week's counted non-negotiables, and the viewer's own personal goals — every list hard-capped at three rows. Checks a version stamp every 5s and reloads only on change, with an unconditional 5-minute reload as backstop (`BoardRefresh.tsx`). Reachable with a session or a signed `?k=` display token. |
 | `/companies` | **Archived** | Not deleted — moved to `_archived/app/companies/page.tsx`, outside the `app/` tree so Next stops routing it. Not linked from the sidebar (`AppSidebar.tsx`'s `navItems`, shared with `MobileChrome.tsx`) either. `AddCompanyModal.tsx` and the companies mock data are untouched and now unused until the page is restored. Prior description, kept for when it comes back: responsive card grid with deal/contact counts and total value, search with localized no-result state, full-screen mobile detail dialog, three enrichment fields (revenue/employee count/about) — see Company enrichment fields below. |
@@ -570,6 +582,51 @@ rather than a threshold, so re-closing from Lost counts again; `Lost` is
 excluded from every crossing so marking a deal lost never looks like progress.
 11 transition cases verified, including every drag-back case.
 
+**Arrival, not only transition — a prospect can be born contacted.** Recording
+only on stage *changes* missed how this team actually works: they call a company
+first and enter it afterwards, filed straight into `Contacted` with the date of
+the call. `createOpportunity` logged nothing at all, so a day on the phone read
+as zero. Of 22 prospects added on 2026-08-31, 18 were created directly at
+`Contacted` while the week's counter showed 3. `eventsForArrival` now treats a
+deal created at a stage as having crossed every threshold below it, measuring
+from `PIPELINE_START`, and both the create and the update path go through it so
+the two cannot drift apart.
+
+**Outreach is dated by `lastInteraction`, not by when it was typed.** Adding a
+prospect you called last Tuesday credits last Tuesday's week — `occurredOn`
+fills `occurred_at`, which the migration always intended for exactly this. Dates
+are parsed field-by-field into local midnight rather than through
+`new Date(string)`, which reads a bare date as UTC and, west of Greenwich, would
+file a touch in the previous day and possibly the previous week. The stage
+decides *whether* anything is recorded and the date only decides *which week* it
+lands in, which is why `AddProspectModal` defaulting a blank date to today is
+harmless. A stage drag stays dated now: moving a card today happened today,
+whatever date the deal carries.
+
+**`prospect_contacted` is deduped per prospect per day.** It is the one kind two
+gestures both report — the stage the prospect is filed under, and "senaste
+kontakt" — so without this, doing both for one call counts twice. The check
+reads before appending, which the append-only rule permits: it forbids editing
+history, not declining to write the same fact twice. It also guards a batch
+against itself, since two events in one array are both absent from the database
+and would each otherwise pass. It **fails open** — a check that errors records
+anyway, because the write it accompanies has already succeeded, and
+under-counting is the failure this feature exists to prevent. No other kind opts
+in: a deal can genuinely reach Meeting Booked and Won on the same day.
+
+**Backfill: `npm run backfill:events`.** Reconstructs events for prospects
+entered before creation was recorded, applying the same rule and the same
+per-day dedupe, dated by `last_interaction` falling back to `created_at`. Dry
+run by default, `-- --apply` writes. It duplicates the stage list from
+`lib/stage-config.ts` because a plain `.mjs` cannot import the TypeScript
+module; an unrecognised stage ranks -1 and so records nothing, erring toward
+never inventing outreach.
+
+**Verified 2026-09-01** against the live database: the backfill wrote 18
+`prospect_contacted` events — 16 into the current week, 2 into the week of
+2026-08-17, none into the already-frozen week of 2026-08-24 — taking the current
+week from 3 to 19, and a second run wrote nothing.
+
 `crm_events` is append-only and its `subject_id` is deliberately **not** a
 foreign key: an event is a historical fact, and deleting the lead or
 opportunity it refers to must not delete the fact that it happened, or a past
@@ -683,6 +740,55 @@ the count half (89 → 88) while the timestamp stood still, which is precisely t
 gap the count exists to close. Full loop driven end to end — baseline stamp, an
 out-of-band write, poll sees the change, snapshot carries the new value, and the
 following idle poll correctly fetches nothing.
+
+### Direction editor live updates (app/api/goals/version/ + components/goals/GoalsSync.tsx)
+
+`/goals` was the last screen with no refresh loop. The wallpaper had one and the
+CRM had one; the editor rendered once and froze, so a week of outreach could
+land in `crm_events` without a number on the page ever moving. Third consumer of
+the same stamp `loadGoalsVersion()` already produced.
+
+**The editor also never displayed the counted numbers at all.** `loadGoals()`
+had been returning `weeklyCounts` all along and `GoalsEditor` dropped it on the
+floor — the weekly rows rendered a title, an event kind and a target, with no
+actual. "3 av 15 möten" existed only on the wallpaper, so no amount of
+refreshing would have helped. Each weekly row now shows its live count beside
+the target, resolved exactly as `DisplayBoard` does (including the `progress`
+fallback for a row bound to no kind, rather than silently reading 0), and turns
+green on the same single signal.
+
+**`router.refresh()` here, unlike either loop above.** The wallpaper can afford
+`location.reload()` because it keeps no client state; the editor keeps a great
+deal — a half-typed goal title, an open number field — and a hard reload would
+eat it. A refresh merges the new RSC payload without losing unaffected `useState`
+(`use-router.md` in the bundled Next docs). That works only because of how
+`GoalsEditor` is arranged: the derived figures are read straight from props and
+update, while the editable rows are seeded into `useState` once and are left
+alone. That split is now load-bearing and documented at the top of the
+component. It is equally not `SnapshotSync`'s merge-into-the-store approach —
+there is no goals slice in that store to merge into, so the server round-trip is
+the only way these numbers move.
+
+Note this is **not** the `refresh()` that Next 16 exports from `next/cache`,
+which is Server-Action-only and throws anywhere else. This is the client
+router's method, which is unchanged.
+
+A second route rather than reusing the wallpaper's: that one lives under a
+`[colleague]` segment and answers for a named board, while the editor belongs to
+no colleague and pointing it at someone's display URL would tie the page to
+whichever name happened to be first in the roster. It is gated on the session
+alone — there is no display-token variant, because the editor has no anonymous
+surface — and re-checks `isAuthenticated()` itself rather than trusting
+`proxy.ts`, a Route Handler being reachable by direct fetch. The stamp is read
+**before** the rows on the page, the same load-bearing ordering as the CRM loop
+above and the opposite trade to the wallpaper's display page, which reads both
+together because there a redundant wake-up costs a full reload rather than a
+cheap RSC round-trip. Polling pauses on a hidden tab, and a failed check leaves
+the last good render up.
+
+**Verified 2026-09-01** against the live database and dev server: unauthenticated
+→ 307 to `/login`; authed → 200 with a real stamp and `no-store`; `/goals` renders
+200 with the weekly readout present and `GoalsSync` mounted.
 
 ### Goals timeline (lib/goal-period.ts + app/goals/timeline/)
 
@@ -844,6 +950,7 @@ silently. Demo mode still needs them.
 | `npm run db:status` | dry run — lists migrations that would be applied |
 | `npm run db:push` | applies pending migrations (`-- --include-seed` also runs `seed.sql`) |
 | `npm run db:link -- --project-ref <ref>` | links the CLI to a project |
+| `npm run backfill:events` | dry run — reconstructs missing `crm_events` (`-- --apply` writes) |
 | `npm run supabase -- <cmd>` | any other CLI command, same scoped auth |
 
 Twelve migration files exist; all are applied to `wmnobqhypkocirfybqsj` (see the

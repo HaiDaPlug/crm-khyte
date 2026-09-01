@@ -3,11 +3,12 @@ import { CalendarClock } from 'lucide-react'
 
 import { Topbar } from '@/components/layout/Topbar'
 import { GoalsEditor } from '@/components/goals/GoalsEditor'
+import { GoalsSync } from '@/components/goals/GoalsSync'
 import { WallpaperLinks } from '@/components/goals/WallpaperLinks'
 import { requireSession } from '@/lib/auth/guard'
 import { displayToken } from '@/lib/auth/display-token'
 import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
-import { loadGoals } from '@/lib/db/queries'
+import { loadGoals, loadGoalsVersion } from '@/lib/db/queries'
 
 /**
  * The editable workspace. Company direction in, wallpapers out.
@@ -22,6 +23,14 @@ export default async function GoalsPage() {
   // page that reads real data.
   await requireSession()
 
+  // The stamp is read first and sequentially, not in parallel with the rows —
+  // the same ordering app/layout.tsx uses for the CRM, and for the same reason.
+  // A write landing between the two reads must leave the stamp behind the data
+  // rather than ahead of it: behind costs one redundant refresh, ahead silently
+  // swallows the change. Note this is the opposite trade to the wallpaper's
+  // display page, which reads both together because there a redundant wake-up
+  // means a full `location.reload()` rather than a cheap RSC round-trip.
+  const version = await loadGoalsVersion()
   const snapshot = await loadGoals()
 
   // Tokens are minted server-side and handed down as finished URLs. The secret
@@ -36,6 +45,7 @@ export default async function GoalsPage() {
 
   return (
     <>
+      <GoalsSync version={version} />
       <Topbar />
       <main className="min-w-0 flex-1 px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:px-8 lg:py-8">
         <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
