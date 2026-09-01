@@ -13,8 +13,12 @@ against the live API.
 applied (`opportunities.sort_order`, backfilled per-stage from the existing
 visual order — see Pipeline board interaction). `20260830120000_goal_target_date`
 and `20260830130000_company_enrichment` are now **applied** — all 15 files in
-`supabase/migrations/` are, verified against
+`supabase/migrations/` were, verified against
 `supabase_migrations.schema_migrations` on 2026-08-31.
+`20260901120000_stage_ongoing` and `20260901120100_stage_ongoing_backfill`
+(the `New`/`Ongoing` stage rename — see Pipeline board interaction) are
+**written but not yet pushed**; `npm run db:push -- --dry-run` confirms these
+are the only two pending files.
 `20260830120000` originally tried to add the `goal` enum value and read it
 back (`update ... set section = 'goal'`) in one file, which Postgres rejects
 (`SQLSTATE 55P04` — a freshly added enum value cannot be used in the same
@@ -170,7 +174,22 @@ long-press drag/drop and real hardware safe areas.
 - `stageColors: Record<Stage, string>` — Tailwind badge classes for all 9 pipeline stages
 - `priorityDot: Record<Priority, string>` — fixed hex colors (not Tailwind theme classes) for all 4 priority levels: critical `#E05252`, high `#E09040`, medium `#D4943C`, low `#4CAF72`. Deliberately not theme tokens — `bg-accent`/`bg-muted` shift hue between light/dark by design, but a priority indicator needs to read as the same color regardless of theme. Consumers apply it via inline `style={{ background: priorityDot[p] }}`, not className
 - `priorityRamp: Record<Priority, { from: string; to: string }>` — two-stop gradients for the priority `ColorSlider`. Kept **separate** from `priorityDot` rather than replacing it: a 6px dot reads best flat and saturated, while a large fill needs a gradient. `priorityDot` now has ten consumers, including the new `leads/page` cards and drawer
-- Single source of truth; imported by `CRMTable`, `prospects/page`, `leads/page`, `pipeline/page`, `AddProspectModal` (stage pills), `FilterBar`, `LeadCard`, and `dashboard/page` — previously `FilterBar`, `LeadCard`, and the dashboard each had their own duplicate (and inconsistent) local copy; consolidated into this one
+- Single source of truth; imported by `CRMTable`, `prospects/page`, `leads/page`, `pipeline/page`, `AddProspectModal` (stage pills), `FilterBar`, `LeadCard`, and `dashboard/page` — previously `FilterBar`, `LeadCard`, and the dashboard each had their own duplicate (and inconsistent) local copy; consolidated into this one. `prospects/page` and `FilterBar` still carried their own hardcoded `Stage[]` list despite the import existing for other exports — fixed 2026-09-01 alongside the stage rename below, so `STAGES` can't drift out from under them again. `PipelineBoard.tsx` keeps its own local `STAGES`/`stageBorder` (dnd-kit needs the array in scope for `SortableContext`/column rendering, and `stageBorder` has no equivalent in `stage-config.ts`) — not deduped, out of scope for this pass
+
+**Renamed 2026-09-01: `New`/`Researched` collapsed into `New`/`Ongoing`
+("Undersökt"/"Pågående").** The board was carrying three early-pipeline
+columns (New, Researched, Contacted) where the team only ever used two in
+practice. `New` keeps its enum value but now displays as "Undersökt" (was
+"Ny"); `Researched` is retired from the `Stage` TS union and the `STAGES`
+array — existing `Researched` rows migrate to `New` — and a new value,
+`Ongoing` ("Pågående"), takes the vacated second slot, starting empty.
+`Researched` stays defined on the Postgres `crm_stage` enum forever (enum
+values can't be dropped) but the app never writes it again.
+`20260901120000_stage_ongoing.sql` adds the enum value (its own migration —
+see the enum-transaction rule below); `20260901120100_stage_ongoing_backfill.sql`
+merges `Researched` rows into `New` and renumbers `sort_order` across the
+merged column so nothing collides. **Written but not yet pushed** — run
+`npm run db:push` (or `-- --dry-run` first) to apply.
 
 ### Display Settings and localization (`lib/settings.ts` + `lib/i18n/` + hooks)
 
@@ -295,6 +314,26 @@ column's stage (`addToPipeline(id, stage)`) rather than always landing in
 `z-30`, so a second press on it reliably toggles the picker closed — with no
 explicit stacking the overlay could end up front of the button and swallow
 the second click.
+
+**Fixed 2026-08-31: a drag would silently reorder within its starting column
+instead of moving stage, and the move never persisted.** Both `PipelineBoard`
+and `StrategyBoard` used dnd-kit's `closestCorners` for `collisionDetection`.
+Every card inside a `SortableContext` is its own collision candidate, not just
+the column — once a column held a couple dozen cards (Kontaktad, in practice),
+that column's sheer number of stacked rects out-scored every other column's
+corners for corner-distance, no matter where the pointer actually was. `over`
+locked onto a card in the crowded column at the first frame of the drag and
+never updated again for the rest of it — confirmed directly: dnd-kit's own
+`onDragMove` event showed the pointer delta tracking correctly move by move,
+while `over` stayed pinned to the same card id the whole time. A card dragged
+toward Varm or Möte bokat would drop back into Kontaktad's own order instead.
+Fix: switched `collisionDetection` to `pointerWithin`, which hit-tests the
+pointer's real position instead of scoring corner distances. Verified live —
+a card dragged to a distant column now lands there immediately and survives a
+reload. (A stable-identity fix to the `useSensor(MouseSensor, …)` options
+objects landed in the same pass — real, but not what was causing this; kept
+because passing a fresh object every render still defeats `useSensors`'
+memoization for no reason.)
 
 ### Tasks (components/crm/TaskBoard.tsx, app/tasks/)
 

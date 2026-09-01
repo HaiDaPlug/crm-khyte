@@ -14,7 +14,7 @@ import { useBoardPan } from '@/lib/hooks/useBoardPan'
 import { Stage, Priority, Note } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Plus } from 'lucide-react'
-import { stageColors, priorityDot } from '@/lib/stage-config'
+import { STAGES, stageColors, priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export default function ProspectsPage() {
@@ -68,8 +68,7 @@ export default function ProspectsPage() {
 
   const rowsByStage = useMemo(() => {
     const grouped: Record<string, TableRow[]> = {}
-    const stages: Stage[] = ['New', 'Researched', 'Contacted', 'Warm', 'Meeting Booked', 'Proposal Sent', 'Negotiation', 'Won', 'Lost']
-    stages.forEach(s => grouped[s] = [])
+    STAGES.forEach(s => grouped[s] = [])
     filteredRows.forEach(r => {
       if (grouped[r.opportunity.stage]) grouped[r.opportunity.stage].push(r)
     })

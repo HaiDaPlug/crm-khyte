@@ -69,13 +69,13 @@ export const mockOpportunities: Opportunity[] = [
   },
   {
     id: 'o7', companyId: 'c1', contactId: 'ct1',
-    stage: 'Researched', priority: 'medium', inPipeline: false,
+    stage: 'New', priority: 'medium', inPipeline: false,
     dealValue: 32000,
     nextStep: 'Draft personalized outreach email',
     followUpDate: '2026-04-01',
     lastInteraction: '2026-03-21',
     tags: ['researched'],
     notes: 'Secondary opportunity at Meridian Labs for their EU expansion team.',
-    order: 0,
+    order: 1,
   },
 ]

@@ -9,7 +9,7 @@ import {
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
-  closestCorners,
+  pointerWithin,
   DragStartEvent,
   useSensor,
   useSensors,
@@ -43,6 +43,13 @@ const LANE_ACCENTS = [
 ]
 
 const laneAccent = (index: number) => LANE_ACCENTS[index % LANE_ACCENTS.length]
+
+// Hoisted so useSensor's identity is stable across renders — see the same
+// constants in PipelineBoard.tsx for why an inline object here breaks a drag
+// after its first dragOver.
+const MOUSE_ACTIVATION_CONSTRAINT = { distance: 6 }
+const TOUCH_ACTIVATION_CONSTRAINT = { delay: 250, tolerance: 8 }
+const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
 
 /** Keeps the phone-only edge cue in sync with the native horizontal scroller. */
 function useForwardScrollAffordance(
@@ -351,9 +358,9 @@ export function StrategyBoard({ opportunityId }: StrategyBoardProps) {
   const [overColumn, setOverColumn] = useState<string | null>(null)
   const boardRef = useRef<HTMLDivElement>(null)
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(MouseSensor, { activationConstraint: MOUSE_ACTIVATION_CONSTRAINT }),
+    useSensor(TouchSensor, { activationConstraint: TOUCH_ACTIVATION_CONSTRAINT }),
+    useSensor(KeyboardSensor, KEYBOARD_SENSOR_OPTIONS)
   )
 
   const columns = useMemo(
@@ -464,7 +471,12 @@ export function StrategyBoard({ opportunityId }: StrategyBoardProps) {
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCorners}
+      // See the same switch in PipelineBoard.tsx: closestCorners scores every
+      // card in a lane as its own collision candidate, so a lane with enough
+      // cards out-scores every other lane's corners for the whole drag,
+      // regardless of where the pointer actually is. pointerWithin hit-tests
+      // the pointer's real position instead.
+      collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}

@@ -4,10 +4,10 @@ import { useId, useState } from 'react'
 import { Filter, X, ChevronDown } from 'lucide-react'
 import { Stage, Priority } from '@/lib/types'
 import { cn } from '@/lib/utils'
-import { priorityDot } from '@/lib/stage-config'
+import { STAGES, priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
-const stages: Stage[] = ['New', 'Researched', 'Contacted', 'Warm', 'Meeting Booked', 'Proposal Sent', 'Negotiation', 'Won', 'Lost']
+const stages = STAGES
 const priorities: Priority[] = ['critical', 'high', 'medium', 'low']
 
 interface FilterBarProps {

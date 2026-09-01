@@ -397,8 +397,8 @@ const sv = {
     dashboard: 'Till översikten',
   },
   stages: {
-    New: 'Ny',
-    Researched: 'Undersökt',
+    New: 'Undersökt',
+    Ongoing: 'Pågående',
     Contacted: 'Kontaktad',
     Warm: 'Varm',
     'Meeting Booked': 'Möte bokat',
@@ -600,7 +600,7 @@ const en: Dictionary = {
     helpAfterEnv: 'are still valid.', reference: 'Reference:', retry: 'Try again', dashboard: 'Back to dashboard',
   },
   stages: {
-    New: 'New', Researched: 'Researched', Contacted: 'Contacted', Warm: 'Warm', 'Meeting Booked': 'Meeting Booked',
+    New: 'Researched', Ongoing: 'Ongoing', Contacted: 'Contacted', Warm: 'Warm', 'Meeting Booked': 'Meeting Booked',
     'Proposal Sent': 'Proposal Sent', Negotiation: 'Negotiation', Won: 'Won', Lost: 'Lost',
   },
   priorities: { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' },

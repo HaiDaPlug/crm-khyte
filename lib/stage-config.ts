@@ -1,13 +1,13 @@
 import { Stage, Priority } from '@/lib/types'
 
 export const STAGES: Stage[] = [
-  'New', 'Researched', 'Contacted', 'Warm',
+  'New', 'Ongoing', 'Contacted', 'Warm',
   'Meeting Booked', 'Proposal Sent', 'Negotiation', 'Won', 'Lost',
 ]
 
 export const stageColors: Record<Stage, string> = {
   'New':            'bg-surface-raised text-foreground-dim',
-  'Researched':     'bg-blue-500/10 text-blue-400',
+  'Ongoing':        'bg-blue-500/10 text-blue-400',
   'Contacted':      'bg-sky-500/10 text-sky-400',
   'Warm':           'bg-orange-500/10 text-orange-400',
   'Meeting Booked': 'bg-violet-500/10 text-violet-400',

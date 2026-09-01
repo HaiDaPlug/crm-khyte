@@ -2,7 +2,7 @@ export type Priority = 'low' | 'medium' | 'high' | 'critical'
 
 export type Stage =
   | 'New'
-  | 'Researched'
+  | 'Ongoing'
   | 'Contacted'
   | 'Warm'
   | 'Meeting Booked'

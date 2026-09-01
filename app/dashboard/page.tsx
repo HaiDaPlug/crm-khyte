@@ -10,7 +10,7 @@ import { ArrowRight, Circle, Flame, ListChecks, Mic, Send, Sparkles, TrendingUp 
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 const STAGE_WEIGHT: Record<string, number> = {
-  'New': 1, 'Researched': 2, 'Contacted': 3, 'Warm': 4,
+  'New': 1, 'Ongoing': 2, 'Contacted': 3, 'Warm': 4,
   'Meeting Booked': 5, 'Proposal Sent': 6, 'Negotiation': 7, 'Won': 8, 'Lost': 0,
 }
 

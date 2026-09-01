@@ -10,7 +10,7 @@ import {
   KeyboardSensor,
   MouseSensor,
   TouchSensor,
-  closestCorners,
+  pointerWithin,
   DragStartEvent,
   useSensor,
   useSensors,
@@ -30,15 +30,27 @@ import { useBoardPan } from '@/lib/hooks/useBoardPan'
 import { useCRMStore } from '@/lib/store'
 
 const STAGES: Stage[] = [
-  'New', 'Researched', 'Contacted', 'Warm',
+  'New', 'Ongoing', 'Contacted', 'Warm',
   'Meeting Booked', 'Proposal Sent', 'Negotiation', 'Won', 'Lost'
 ]
+
+// Hoisted so useSensor's identity is stable across renders. Passed inline,
+// these object literals are recreated every render, which makes useSensors
+// return a brand-new sensors array on every state update — including the
+// setActiveId/setOverStage updates a drag itself triggers. DndContext tears
+// down and rebinds its pointer listeners whenever `sensors` changes identity,
+// so a drag broke after its first dragOver: the very state update meant to
+// track the pointer killed the listener that would have reported the next
+// move.
+const MOUSE_ACTIVATION_CONSTRAINT = { distance: 6 }
+const TOUCH_ACTIVATION_CONSTRAINT = { delay: 250, tolerance: 8 }
+const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
 
 /** Column edge tint per stage. The stage's own label colours come from the
  *  shared `stageColors` pill, so this only carries the border. */
 const stageBorder: Record<Stage, string> = {
   'New': 'border-border-subtle',
-  'Researched': 'border-blue-500/40',
+  'Ongoing': 'border-blue-500/40',
   'Contacted': 'border-sky-500/40',
   'Warm': 'border-orange-500/40',
   'Meeting Booked': 'border-violet-500/40',
@@ -283,9 +295,9 @@ export function PipelineBoard({ rows, onCardClick, onStageChange, availableLeads
   const resumeRemoteSync = useCRMStore((s) => s.resumeRemoteSync)
   const boardRef = useRef<HTMLDivElement>(null)
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(MouseSensor, { activationConstraint: MOUSE_ACTIVATION_CONSTRAINT }),
+    useSensor(TouchSensor, { activationConstraint: TOUCH_ACTIVATION_CONSTRAINT }),
+    useSensor(KeyboardSensor, KEYBOARD_SENSOR_OPTIONS)
   )
   const canScrollForward = useForwardScrollAffordance(boardRef, rows.length)
 
@@ -381,7 +393,15 @@ export function PipelineBoard({ rows, onCardClick, onStageChange, availableLeads
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCorners}
+      // closestCorners scores every SortableContext item as its own collision
+      // candidate, not just the column. With Contacted holding a couple dozen
+      // cards, that column's sheer number of stacked rects out-scored any
+      // other column's corners for the entire drag, no matter where the
+      // pointer actually was — a card would drop back into the column it
+      // started in even after visibly hovering Warm or Meeting Booked.
+      // pointerWithin hit-tests the pointer's real position instead, so it
+      // tracks whichever column (or card) the cursor is actually over.
+      collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
