@@ -120,6 +120,10 @@ const sv = {
     newProspect: 'Nytt prospekt',
     search: 'Sök företag, kontakt, nästa steg...',
     searchLabel: 'Sök prospekt',
+    exportContacted: 'Exportera kontaktade',
+    exportContactedHint: (count: number) =>
+      `Laddar ner ${count} kontaktade företag som CSV — ge filen till en AI så slipper du dubbletter.`,
+    exportNothing: 'Inga kontaktade prospekt att exportera än.',
   },
   leads: {
     title: 'Leads',
@@ -475,6 +479,10 @@ const en: Dictionary = {
     title: 'Prospects', allProspects: 'All Prospects', count: (filtered, total) => `${filtered} of ${total} opportunities`,
     newProspect: 'New Prospect',
     search: 'Search company, contact, next step...', searchLabel: 'Search prospects',
+    exportContacted: 'Export contacted',
+    exportContactedHint: (count) =>
+      `Downloads ${count} contacted companies as CSV — hand the file to an AI so it skips duplicates.`,
+    exportNothing: 'No contacted prospects to export yet.',
   },
   leads: {
     title: 'Leads', allLeads: 'All Leads', count: (filtered, total) => `${filtered} of ${total} leads`, newLead: 'New Lead',

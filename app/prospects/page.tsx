@@ -14,8 +14,17 @@ import { useFormat } from '@/lib/hooks/useFormat'
 import { useBoardPan } from '@/lib/hooks/useBoardPan'
 import { Stage, Priority, Note } from '@/lib/types'
 import { cn } from '@/lib/utils'
-import { Plus } from 'lucide-react'
+import { Plus, Download } from 'lucide-react'
 import { STAGES, stageColors, stageDot, priorityDot } from '@/lib/stage-config'
+import { colleagues } from '@/lib/colleagues'
+import { ColleagueId } from '@/lib/types'
+import {
+  buildExportRows,
+  downloadCSV,
+  exportFilename,
+  hasBeenContacted,
+  toCSV,
+} from '@/lib/export-prospects'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export default function ProspectsPage() {
@@ -45,6 +54,22 @@ export default function ProspectsPage() {
       contact: contacts.find(c => c.id === opp.contactId)!,
     })).filter(row => row.company && row.contact)
   }, [opportunities, companies, contacts])
+
+  // Deliberately built from `allRows`, not `filteredRows`: this is a "everyone we
+  // have already approached" list, and exporting whatever happens to be filtered
+  // on screen would quietly omit contacted companies and reintroduce the exact
+  // duplicates the file exists to prevent.
+  const contactedRows = useMemo(
+    () => allRows.filter((row) => hasBeenContacted(row.opportunity.stage)),
+    [allRows]
+  )
+
+  const handleExport = () => {
+    const rows = buildExportRows(contactedRows, (id) =>
+      id && id in colleagues ? colleagues[id as ColleagueId].name : ''
+    )
+    downloadCSV(toCSV(rows), exportFilename())
+  }
 
   const filteredRows = useMemo(() => {
     return allRows.filter(row => {
@@ -92,6 +117,23 @@ export default function ProspectsPage() {
           </div>
           <div className="flex w-full items-center gap-2.5 sm:w-auto">
             <ViewToggle view={view} onChange={setView} />
+            <Button
+              variant="secondary"
+              onClick={handleExport}
+              disabled={contactedRows.length === 0}
+              // The label collapses to an icon on phones, so name the button
+              // explicitly rather than leaving a bare glyph for screen readers.
+              aria-label={t.prospects.exportContacted}
+              title={
+                contactedRows.length === 0
+                  ? t.prospects.exportNothing
+                  : t.prospects.exportContactedHint(contactedRows.length)
+              }
+              className="shrink-0"
+            >
+              <Download size={15} aria-hidden="true" />
+              <span className="hidden sm:inline">{t.prospects.exportContacted}</span>
+            </Button>
             <Button onClick={() => setAddProspectOpen(true)} className="shrink-0">
               <Plus size={15} />
               {t.prospects.newProspect}
