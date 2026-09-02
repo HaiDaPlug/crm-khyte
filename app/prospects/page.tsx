@@ -6,7 +6,7 @@ import { CRMTable, TableRow } from '@/components/crm/CRMTable'
 import { FilterBar } from '@/components/crm/FilterBar'
 import { SearchInput } from '@/components/crm/SearchInput'
 import { QuickFilters, QuickFilter } from '@/components/crm/QuickFilters'
-import { WeeklyProgressCard } from '@/components/crm/WeeklyProgressCard'
+import { WeeklyProgressCard, DailyCountCard } from '@/components/crm/WeeklyProgressCard'
 import { ViewToggle, ViewMode } from '@/components/crm/ViewToggle'
 import { DetailDrawer } from '@/components/crm/DetailDrawer'
 import { AddProspectModal } from '@/components/crm/AddProspectModal'
@@ -138,14 +138,11 @@ export default function ProspectsPage() {
       <Topbar />
       <main className="min-w-0 flex-1 px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:px-8 lg:py-8">
         <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-5">
-            <div>
-              <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.prospects.allProspects}</h2>
-              <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
-                {t.prospects.count(filteredRows.length, allRows.length)}
-              </p>
-            </div>
-            <WeeklyProgressCard metricKind="prospect_contacted" className="sm:w-56" />
+          <div>
+            <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.prospects.allProspects}</h2>
+            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
+              {t.prospects.count(filteredRows.length, allRows.length)}
+            </p>
           </div>
           <div className="flex w-full items-center gap-2.5 sm:w-auto">
             <ViewToggle view={view} onChange={setView} />
@@ -173,28 +170,52 @@ export default function ProspectsPage() {
           </div>
         </div>
 
-        <QuickFilters
-          active={quickFilters}
-          onChange={setQuickFilters}
-          colleague={colleagueFilter}
-          onColleagueChange={setColleagueFilter}
-          className="mb-3 -mx-4 px-4 sm:mx-0 sm:px-0"
-        />
+        {/* One control cluster: everything that narrows the table on the left,
+            the counts describing it anchored right. Previously these were three
+            separate full-width rows with the cards stranded in the gap after a
+            short search field. */}
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:gap-5">
+          <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-start sm:gap-2.5">
+              <SearchInput
+                value={searchQuery}
+                onChange={setSearchQuery}
+                placeholder={t.prospects.search}
+                label={t.prospects.searchLabel}
+                className="w-full sm:w-64 sm:shrink-0"
+              />
+              <div className="min-w-0 flex-1">
+                <FilterBar
+                  selectedStages={selectedStages}
+                  selectedPriorities={selectedPriorities}
+                  onStageChange={setSelectedStages}
+                  onPriorityChange={setSelectedPriorities}
+                />
+              </div>
+            </div>
 
-        <div className="mb-4 flex flex-col gap-2.5 sm:flex-row sm:items-start sm:gap-3">
-          <SearchInput
-            value={searchQuery}
-            onChange={setSearchQuery}
-            placeholder={t.prospects.search}
-            label={t.prospects.searchLabel}
-            className="w-full sm:w-72 sm:shrink-0"
-          />
-          <div className="min-w-0 flex-1">
-            <FilterBar
-              selectedStages={selectedStages}
-              selectedPriorities={selectedPriorities}
-              onStageChange={setSelectedStages}
-              onPriorityChange={setSelectedPriorities}
+            <QuickFilters
+              active={quickFilters}
+              onChange={setQuickFilters}
+              className="-mx-4 px-4 sm:mx-0 sm:px-0"
+            />
+          </div>
+
+          {/* Anchored to the cluster's right edge rather than floating after a
+              short field — the counts describe the rows below, so they sit at
+              the boundary between the controls and the table. */}
+          <div className="flex gap-2.5 lg:shrink-0">
+            <DailyCountCard
+              metricKind="prospect_contacted"
+              colleague={colleagueFilter}
+              onColleagueChange={setColleagueFilter}
+              className="flex-1 lg:w-[136px] lg:flex-none"
+            />
+            <WeeklyProgressCard
+              metricKind="prospect_contacted"
+              colleague={colleagueFilter}
+              onColleagueChange={setColleagueFilter}
+              className="flex-1 lg:w-[184px] lg:flex-none"
             />
           </div>
         </div>

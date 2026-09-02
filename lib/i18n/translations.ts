@@ -23,6 +23,11 @@ const sv = {
   },
   weeklyProgress: {
     of: 'av',
+    week: 'Denna vecka',
+    today: 'I dag',
+    everyone: 'Alla',
+    unassigned: 'Utan ansvarig',
+    showAll: 'Visa alla igen',
   },
   quickFilters: {
     mine: 'Mina',
@@ -446,6 +451,11 @@ const en: Dictionary = {
   },
   weeklyProgress: {
     of: 'of',
+    week: 'This week',
+    today: 'Today',
+    everyone: 'Everyone',
+    unassigned: 'Unassigned',
+    showAll: 'Show everyone again',
   },
   quickFilters: {
     mine: 'Mine',

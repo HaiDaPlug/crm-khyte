@@ -8,6 +8,7 @@ import { getDb, isDirectDbConfigured } from './pg'
 import { isClockSkew, isTransientRead, withRetry } from './retry'
 import {
   archiveFinishedWeeks,
+  countEventsByColleagueSince,
   countEventsSince,
   loadDerivedTotals,
   weekStart,
@@ -210,6 +211,9 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
  * would otherwise fire it from every open CRM tab several times a minute. The
  * wallpaper and /goals already trigger it, which is enough — this read stays a
  * read.
+ *
+ * Also returns today's counts, for the day card that sits beside the weekly
+ * one. Same event log, narrower window, and no target — see `WeeklyProgress.today`.
  */
 export async function loadWeeklyProgress(): Promise<WeeklyProgress> {
   await connection()
@@ -218,21 +222,39 @@ export async function loadWeeklyProgress(): Promise<WeeklyProgress> {
     return {
       goals: mockGoals.filter((g) => g.section === 'weekly'),
       counts: {},
+      today: {},
+      byColleague: {},
+      todayByColleague: {},
     }
   }
 
   const sql = getDb()
 
-  const [goals, counts] = await withDbErrors('weekly progress read', () =>
-    Promise.all([
-      sql`select * from goals where section = 'weekly' order by sort_order`,
-      countEventsSince(weekStart(new Date())),
-    ])
+  const now = new Date()
+  // Local midnight, matching how weekStart() and isoDate() treat a day — the
+  // day counter and the week counter have to agree on where a day begins, or a
+  // late-evening call lands in today's tally and last week's total.
+  const dayStart = new Date(now)
+  dayStart.setHours(0, 0, 0, 0)
+
+  const [goals, counts, today, byColleague, todayByColleague] = await withDbErrors(
+    'weekly progress read',
+    () =>
+      Promise.all([
+        sql`select * from goals where section = 'weekly' order by sort_order`,
+        countEventsSince(weekStart(now)),
+        countEventsSince(dayStart),
+        countEventsByColleagueSince(weekStart(now)),
+        countEventsByColleagueSince(dayStart),
+      ])
   )
 
   return {
     goals: (goals as unknown as GoalRow[]).map(fromGoalRow),
     counts,
+    today,
+    byColleague,
+    todayByColleague,
   }
 }
 
