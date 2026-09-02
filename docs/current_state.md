@@ -117,7 +117,7 @@ components/
     NotesTimeline.tsx  — chronological notes with AI-extracted indicator; takes an optional `onDelete?: (noteId: string) => void` that renders a hover-visible `Trash2` delete button per entry (omit the prop for a read-only timeline)
     FilterBar.tsx      — stage + priority filters with semantic expanded/pressed state, inert collapsed content, horizontally scrollable mobile chips and 44px phone targets
     WeeklyProgressCard.tsx — exports two cards for one `metricKind`: `WeeklyProgressCard` (count against the `/goals` target, with a bar) and `DailyCountCard` (today's bare tally, no target, always renders including at 0). Both read one shared module-scope payload and 60s poll, so a page with both runs a single timer. The week card renders nothing when no weekly goal is bound to the metric; either renders nothing if the fetch fails
-    QuickFilters.tsx   — preset chips over the prospects table (this week / needs follow-up / hot) plus a per-colleague avatar row. Composes with `FilterBar` rather than replacing it
+    QuickFilters.tsx   — preset chips over the prospects table (this week / needs follow-up / hot). Composes with `FilterBar` rather than replacing it; filtering by person lives on the count cards, which show each person's number as well
     (export lives in lib/export-prospects.ts, not components/ — it renders no UI; `/prospects` owns the one button that calls it)
     SearchInput.tsx    — the search field shared by `/prospects` and `/leads`. Controlled (`value`/`onChange`), with a leading magnifier and a clear button that appears only once there's a query. `type="search"` so phones offer the search key, but the WebKit-only native clear affordance is suppressed in favour of the explicit button — it's the only one that exists cross-browser and the only one that routes through `onChange`. Each page owns its own query state; the component holds none
     ViewToggle.tsx     — labelled table/board toggle group with pressed states and full-width phone layout
@@ -209,6 +209,28 @@ over a narrower window, from **local** midnight, matching how `weekStart()` and
 `isoDate()` treat a day. Getting that boundary wrong would file a late-evening
 call in today's tally and last week's total.
 
+**Per-person breakdown.** Either card opens a popover listing who did the work
+and how much, via `countEventsByColleagueSince()`. Attribution is by
+`crm_events.colleague`, recorded when the event happened, **not** by the
+opportunity's current `followedUpBy`: the log records what each person did, and
+reassigning a prospect must not move last week's calls between people. Picking
+someone narrows the card to their number and shows a removable tag; clearing it
+returns the team total. On `/prospects` the choice is the page's own
+`colleagueFilter`, so the table narrows with it — one notion of "looking at
+Erik" rather than two that can disagree. On `/leads` it scopes the cards only:
+a Lead's `followedUpBy` is who should chase it, while the card counts who
+*added* it, so filtering the grid by that name would answer a different question.
+
+Events with no colleague are shown as "Utan ansvarig" rather than dropped, and
+the row is deliberately not selectable — it names nobody to filter to. This is
+not cosmetic: roughly a tenth of the log has no colleague (12 of 86 this week),
+so omitting it would leave a breakdown that visibly fails to add up to the total
+printed beside it. Verified against live data — week 35/28/12/11 = 86 = the
+total, today 16/10/7/4 = 37 = the total.
+
+The week card's target stays the team's even when narrowed to one person.
+Dividing it by three would invent a per-person target nobody agreed to.
+
 **Why a route rather than the snapshot.** `/leads` and `/prospects` are client
 components fed entirely by the store, which is built from `loadSnapshot()` in the
 root layout. Folding goals into that snapshot would read them on every page load
@@ -230,17 +252,26 @@ encouragement, not data being worked from, and must never take a page down.
 Verified against the live database: `prospect_contacted` 52/30 (green, bar
 clamped at 100%), `lead_added` 13/50, `deal_won` correctly absent.
 
-**Quick filters (`components/crm/QuickFilters.tsx`)** sit above the existing
-search/filter row on `/prospects`: "Kontaktade denna vecka", "Behöver
-uppföljning", "Heta", plus a per-colleague avatar row. They are presets over the
+**Layout (polished 2026-09-02).** The header had grown three stacked full-width
+control rows — chips, then search + filter, then the pager — with the count cards
+stranded in ~600px of dead space to the right of a short search field, attached
+to neither the controls nor the table. They are now one cluster: everything that
+narrows the table on the left (search + filter panel above, preset chips below),
+the counts anchored to the cluster's right edge, where they sit at the boundary
+between the controls and the rows they describe. The per-colleague chips were
+**removed** in the same pass — the cards' breakdown filters by person *and* shows
+each person's number, so keeping both was duplication that could also visibly
+disagree.
+
+**Quick filters (`components/crm/QuickFilters.tsx`)** sit in that cluster on
+`/prospects`: "Kontaktade denna vecka", "Behöver uppföljning", "Heta". They are presets over the
 same rows the panel narrows, not a second system — a chip and the panel compose.
 "Behöver uppföljning" means due today or earlier and deliberately excludes rows
 with no follow-up date, which are unscheduled rather than overdue. "Kontaktade
 denna vecka" uses the same Monday-00:00-local boundary as
 `board-metrics.weekStart`, reimplemented in the page because that module is
-`server-only`, so the chip and the progress card above it agree on which days
-count. Selecting the active colleague clears it, so the row doubles as its own
-"all" control.
+`server-only`, so the chip and the count cards beside it agree on which days
+count.
 
 **There is no "Mina" chip**, though it is the obvious one to want. The app has a
 single shared password and no accounts, so nothing knows who is looking; a
@@ -597,6 +628,18 @@ itself. Keep its dependency list short; it has to work when the rest did not.
   this renders after hydration. Verify it in a browser; with JS off you get
   Next's default 500
 
+**Its copy no longer names a cause (2026-09-02).** It used to read "check that
+the database is reachable and the credentials in `.env.local` are still valid".
+Wrong on two counts. This boundary catches *any* root-layout throw — there is no
+`error.tsx` anywhere in `app/` — so a database cause is one possibility among
+many, and it pointed at the database on two separate days when the database was
+healthy. And missing credentials cannot reach this screen at all: `loadSnapshot()`
+returns demo data when they are absent, so the single condition the copy
+described was the one condition that never produces it. The `helpBeforeEnv` /
+`helpAfterEnv` pair collapsed into one `help` string pointing at the two things
+that do identify the fault — the digest on screen and the full message in the
+server log.
+
 Verified 2026-08-21 by booting with a deliberately invalid `SUPABASE_SECRET_KEY`
 as an env override (`.env.local` untouched): the page rendered with its digest,
 and "Try again" re-ran the render. That also exercised the retry's fast path —
@@ -612,9 +655,9 @@ up a change to the options below. Editing this file is not enough; restart.
 
 **The lockout.** On 2026-09-02 every read failed with `(EMAXCONNSESSION) max
 clients reached in session mode - max clients are limited to pool_size: 15`, and
-`/prospects` showed the `global-error.tsx` screen. That screen's copy blames the
-database and `.env.local`; both were fine, which is the misdirection noted under
-Known issues. The read retry above correctly did *not* fire — `EMAXCONNSESSION`
+`/prospects` showed the `global-error.tsx` screen. That screen's copy told the
+reader to check the database and `.env.local`; both were fine. It has since been
+rewritten — see Error handling. The read retry above correctly did *not* fire — `EMAXCONNSESSION`
 is not transient, it persisted across probes minutes apart, and retrying would
 only have delayed the same screen.
 

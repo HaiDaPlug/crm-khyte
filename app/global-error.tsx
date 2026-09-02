@@ -13,7 +13,18 @@ import type { AppLanguage } from '@/lib/types'
  * Segment-level `error.tsx` boundaries do not wrap the layout above them, and
  * `loadSnapshot()` runs in the root layout — so a failed database read has no
  * boundary to catch it and renders a blank page. This is the only file that
- * catches it.
+ * catches it, and with no `error.tsx` anywhere in `app/`, it catches every
+ * other render fault too.
+ *
+ * Which is why the copy no longer names a cause. It used to tell the reader to
+ * check that the database was reachable and that `.env.local` was still valid.
+ * That was wrong twice over. It fires for any root-layout throw, not only a
+ * database one — and it sent people to look at the database on two separate
+ * days when the database was healthy. Worse, absent credentials cannot produce
+ * this screen at all: `loadSnapshot()` serves demo data when they are missing
+ * (lib/db/queries.ts), so the one condition the copy described was the one
+ * condition that never reaches it. The digest and the server log are the only
+ * things here that actually identify the fault, so the copy points at those.
  *
  * It replaces the root layout when active, which means none of the usual chrome
  * exists here: no fonts from `next/font`, no `AppShell`, no store. It declares
@@ -84,9 +95,7 @@ export default function GlobalError({
             </p>
 
             <p className="mt-2.5 text-[13px] text-foreground/70 leading-relaxed">
-              {t.helpBeforeEnv}{' '}
-              <code className="font-mono text-foreground/90">.env.local</code>{' '}
-              {t.helpAfterEnv}
+              {t.help}
             </p>
 
             {error.digest && (
