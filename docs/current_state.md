@@ -1541,6 +1541,7 @@ prospects board's cards separate from the page.
 - Card hover glow: `.card-glow` (subtle amber shadow on hover)
 - Gradient line dividers: `.line-accent`
 - Pulsing indicator: `.ember-dot`
+- Loading placeholder: `.skeleton` — a slow sheen across `--background-raised`, reusing the `shimmer` keyframe the grain buttons already animate on hover. Sized by the caller so a placeholder can match the real content's box exactly; flattens to a static block under `prefers-reduced-motion`
 - Animations: fadeInUp, slideInDown, scaleIn, glow-pulse, line-reveal, ember-glow
 - Staggered children reveal with 50ms delays
 - Smooth cubic-bezier easings throughout
@@ -1829,6 +1830,21 @@ for a few weeks and found to actually track "things a person would flag."
 ---
 
 ## Known issues / open decisions
+
+- **Pushing follow-up commits to a branch whose PR has already merged strands
+  them (hit 2026-09-02).** PR #9 was merged when
+  `feat/unassigned-filter-live-counts` held one commit; two more were pushed to
+  the same branch afterwards — the count cards' polling refcount fix and the
+  storage-seeding/shimmer work. GitHub does not pick those up, so they sat on a
+  branch it considered done, never reached `master`, and never deployed. The
+  symptom is the confusing one: the deployment is *correct* for what it was
+  given, so "I merged it and nothing changed" looks like a build or cache
+  problem rather than a git one. Diagnosed by diffing the branch against
+  `origin/master` and grepping `master` for the identifiers the fixes introduce
+  (`let mounted = 0`, `khyte:weekly-progress`, `CardSkeleton`, `.skeleton`) —
+  all four absent. Recovered by cherry-picking the two commits onto a fresh
+  branch off `master`. **Once a PR is open, either check it has not merged
+  before pushing a follow-up, or start a new branch for the next fix.**
 
 - ~~No data persistence — all state resets on page refresh~~ — fixed: the store
   hydrates from Postgres and writes back through Server Actions. Still resets on
