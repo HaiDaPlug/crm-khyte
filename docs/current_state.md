@@ -76,8 +76,8 @@ editor live updates.
 | `/login` | Functional | The password gate. Renders outside `AppShell` — no sidebar, no store, no database read. Single autofocused password field, `useActionState` error states (empty / invalid / throttled), `noindex`. See Auth gate |
 | `/` | Done | Redirects to `/dashboard` |
 | `/dashboard` | Functional | Command-center home. Desktop keeps the split pipeline/tasks + assistant composition; mobile switches to assistant-first reading order and natural vertical scrolling, with responsive greeting, composer, quick prompts and cards. The composer still supports Enter submit, autosize, mic dictation via Web Speech API, and mock replies keyed off lead names. |
-| `/leads` | Functional | **Header carries a "Leads tillagda x/x" weekly progress card (2026-09-02)** — see Weekly progress cards + quick filters below. New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. **Gained a search bar 2026-09-01**, the same `SearchInput` as `/prospects` and likewise on page-local state. This page had been reading the store's global `searchQuery` — which nothing set, so the filter never ran — and matching company name only; it now also matches contact name, connection, source and notes, i.e. everything the card and drawer actually render, so what you can read you can search. The empty state now splits: a no-results panel with a "clear search" action when a query is active, the original "no leads yet" prompt otherwise — previously a search that matched nothing claimed the inbox was empty. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button and a `Trash2` delete button (behind a `ConfirmDialog`, permanent via `removeLead`); each card also carries its own promote action. **Contact name, source and notes are now click-to-edit inline** in the drawer, mirroring `DetailDrawer`'s one-field-at-a-time editor exactly (single `editingField` state, commit on blur/Enter, Escape cancels the field rather than closing the drawer via `shouldIgnoreEscape`) — previously all three were plain read-only text with no way to fix a typo or add notes after capture short of deleting and re-adding the lead. Priority, connection and followed-by remain read-only from this drawer (unchanged, out of scope). "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
-| `/prospects` | Functional | **Header carries a "Prospekt kontaktade x/x" weekly progress card and a row of quick-filter chips (2026-09-02)** — see Weekly progress cards + quick filters below. Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. **Header also carries an "Export contacted" button (2026-09-01)** — downloads every already-approached company as CSV for feeding to an AI that should skip them; see Contacted-prospect export below for what "contacted" means and why it ignores the page's own filters. **Search is now reachable (2026-09-01).** The match logic had been wired all along but nothing rendered an input — it read the store's global `searchQuery`, which no live page ever set, so the feature was dead code and this line previously claimed it was "wired" on the strength of the filter alone. A `SearchInput` now sits beside the `FilterBar`, backed by page-local state rather than that store field (one shared field means a query typed here would follow you to `/leads` and silently filter it too — the store's `searchQuery`/`setSearchQuery` remain, still referenced only by the two archived pages). Matching widened from company/contact/next-step to also cover the contact's role, and the query is trimmed before comparison. Filters and table/board empty results show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. **Also gained a "Senaste kontakt" (last-contact) date field**, editable both at capture time (defaulting to today, same as the value every prospect used to get baked in silently) and afterward — see `Opportunity.lastInteraction` under Components: `DetailDrawer.tsx` below; before this it was write-once and could never be corrected or bumped forward without editing the database directly. **The table now pages at 10 rows**, with the
+| `/leads` | Functional | **Carries a pair of count cards above the grid, right-aligned — "I dag" (bare tally) and "Denna vecka" (against the `lead_added` target) (2026-09-02)** — see Weekly progress cards + quick filters below. New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. **Gained a search bar 2026-09-01**, the same `SearchInput` as `/prospects` and likewise on page-local state. This page had been reading the store's global `searchQuery` — which nothing set, so the filter never ran — and matching company name only; it now also matches contact name, connection, source and notes, i.e. everything the card and drawer actually render, so what you can read you can search. The empty state now splits: a no-results panel with a "clear search" action when a query is active, the original "no leads yet" prompt otherwise — previously a search that matched nothing claimed the inbox was empty. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button and a `Trash2` delete button (behind a `ConfirmDialog`, permanent via `removeLead`); each card also carries its own promote action. **Contact name, source and notes are now click-to-edit inline** in the drawer, mirroring `DetailDrawer`'s one-field-at-a-time editor exactly (single `editingField` state, commit on blur/Enter, Escape cancels the field rather than closing the drawer via `shouldIgnoreEscape`) — previously all three were plain read-only text with no way to fix a typo or add notes after capture short of deleting and re-adding the lead. Priority, connection and followed-by remain read-only from this drawer (unchanged, out of scope). "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
+| `/prospects` | Functional | **Carries a pair of count cards right-aligned on the filter row directly above the table — "I dag" (bare tally) and "Denna vecka" (against the `prospect_contacted` target) — plus a row of quick-filter chips (2026-09-02)** — see Weekly progress cards + quick filters below. Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. **Header also carries an "Export contacted" button (2026-09-01)** — downloads every already-approached company as CSV for feeding to an AI that should skip them; see Contacted-prospect export below for what "contacted" means and why it ignores the page's own filters. **Search is now reachable (2026-09-01).** The match logic had been wired all along but nothing rendered an input — it read the store's global `searchQuery`, which no live page ever set, so the feature was dead code and this line previously claimed it was "wired" on the strength of the filter alone. A `SearchInput` now sits beside the `FilterBar`, backed by page-local state rather than that store field (one shared field means a query typed here would follow you to `/leads` and silently filter it too — the store's `searchQuery`/`setSearchQuery` remain, still referenced only by the two archived pages). Matching widened from company/contact/next-step to also cover the contact's role, and the query is trimmed before comparison. Filters and table/board empty results show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. **Also gained a "Senaste kontakt" (last-contact) date field**, editable both at capture time (defaulting to today, same as the value every prospect used to get baked in silently) and afterward — see `Opportunity.lastInteraction` under Components: `DetailDrawer.tsx` below; before this it was write-once and could never be corrected or bumped forward without editing the database directly. **The table now pages at 10 rows**, with the
 pager at the top of the table rather than the foot — the full list arrived as
 one undifferentiated scroll once real prospects were loaded. **The
 Pipeline/"På tavlan" column has been replaced by "Tillagd"**, showing the
@@ -116,7 +116,7 @@ components/
     DetailDrawer.tsx   — portaled slide-in drawer; full-width/full-`dvh` with square edges and left/right/top/bottom safe-area handling on phones, 520px on desktop. `role="dialog"`, focus trap, initial focus, Escape, body-scroll lock, focus return, `aria-hidden`/`inert` closed state and labelled inline editors. Retains its payload for the exit animation. Company name (h2 header) and Primary Contact's name are click-to-edit inline text fields that write through to the shared `Company`/`Contact` records via `updateCompany`/`updateContact`. Stage and Priority are inline-edited via the new `InlineSelect` popover (commits immediately, no draft). A 5th Deal tile, "Followed up by" (`followedUpBy` on Opportunity — who on the team is following this prospect up), is also an `InlineSelect`, using `''` as an unassigned sentinel since the component needs a real string value. Notes are a running, deletable log rather than one field to overwrite: a small compose textarea (⌘↵ or a button) calls `addNote()`, each submission becomes its own timeline entry, and the timeline renders a hover-visible delete button per entry via `NotesTimeline`'s `onDelete`. The old single-field notes editor and its dirty/discard `ConfirmDialog` flow are gone entirely. The footer now also carries a delete (`Trash2`) button behind a `ConfirmDialog` — permanent, calls `removeOpportunity` then closes the drawer; the database cascades notes/strategy cards, and the store prunes both locally the same way `removeStrategyColumn` already did. "Senaste kontakt" (`lastInteraction`) in the footer is now also click-to-edit inline (a `type="date"` input, same pattern as `followUpDate`'s editor) — it used to be set once at creation by `AddProspectModal` and never touched again
     NotesTimeline.tsx  — chronological notes with AI-extracted indicator; takes an optional `onDelete?: (noteId: string) => void` that renders a hover-visible `Trash2` delete button per entry (omit the prop for a read-only timeline)
     FilterBar.tsx      — stage + priority filters with semantic expanded/pressed state, inert collapsed content, horizontally scrollable mobile chips and 44px phone targets
-    WeeklyProgressCard.tsx — one weekly non-negotiable's progress, for a CRM page header. Takes the `metricKind` the page is about, fetches `/api/goals/weekly`, renders that goal's own title/target, and renders nothing when no weekly goal is bound to the metric or the fetch fails
+    WeeklyProgressCard.tsx — exports two cards for one `metricKind`: `WeeklyProgressCard` (count against the `/goals` target, with a bar) and `DailyCountCard` (today's bare tally, no target, always renders including at 0). Both read one shared module-scope payload and 60s poll, so a page with both runs a single timer. The week card renders nothing when no weekly goal is bound to the metric; either renders nothing if the fetch fails
     QuickFilters.tsx   — preset chips over the prospects table (this week / needs follow-up / hot) plus a per-colleague avatar row. Composes with `FilterBar` rather than replacing it
     (export lives in lib/export-prospects.ts, not components/ — it renders no UI; `/prospects` owns the one button that calls it)
     SearchInput.tsx    — the search field shared by `/prospects` and `/leads`. Controlled (`value`/`onChange`), with a leading magnifier and a clear button that appears only once there's a query. `type="search"` so phones offer the search key, but the WebKit-only native clear affordance is suppressed in favour of the explicit button — it's the only one that exists cross-browser and the only one that routes through `onChange`. Each page owns its own query state; the component holds none
@@ -174,19 +174,40 @@ warnings/errors. The remaining validation item is physical iOS/Android feel for
 long-press drag/drop and real hardware safe areas.
 
 ### Weekly progress cards + quick filters (2026-09-02)
-The weekly non-negotiables now show up where the work happens, not only on
-`/goals`: `/leads` carries a "Leads tillagda x/x" card and `/prospects` a
-"Prospekt kontaktade x/x" one, each with a bar that turns green once the target
-is met.
+The non-negotiables now show up where the work happens, not only on `/goals`.
+Each of `/leads` and `/prospects` carries **a pair of cards**, right-aligned on
+the last row before the rows they describe rather than beside the page heading —
+the first placement crowded the title and truncated the label.
+
+**Two periods, on purpose.** "Denna vecka" is counted against the target set on
+`/goals` and fills a bar that turns green once met. "I dag" is a bare tally with
+no target and no bar: a weekly number divided by five is a figure nobody agreed
+to, and a morning that starts slowly is not a day being failed. The day card
+therefore always renders, zero included — hiding it at 0 would make it appear
+only on days already going well, which is the opposite of useful. Its bar slot
+is an empty spacer so the two cards stay the same height without the day
+pretending to have a target.
+
+Both cards read one shared payload: the fetch and its 60s poll are hoisted to
+module scope with a subscriber set, so two cards on a page do not run two
+timers against the same endpoint.
 
 **The targets are read, never set, here.** A card looks up the `weekly` goal
-bound to its metric kind and renders that goal's own title and target, so the
-cards, `GoalsEditor` and `DisplayBoard` all resolve a number the same way and
-cannot drift. A metric with no weekly goal (or no target) renders nothing rather
-than inventing one — `deal_won` currently shows no card for exactly that reason.
-Counts are team-wide, matching what `weeklyCounts` has always meant, and they
-count events rather than current state: prospects contacted this week stays true
-after they progress or go Lost.
+bound to its metric kind and renders that goal's target, so the cards,
+`GoalsEditor` and `DisplayBoard` all resolve a number the same way and cannot
+drift. A metric with no weekly goal (or no target) renders no *week* card rather
+than inventing one — `deal_won` shows none for exactly that reason. The cards are
+labelled by period ("Denna vecka" / "I dag") rather than by the goal's own title:
+the page already says which metric it is about, and a user-written title like
+"Prospekt kontaktade" truncated inside the card. The title still carries the
+progressbar's accessible name. Counts are team-wide, matching what
+`weeklyCounts` has always meant, and they count events rather than current state:
+prospects contacted this week stays true after they progress or go Lost.
+
+`loadWeeklyProgress()` returns `today` alongside `counts` — the same event log
+over a narrower window, from **local** midnight, matching how `weekStart()` and
+`isoDate()` treat a day. Getting that boundary wrong would file a late-evening
+call in today's tally and last week's total.
 
 **Why a route rather than the snapshot.** `/leads` and `/prospects` are client
 components fed entirely by the store, which is built from `loadSnapshot()` in the
@@ -531,16 +552,21 @@ there has nothing above it to catch it:
 | `lib/db/retry.ts` | Transient faults on writes (`app/actions/crm.ts`, via PostgREST) **and, since 2026-09-01, on reads again** — `withDbErrors` in `queries.ts` now wraps every read in `withRetry(label, run, isTransientRead)`. Bounded by *elapsed time*, not attempt count: 2.5s for auth-timing faults, waiting 250ms → 500ms → 1s → then a flat 750ms. See "Read retries came back" below |
 | `app/global-error.tsx` | Everything a write's retry can't, plus any read failure — renders a themed screen with a working retry button |
 
-**Read retries came back, and the predicate that gates them was silently inert
-(2026-09-01).** `TRANSIENT_READ` still held only PostgREST-era shapes — `fetch
-failed`, `socket hang up`, HTTP 502/503/504. Reads had since moved off PostgREST
-to a direct Postgres connection (see Data Layer), and that driver names a
-dropped or never-established socket in its own words: `write CONNECTION_CLOSED
-host:port`, `write CONNECT_TIMEOUT host:port`. Nothing in the original set
-matched either, so on the read path that actually runs the predicate never
-returned true and one blip against the pooler was a full error screen. Both
-strings are now in the pattern, and `withDbErrors` retries reads rather than
-rethrowing immediately.
+**Read retries came back (2026-09-01).** The bug was not the predicate — it was
+that reads never consulted one. `withRetry` was wired into the write path only;
+`isTransientRead` was exported and imported by nobody; `withDbErrors` relabelled
+the failure and rethrew. One dropped connection to the pooler was a full error
+screen with no second attempt. It now wraps every read in
+`withRetry(label, run, isTransientRead)`.
+
+`TRANSIENT_READ` was widened in the same change, but measurement demoted that
+half from "the fix" to a backstop. Against a TCP proxy killing the socket
+mid-query, a reset surfaces as `read ECONNRESET` — a pattern that was in the set
+all along — and the read recovers in ~430ms. A *graceful* close never reaches
+this predicate at all: postgres.js re-queues the query on a fresh connection
+itself (~173ms, no retry logged). `CONNECTION_CLOSED` and `CONNECT_TIMEOUT` were
+added for the cases the driver does surface — an exhausted `connect_timeout`, or
+a close it cannot re-queue around — and neither fired in those measurements.
 
 `CONNECTION_ENDED` and `CONNECTION_DESTROYED` are deliberately **not** in the
 set: they mean the pool object itself is gone rather than that a connection
@@ -576,6 +602,68 @@ as an env override (`.env.local` untouched): the page rendered with its digest,
 and "Try again" re-ran the render. That also exercised the retry's fast path —
 `Invalid API key` is non-transient, so it failed on the first attempt rather than
 spending the whole budget on a fault that was never going to clear.
+
+### Connection pool + the 2026-09-02 lockout (lib/db/pg.ts)
+
+`getDb()` opens one `postgres.js` pool per process, cached on `globalThis` so a
+dev-server module reload cannot leak a second one. What that cache does *not*
+survive is a process restart — which is also the only way a running server picks
+up a change to the options below. Editing this file is not enough; restart.
+
+**The lockout.** On 2026-09-02 every read failed with `(EMAXCONNSESSION) max
+clients reached in session mode - max clients are limited to pool_size: 15`, and
+`/prospects` showed the `global-error.tsx` screen. That screen's copy blames the
+database and `.env.local`; both were fine, which is the misdirection noted under
+Known issues. The read retry above correctly did *not* fire — `EMAXCONNSESSION`
+is not transient, it persisted across probes minutes apart, and retrying would
+only have delayed the same screen.
+
+The 15 is a ceiling on the session pooler **per project**, shared by every
+process that opens `SUPABASE_DB_URL` — not per process.
+
+**Root cause: no `idle_timeout`.** postgres.js defaults it to `null`, meaning
+never close an idle connection. The only thing that ever reclaimed one was
+`max_lifetime`, itself a randomised 30–60 minutes
+(`node_modules/postgres/src/index.js:515`). A single page load therefore pinned
+up to `max` project-wide slots for up to an hour after the read had finished.
+Caught in the act: twelve idle Supavisor backends, two still holding slots 26
+minutes after their last query, each fingerprinted by that query as this app —
+`select * from strategy_cards …`, the `max(updated_at)` change-stamp ×5, and so
+on. Nothing foreign was on the database; the app had locked itself out.
+
+| Setting | Was | Now | Why |
+|---|---|---|---|
+| `max` | 5 | 2 | 5 divides into the project's 15 only three ways. 2 fits roughly seven processes. Costs latency — `loadSnapshot()`'s eight parallel reads queue four deep instead of two |
+| `idle_timeout` | unset (never close) | 20s | The setting whose absence caused the lockout. 20 and not lower because `SnapshotSync` polls every 12s: one connection stays legitimately warm across polls, the second is released between page loads |
+
+**Do not reach for the transaction pooler (port 6543) to escape the ceiling.**
+Measured against postgres.js 3.4.9 on 2026-09-02, and deterministic across
+repeated runs: a pooled connection serves about two queries and then stalls on
+reuse — silently, no error, no timeout, the promise simply never settles.
+Roughly 2×`max` queries succeed and the rest hang forever.
+
+| pool `max` | parallel queries | result |
+|---|---|---|
+| 1 | 8 | hangs after 2 |
+| 3 | 8 | hangs after 7 |
+| 5 | 8 | passes |
+| 5 | 12 | hangs after 11 |
+| 5 | 20 | hangs after 11 |
+| 10 | 20 | passes |
+
+Raising `max` only moves the cliff — a long-running server reuses connections
+indefinitely. `loadSnapshot()` fires eight parallel reads, one below the edge at
+`max: 5`. Switching would trade a loud error screen for a hung tab that no
+boundary can catch and no retry can reach. Transaction mode needs a different
+driver (node-postgres), not a different number.
+
+**Still unverified.** Both settings typecheck, and postgres.js resolves them
+(`max: 2`, `idle_timeout: 20`) rather than silently ignoring the keys. The live
+check has *not* run: eight parallel reads over a 2-connection pool, and the
+backend count dropping 20s after the pool goes quiet. The pooler was still
+refusing every connection when this was written. The diagnosis above was read
+through the Supabase Management API, which runs SQL over its own connection and
+needs no pooler slot — the way back in when the pooler is full.
 
 ### Auth gate (lib/auth/ + proxy.ts + app/login/)
 
@@ -1069,7 +1157,7 @@ Full detail in `docs/database.md`. Shape of it:
 | `scripts/supabase.mjs` | `npm run supabase -- <cmd>` — runs any CLI command with `SUPABASE_ACCESS_TOKEN` taken from `.env.local`, which overrides the machine-global `~/.supabase/access-token` |
 | `scripts/db-push.mjs` | `npm run db:push` — pushes to the linked project if `supabase/.temp/project-ref` exists, else falls back to `SUPABASE_DB_URL`. Validates the connection string and echoes the target host before writing |
 | `lib/supabase/server.ts` | secret-key (`sb_secret_…`) client, `server-only` guarded; `isSupabaseConfigured` flag, legacy-key warning. Used for writes only — see below |
-| `lib/db/pg.ts` | `getDb()` — direct Postgres client (`postgres.js`) over `SUPABASE_DB_URL`, for reads only. Cached on `globalThis`, not a module-level singleton — see Known issues |
+| `lib/db/pg.ts` | `getDb()` — direct Postgres client (`postgres.js`) over `SUPABASE_DB_URL`, for reads only. Cached on `globalThis`, not a module-level singleton — see Known issues. `max: 2`, `idle_timeout: 20` — both load-bearing, see Connection pool |
 | `lib/db/rows.ts` | snake_case row types mirroring the schema |
 | `lib/db/mappers.ts` | row ↔ domain translation both directions (`column_name`→`column`, `sort_order`→`order`, null→`''`) |
 | `lib/db/queries.ts` | `loadSnapshot()` — reads all eight CRM tables (including `leads`) in one pass over `lib/db/pg.ts`; calls `connection()` to stay per-request; falls back to mock data when `SUPABASE_SECRET_KEY` or `SUPABASE_DB_URL` is missing. **`loadGoals()`** is a second, deliberately separate read for the direction-board tables (`goals`, `goal_metrics`, `personal_goals`) — not a key on `CRMSnapshot`, and its rows never enter the CRM store. It also returns the current week's event counts and the derived revenue/customers/pipeline totals in the same pass, so a goal and its number always describe the same instant, and archives any finished week before counting this one. **`loadGoalsVersion()`** is the cheap change-stamp the wallpaper polls. The wallpaper reloads every 5 minutes; folding it into the snapshot would drag the whole working set through Postgres on each refresh to render three small tables. **`loadSnapshotVersion()`** is the same trick for the CRM's eight tables — the stamp every open browser polls so colleagues see each other's writes, see CRM live updates |
