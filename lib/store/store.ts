@@ -265,6 +265,15 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         })
         .finally(() => {
           pendingWrites -= 1
+          // Nudge anything showing derived server-side figures — the weekly and
+          // daily count cards — now that a write has landed. Broadcast as an
+          // event rather than an import so the store stays unaware of the UI;
+          // nothing listening is a no-op. The cards still poll as a backstop
+          // for work done in another tab, but their own page's writes should
+          // not wait up to a minute to show up.
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('khyte:crm-write'))
+          }
         })
     }
 

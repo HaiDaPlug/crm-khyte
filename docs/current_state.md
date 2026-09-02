@@ -76,8 +76,8 @@ editor live updates.
 | `/login` | Functional | The password gate. Renders outside `AppShell` — no sidebar, no store, no database read. Single autofocused password field, `useActionState` error states (empty / invalid / throttled), `noindex`. See Auth gate |
 | `/` | Done | Redirects to `/dashboard` |
 | `/dashboard` | Functional | Command-center home. Desktop keeps the split pipeline/tasks + assistant composition; mobile switches to assistant-first reading order and natural vertical scrolling, with responsive greeting, composer, quick prompts and cards. The composer still supports Enter submit, autosize, mic dictation via Web Speech API, and mock replies keyed off lead names. |
-| `/leads` | Functional | **Carries a pair of count cards above the grid, right-aligned — "I dag" (bare tally) and "Denna vecka" (against the `lead_added` target) (2026-09-02)** — see Weekly progress cards + quick filters below. New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. **Gained a search bar 2026-09-01**, the same `SearchInput` as `/prospects` and likewise on page-local state. This page had been reading the store's global `searchQuery` — which nothing set, so the filter never ran — and matching company name only; it now also matches contact name, connection, source and notes, i.e. everything the card and drawer actually render, so what you can read you can search. The empty state now splits: a no-results panel with a "clear search" action when a query is active, the original "no leads yet" prompt otherwise — previously a search that matched nothing claimed the inbox was empty. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button and a `Trash2` delete button (behind a `ConfirmDialog`, permanent via `removeLead`); each card also carries its own promote action. **Contact name, source and notes are now click-to-edit inline** in the drawer, mirroring `DetailDrawer`'s one-field-at-a-time editor exactly (single `editingField` state, commit on blur/Enter, Escape cancels the field rather than closing the drawer via `shouldIgnoreEscape`) — previously all three were plain read-only text with no way to fix a typo or add notes after capture short of deleting and re-adding the lead. Priority, connection and followed-by remain read-only from this drawer (unchanged, out of scope). "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
-| `/prospects` | Functional | **Carries a pair of count cards right-aligned on the filter row directly above the table — "I dag" (bare tally) and "Denna vecka" (against the `prospect_contacted` target) — plus a row of quick-filter chips (2026-09-02)** — see Weekly progress cards + quick filters below. Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. **Header also carries an "Export contacted" button (2026-09-01)** — downloads every already-approached company as CSV for feeding to an AI that should skip them; see Contacted-prospect export below for what "contacted" means and why it ignores the page's own filters. **Search is now reachable (2026-09-01).** The match logic had been wired all along but nothing rendered an input — it read the store's global `searchQuery`, which no live page ever set, so the feature was dead code and this line previously claimed it was "wired" on the strength of the filter alone. A `SearchInput` now sits beside the `FilterBar`, backed by page-local state rather than that store field (one shared field means a query typed here would follow you to `/leads` and silently filter it too — the store's `searchQuery`/`setSearchQuery` remain, still referenced only by the two archived pages). Matching widened from company/contact/next-step to also cover the contact's role, and the query is trimmed before comparison. Filters and table/board empty results show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. **Also gained a "Senaste kontakt" (last-contact) date field**, editable both at capture time (defaulting to today, same as the value every prospect used to get baked in silently) and afterward — see `Opportunity.lastInteraction` under Components: `DetailDrawer.tsx` below; before this it was write-once and could never be corrected or bumped forward without editing the database directly. **The table now pages at 10 rows**, with the
+| `/leads` | Functional | **Carries a pair of count cards above the grid, right-aligned — "I dag" (bare tally) and "Denna vecka" (against the `lead_added` target) (2026-09-02)** — see Count cards (week + day, per-person) and quick filters below. New, lightweight raw-interest inbox — a card grid, not the table/board pair below. No Company/Contact/Opportunity record exists until a lead is promoted. **Gained a search bar 2026-09-01**, the same `SearchInput` as `/prospects` and likewise on page-local state. This page had been reading the store's global `searchQuery` — which nothing set, so the filter never ran — and matching company name only; it now also matches contact name, connection, source and notes, i.e. everything the card and drawer actually render, so what you can read you can search. The empty state now splits: a no-results panel with a "clear search" action when a query is active, the original "no leads yet" prompt otherwise — previously a search that matched nothing claimed the inbox was empty. Clicking a card opens an inline `LeadDrawer` (defined in `app/leads/page.tsx`) showing the full record — including source, which the card doesn't show — with a "promote to prospect" button and a `Trash2` delete button (behind a `ConfirmDialog`, permanent via `removeLead`); each card also carries its own promote action. **Contact name, source and notes are now click-to-edit inline** in the drawer, mirroring `DetailDrawer`'s one-field-at-a-time editor exactly (single `editingField` state, commit on blur/Enter, Escape cancels the field rather than closing the drawer via `shouldIgnoreEscape`) — previously all three were plain read-only text with no way to fix a typo or add notes after capture short of deleting and re-adding the lead. Priority, connection and followed-by remain read-only from this drawer (unchanged, out of scope). "New Lead" (`AddLeadModal.tsx`) is a small single-column form: company name (required), contact name, connection ("koppling" — someone in your network who knows the contact), source, "Tillagd av"/"Added by" via `AssigneePicker` (semantically who added the lead, not who's following it up), priority via `ColorSlider`, notes. Promoting opens `AddProspectModal` pre-filled via `fromLeadId`; submitting deletes the lead (`removeLead`) rather than keeping it around alongside the new Prospect. |
+| `/prospects` | Functional | **Carries a pair of count cards right-aligned on the filter row directly above the table — "I dag" (bare tally) and "Denna vecka" (against the `prospect_contacted` target) — plus a row of quick-filter chips (2026-09-02)** — see Count cards (week + day, per-person) and quick filters below. Renamed from the old `/leads`; unchanged in behavior. TanStack sorting/filtering plus board view and detail drawer. At `< md`, the dense table becomes purpose-built cards; the board uses phone-width snap columns with a next-column peek. **Header also carries an "Export contacted" button (2026-09-01)** — downloads every already-approached company as CSV for feeding to an AI that should skip them; see Contacted-prospect export below for what "contacted" means and why it ignores the page's own filters. **Search is now reachable (2026-09-01).** The match logic had been wired all along but nothing rendered an input — it read the store's global `searchQuery`, which no live page ever set, so the feature was dead code and this line previously claimed it was "wired" on the strength of the filter alone. A `SearchInput` now sits beside the `FilterBar`, backed by page-local state rather than that store field (one shared field means a query typed here would follow you to `/leads` and silently filter it too — the store's `searchQuery`/`setSearchQuery` remain, still referenced only by the two archived pages). Matching widened from company/contact/next-step to also cover the contact's role, and the query is trimmed before comparison. Filters and table/board empty results show localized recovery guidance instead of blank space. "New Prospect" (`AddProspectModal.tsx`) uses labelled company/contact comboboxes and a single-column mobile form; selecting a pipeline stage adds the prospect to the board. It also gained an optional "start from a lead" search combobox (only rendered when `leads.length > 0`) that pre-fills company name, contact name, priority and notes from a Lead — see `/leads` above. **Also gained a "Senaste kontakt" (last-contact) date field**, editable both at capture time (defaulting to today, same as the value every prospect used to get baked in silently) and afterward — see `Opportunity.lastInteraction` under Components: `DetailDrawer.tsx` below; before this it was write-once and could never be corrected or bumped forward without editing the database directly. **The table now pages at 10 rows**, with the
 pager at the top of the table rather than the foot — the full list arrived as
 one undifferentiated scroll once real prospects were loaded. **The
 Pipeline/"På tavlan" column has been replaced by "Tillagd"**, showing the
@@ -173,7 +173,7 @@ state recovery passed against the production bundle with no browser console
 warnings/errors. The remaining validation item is physical iOS/Android feel for
 long-press drag/drop and real hardware safe areas.
 
-### Weekly progress cards + quick filters (2026-09-02)
+### Count cards (week + day, per-person) and quick filters (2026-09-02)
 The non-negotiables now show up where the work happens, not only on `/goals`.
 Each of `/leads` and `/prospects` carries **a pair of cards**, right-aligned on
 the last row before the rows they describe rather than beside the page heading —
@@ -210,7 +210,9 @@ over a narrower window, from **local** midnight, matching how `weekStart()` and
 call in today's tally and last week's total.
 
 **Per-person breakdown.** Either card opens a popover listing who did the work
-and how much, via `countEventsByColleagueSince()`. Attribution is by
+and how much, from `WeeklyProgress.byColleague` / `.todayByColleague` —
+`counts[kind][colleagueId]`, both filled by `countEventsByColleagueSince()` over
+the week and day windows respectively. Attribution is by
 `crm_events.colleague`, recorded when the event happened, **not** by the
 opportunity's current `followedUpBy`: the log records what each person did, and
 reassigning a prospect must not move last week's calls between people. Picking
@@ -221,12 +223,29 @@ Erik" rather than two that can disagree. On `/leads` it scopes the cards only:
 a Lead's `followedUpBy` is who should chase it, while the card counts who
 *added* it, so filtering the grid by that name would answer a different question.
 
-Events with no colleague are shown as "Utan ansvarig" rather than dropped, and
-the row is deliberately not selectable — it names nobody to filter to. This is
-not cosmetic: roughly a tenth of the log has no colleague (12 of 86 this week),
-so omitting it would leave a breakdown that visibly fails to add up to the total
-printed beside it. Verified against live data — week 35/28/12/11 = 86 = the
-total, today 16/10/7/4 = 37 = the total.
+Events with no colleague are shown as "Utan ansvarig" rather than dropped. This
+is not cosmetic: roughly a tenth of the log has no colleague (12 of 86 this
+week), so omitting it would leave a breakdown that visibly fails to add up to
+the total printed beside it. Verified against live data — week 35/28/12/11 = 86
+= the total, today 16/10/7/4 = 37 = the total.
+
+**That row is selectable too (2026-09-02)**, having started as display-only on
+the reasoning that it names nobody to filter to. It does select something worth
+seeing: the prospects nobody is named on are exactly the ones worth pulling up
+and assigning. The selection type widened from `ColleagueId | null` to
+`BreakdownKey | null` (`ColleagueId | 'unassigned' | null`) through the cards and
+the page's table filter. Two things had to change with it — the card's own label
+does a dictionary lookup for this case, since `colleagues` has no `unassigned`
+entry to read a name from, and the table filter needs an explicit
+`if (row.followedUpBy) return false` branch: a plain `!==` against the sentinel
+matches every row and empties the table.
+
+**The card's number and the table's row count can differ here, and both are
+right.** The card counts *events* that carried no colleague when they happened;
+the table lists *prospects* with no owner now. Against live data that is 12
+events against 2 rows — the other ten were assigned an owner after the fact,
+which drops them from the list while their unattributed history stands. The same
+distinction the whole log/state split rests on, surfacing in the UI.
 
 The week card's target stays the team's even when narrowed to one person.
 Dividing it by three would invent a per-person target nobody agreed to.
@@ -245,12 +264,34 @@ card has no use for. It also deliberately does **not** call
 fresh would otherwise fire it from every open tab several times a minute. The
 wallpaper and `/goals` already trigger the archive.
 
-The card polls every 60s (picking up outreach logged in another tab, and rolling
-the week over without a reload) and caches at module level so moving between the
-two pages doesn't refetch. A failed fetch renders nothing — this is ambient
-encouragement, not data being worked from, and must never take a page down.
-Verified against the live database: `prospect_contacted` 52/30 (green, bar
-clamped at 100%), `lead_added` 13/50, `deal_won` correctly absent.
+The cards refresh on every persisted write and poll every 60s as a backstop,
+caching at module level so moving between the two pages doesn't refetch. A failed
+fetch renders nothing — this is ambient encouragement, not data being worked
+from, and must never take a page down. Verified against the live database:
+`prospect_contacted` 90/120, `lead_added` 13/50, `deal_won` correctly absent.
+
+**The write-triggered refresh was added 2026-09-02, after the card was seen
+reading 73/120 against a real 90.** Nothing was miscounted — the API, the
+breakdown and the database all agreed on 90, and the per-person figures summed
+to it exactly. The card was simply stale: it only had the 60s poll, and this
+team records outreach in bursts (18 `prospect_contacted` events inside the 10:00
+hour that day), so the running total crossed 73 and kept going while the card
+waited for its next tick. A counter that lags the work it is counting by up to a
+minute, on a page where you *do* that work, undercuts the whole point of putting
+it there.
+
+`persist()` in `lib/store/store.ts` now broadcasts a `khyte:crm-write` event
+after each write settles, and the cards listen for it. Deliberately an event
+rather than an import: the store stays unaware of the UI, and nothing listening
+is a no-op. The poll stays for work logged in another tab and to roll the day and
+week over without a reload.
+
+Worth knowing when reading these numbers: the week boundary is Monday 00:00
+**local**, and `occurred_at` is `timestamptz` against a UTC server, so a
+back-dated event sits at 22:00Z on the previous day and still counts in the right
+local week. Grouping the log by a bare `occurred_at::date` instead reads 16 of
+this week's events into Sunday and undercounts by that much — a trap when
+querying the table by hand rather than a defect in the app.
 
 **Layout (polished 2026-09-02).** The header had grown three stacked full-width
 control rows — chips, then search + filter, then the pager — with the count cards

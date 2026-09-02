@@ -41,7 +41,16 @@ let cached: WeeklyProgress | null = null
 const subscribers = new Set<(p: WeeklyProgress) => void>()
 let polling = false
 
-async function refresh() {
+/**
+ * Re-read the counts and push them to every mounted card.
+ *
+ * Exported so a write can call it: the poll below is a backstop for work done
+ * in another tab, not the mechanism by which your own logging shows up. On a
+ * busy morning this team records ~18 contacts in an hour, so a card that only
+ * caught up on the next tick spent most of the day displaying a number that had
+ * already been overtaken.
+ */
+export async function refreshWeeklyProgress() {
   try {
     const res = await fetch('/api/goals/weekly', { cache: 'no-store' })
     if (!res.ok) return
@@ -55,6 +64,8 @@ async function refresh() {
   }
 }
 
+const refresh = refreshWeeklyProgress
+
 function useWeeklyProgress(): WeeklyProgress | null {
   const [progress, setProgress] = useState<WeeklyProgress | null>(cached)
 
@@ -62,11 +73,18 @@ function useWeeklyProgress(): WeeklyProgress | null {
     subscribers.add(setProgress)
     refresh()
 
+    // A write on this page updates the count immediately; the interval below is
+    // only a backstop for work logged elsewhere. The store broadcasts this after
+    // each persisted mutation — see `persist` in lib/store/store.ts.
+    const onWrite = () => refresh()
+    window.addEventListener('khyte:crm-write', onWrite)
+
     if (!polling) {
       polling = true
       const timer = setInterval(refresh, 60_000)
       return () => {
         subscribers.delete(setProgress)
+        window.removeEventListener('khyte:crm-write', onWrite)
         clearInterval(timer)
         polling = false
       }
@@ -74,20 +92,27 @@ function useWeeklyProgress(): WeeklyProgress | null {
 
     return () => {
       subscribers.delete(setProgress)
+      window.removeEventListener('khyte:crm-write', onWrite)
     }
   }, [])
 
   return progress
 }
 
-/** `unassigned` included — see countEventsByColleagueSince. */
-type BreakdownKey = ColleagueId | 'unassigned'
+/**
+ * Who a card is scoped to: a colleague, or the events nobody is named on.
+ *
+ * `unassigned` is a real selection rather than a display-only row — prospects
+ * added without a "Tillagd" person are exactly the ones worth finding and
+ * assigning, so the bucket that reveals them has to be reachable.
+ */
+export type BreakdownKey = ColleagueId | 'unassigned'
 
 interface CardProps {
   metricKind: CrmEventKind
   /** Whose numbers to show; null is the whole team. Owned by the page. */
-  colleague: ColleagueId | null
-  onColleagueChange: (next: ColleagueId | null) => void
+  colleague: BreakdownKey | null
+  onColleagueChange: (next: BreakdownKey | null) => void
   className?: string
 }
 
@@ -111,8 +136,8 @@ function CountCard({
   /** Undefined for the day card — no target means no bar and no green state. */
   target?: number
   breakdown: Record<string, number>
-  colleague: ColleagueId | null
-  onColleagueChange: (next: ColleagueId | null) => void
+  colleague: BreakdownKey | null
+  onColleagueChange: (next: BreakdownKey | null) => void
   className?: string
 }) {
   const { t } = useTranslations()
@@ -154,7 +179,14 @@ function CountCard({
       a.id === 'unassigned' ? 1 : b.id === 'unassigned' ? -1 : b.n - a.n
     )
 
-  const label_ = colleague ? colleagues[colleague].name : label
+  // `colleagues` has no 'unassigned' entry, so that case is named from the
+  // dictionary rather than looked up.
+  const label_ =
+    colleague === null
+      ? label
+      : colleague === 'unassigned'
+        ? t.weeklyProgress.unassigned
+        : colleagues[colleague].name
 
   return (
     <div ref={rootRef} className={cn('relative', className)}>
@@ -256,19 +288,15 @@ function CountCard({
               <button
                 key={row.id}
                 type="button"
-                // The unattributed bucket names no one, so there is nobody to
-                // filter to — it is shown for the arithmetic, not as a choice.
-                disabled={!isPerson}
+                // 'unassigned' is selectable like anyone else: the prospects
+                // nobody is named on are precisely the ones worth pulling up
+                // and assigning, so the row that surfaces them has to click.
                 onClick={() => {
-                  if (!isPerson) return
-                  onColleagueChange(
-                    colleague === row.id ? null : (row.id as ColleagueId)
-                  )
+                  onColleagueChange(colleague === row.id ? null : row.id)
                   setOpen(false)
                 }}
                 className={cn(
-                  'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13.5px] transition-colors',
-                  isPerson ? 'hover:bg-surface-raised' : 'cursor-default opacity-60',
+                  'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-[13.5px] transition-colors hover:bg-surface-raised',
                   colleague === row.id && 'bg-surface-raised'
                 )}
               >

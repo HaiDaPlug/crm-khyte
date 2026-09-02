@@ -7,14 +7,14 @@ import { AddProspectModal } from '@/components/crm/AddProspectModal'
 import { Button } from '@/components/crm/Button'
 import { ConfirmDialog } from '@/components/crm/ConfirmDialog'
 import { SearchInput } from '@/components/crm/SearchInput'
-import { WeeklyProgressCard, DailyCountCard } from '@/components/crm/WeeklyProgressCard'
+import { WeeklyProgressCard, DailyCountCard, BreakdownKey } from '@/components/crm/WeeklyProgressCard'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useDialogBehavior } from '@/lib/hooks/useDialog'
 import { Sparkles, Plus, ArrowRight, Users, X, Trash2, Search } from 'lucide-react'
 import { priorityDot } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
-import { Lead, ColleagueId } from '@/lib/types'
+import { Lead } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
@@ -312,7 +312,7 @@ export default function LeadsPage() {
   // is shared, so a query typed on /prospects would follow you here.
   const [searchQuery, setSearchQuery] = useState('')
   // Scopes the count cards only — see the note where they're rendered.
-  const [cardColleague, setCardColleague] = useState<ColleagueId | null>(null)
+  const [cardColleague, setCardColleague] = useState<BreakdownKey | null>(null)
   const [addLeadOpen, setAddLeadOpen] = useState(false)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [promoteLeadId, setPromoteLeadId] = useState<string | null>(null)
