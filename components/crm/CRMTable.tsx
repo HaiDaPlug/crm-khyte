@@ -59,9 +59,19 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
       accessorFn: (row) => row.company.name,
       header: t.crm.table.company,
       cell: ({ row }) => (
-        <div>
-          <p className="text-[15px] font-medium text-foreground leading-tight">{row.original.company.name}</p>
-          <p className="text-[13.5px] text-foreground/60 mt-0.5">{row.original.company.industry}</p>
+        // Capped and allowed to wrap, against the row's blanket nowrap. A name
+        // like "MakeClean AB Städföretag, flyttstäd - städfirma för hem och
+        // företag" otherwise sets the column's width on its own and stretches
+        // every other column to fill the row. Wrapped rather than truncated
+        // because a cut-off company name often isn't identifiable, and this is
+        // the column you scan the table by.
+        <div className="whitespace-normal">
+          <p className="text-[15px] font-medium text-foreground leading-tight [overflow-wrap:anywhere]">
+            {row.original.company.name}
+          </p>
+          <p className="text-[13.5px] text-foreground/60 mt-0.5 [overflow-wrap:anywhere]">
+            {row.original.company.industry}
+          </p>
         </div>
       ),
     },
@@ -316,7 +326,10 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
                   >
                     <span className="flex items-start justify-between gap-3">
                       <span className="min-w-0">
-                        <span className="block truncate text-[16px] font-semibold leading-tight text-foreground">
+                        {/* Two lines rather than one truncated one: a long name
+                            cut at the card's width ("MakeClean AB Städföretag,
+                            flyttstäd -…") names no company in particular. */}
+                        <span className="block text-[16px] font-semibold leading-tight text-foreground line-clamp-2 [overflow-wrap:anywhere]">
                           {company.name}
                         </span>
                         <span className="mt-1 block truncate text-[13.5px] text-foreground/65">
@@ -415,7 +428,16 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
                 {headerGroup.headers.map(header => (
                   <th
                     key={header.id}
-                    className="px-6 py-3.5 text-left select-none bg-surface-raised/50"
+                    className={cn(
+                      'px-6 py-3.5 text-left select-none bg-surface-raised/50',
+                      // Stated on the column, not just the cell: with auto table
+                      // layout the column otherwise grows to its widest content.
+                      // 320px measured as the point where the longest real name
+                      // ("MakeClean AB Städföretag, flyttstäd - städfirma för
+                      // hem och företag") settles on two lines rather than three,
+                      // while still handing ~45px back to the other columns.
+                      header.column.id === 'company' && 'w-[320px] max-w-[320px]'
+                    )}
                     onClick={header.column.getToggleSortingHandler()}
                     style={{ cursor: header.column.getCanSort() ? 'pointer' : 'default' }}
                   >
@@ -448,7 +470,18 @@ export function CRMTable({ data, onRowClick }: CRMTableProps) {
                 className="border-b border-border-subtle last:border-0 hover:bg-accent-light cursor-pointer transition-colors duration-100"
               >
                 {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} className="px-6 py-4 whitespace-nowrap align-middle">
+                  <td
+                    key={cell.id}
+                    className={cn(
+                      'px-6 py-4 align-middle',
+                      // Everything else stays on one line — a wrapped stage tag,
+                      // date or avatar row reads worse, not better. Only the
+                      // company name is allowed to break.
+                      cell.column.id === 'company'
+                        ? 'w-[320px] max-w-[320px] whitespace-normal'
+                        : 'whitespace-nowrap'
+                    )}
+                  >
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
