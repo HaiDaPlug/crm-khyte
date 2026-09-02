@@ -279,6 +279,24 @@ export interface WeeklyProgress {
   goals: Goal[]
   /** This week's event counts, keyed by `CrmEventKind`. */
   counts: Record<string, number>
+  /**
+   * Today's event counts, same keys, from local midnight.
+   *
+   * Deliberately has no target beside it. A weekly non-negotiable divided into
+   * five is a number nobody agreed to, and a day you happen to start slowly is
+   * not a day you are failing — this is the tally, not a verdict.
+   */
+  today: Record<string, number>
+  /**
+   * This week's counts split by who did the work — `counts[kind][colleagueId]`,
+   * with events carrying no colleague under the `unassigned` key.
+   *
+   * Attributed from the event log, not from an opportunity's current owner, so
+   * reassigning a prospect cannot move past activity between people.
+   */
+  byColleague: Record<string, Record<string, number>>
+  /** Today's equivalent of `byColleague`, from local midnight. */
+  todayByColleague: Record<string, Record<string, number>>
 }
 
 /**

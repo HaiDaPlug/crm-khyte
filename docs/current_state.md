@@ -657,13 +657,27 @@ indefinitely. `loadSnapshot()` fires eight parallel reads, one below the edge at
 boundary can catch and no retry can reach. Transaction mode needs a different
 driver (node-postgres), not a different number.
 
-**Still unverified.** Both settings typecheck, and postgres.js resolves them
-(`max: 2`, `idle_timeout: 20`) rather than silently ignoring the keys. The live
-check has *not* run: eight parallel reads over a 2-connection pool, and the
-backend count dropping 20s after the pool goes quiet. The pooler was still
-refusing every connection when this was written. The diagnosis above was read
-through the Supabase Management API, which runs SQL over its own connection and
-needs no pooler slot — the way back in when the pooler is full.
+**Verified live 2026-09-02**, once the pooler freed up:
+
+- `loadSnapshot()`'s eight parallel reads over a 2-connection pool completed in
+  **124ms**. No hang — the queueing that breaks in transaction mode is fine in
+  session mode, where a backend is pinned to the session for its lifetime.
+- Three parallel queries opened exactly **2** sockets, and both closed between
+  18s and 24s of idling. `idle_timeout` releases the client slot as intended.
+
+**Do not verify this with `pg_stat_activity`.** The obvious check — watch the
+backend count fall after the pool goes quiet — reports a false negative, and did
+on the first attempt here. Those rows are *Supavisor→Postgres* backends, which
+Supavisor pools and keeps warm independently of client sessions; the
+`EMAXCONNSESSION` ceiling counts *client→Supavisor* connections, which are a
+different thing entirely. A backend outliving your disconnect is normal and
+proves nothing. Measure the client socket instead
+(`Get-NetTCPConnection -RemotePort 5432 -OwningProcess <pid>`), which is what
+the numbers above are.
+
+The diagnosis in this section was read through the Supabase Management API,
+which runs SQL over its own connection and needs no pooler slot — the way back
+in when the pooler is full.
 
 ### Auth gate (lib/auth/ + proxy.ts + app/login/)
 

@@ -99,6 +99,42 @@ export async function countEventsSince(since: Date): Promise<Record<string, numb
   return counts
 }
 
+/**
+ * The same counts, split by who did the work.
+ *
+ * Attributed by `crm_events.colleague`, recorded when the event happened, rather
+ * than by the opportunity's current `followedUpBy`. The log is a record of what
+ * each person did; reassigning a prospect must not silently move last week's
+ * calls from one person to another.
+ *
+ * Events with no colleague are counted under the `unassigned` key rather than
+ * dropped — roughly a tenth of the log has none, and omitting them would leave
+ * a breakdown that visibly fails to add up to the total beside it.
+ */
+export async function countEventsByColleagueSince(
+  since: Date
+): Promise<Record<string, Record<string, number>>> {
+  const sql = getDb()
+
+  const rows = await sql`
+    select kind, coalesce(colleague, 'unassigned') as who, count(*) as total
+    from crm_events
+    where occurred_at >= ${since.toISOString()}
+    group by kind, colleague
+  `
+
+  const byKind: Record<string, Record<string, number>> = {}
+  for (const row of rows as unknown as Array<{
+    kind: string
+    who: string
+    total: string | number
+  }>) {
+    byKind[row.kind] ??= {}
+    byKind[row.kind][row.who] = Number(row.total)
+  }
+  return byKind
+}
+
 /** Events of each kind within a half-open window — `[from, to)`. */
 export async function countEventsBetween(
   from: Date,

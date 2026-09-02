@@ -7,14 +7,14 @@ import { AddProspectModal } from '@/components/crm/AddProspectModal'
 import { Button } from '@/components/crm/Button'
 import { ConfirmDialog } from '@/components/crm/ConfirmDialog'
 import { SearchInput } from '@/components/crm/SearchInput'
-import { WeeklyProgressCard } from '@/components/crm/WeeklyProgressCard'
+import { WeeklyProgressCard, DailyCountCard } from '@/components/crm/WeeklyProgressCard'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useDialogBehavior } from '@/lib/hooks/useDialog'
 import { Sparkles, Plus, ArrowRight, Users, X, Trash2, Search } from 'lucide-react'
 import { priorityDot } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
-import { Lead } from '@/lib/types'
+import { Lead, ColleagueId } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
@@ -311,6 +311,8 @@ export default function LeadsPage() {
   // Local to this page rather than the store's global `searchQuery` — that field
   // is shared, so a query typed on /prospects would follow you here.
   const [searchQuery, setSearchQuery] = useState('')
+  // Scopes the count cards only — see the note where they're rendered.
+  const [cardColleague, setCardColleague] = useState<ColleagueId | null>(null)
   const [addLeadOpen, setAddLeadOpen] = useState(false)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [promoteLeadId, setPromoteLeadId] = useState<string | null>(null)
@@ -341,14 +343,11 @@ export default function LeadsPage() {
       <Topbar />
       <main className="min-w-0 flex-1 px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:px-8 lg:py-8">
         <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-5">
-            <div>
-              <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.leads.allLeads}</h2>
-              <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
-                {t.leads.count(filtered.length, leads.length)}
-              </p>
-            </div>
-            <WeeklyProgressCard metricKind="lead_added" className="sm:w-56" />
+          <div>
+            <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.leads.allLeads}</h2>
+            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
+              {t.leads.count(filtered.length, leads.length)}
+            </p>
           </div>
           <div className="flex w-full flex-col gap-2.5 sm:w-auto sm:flex-row sm:items-center">
             <SearchInput
@@ -363,6 +362,26 @@ export default function LeadsPage() {
               {t.leads.newLead}
             </Button>
           </div>
+        </div>
+
+        {/* Right-aligned above the grid, matching /prospects — the counts sit
+            directly over the cards they describe. Picking a person here narrows
+            the numbers only: a Lead's `followedUpBy` records who should chase
+            it, while the card counts who *added* it, so filtering the grid by
+            the same name would answer a different question than the one asked. */}
+        <div className="mb-4 flex gap-2.5 sm:ml-auto sm:w-max">
+          <DailyCountCard
+            metricKind="lead_added"
+            colleague={cardColleague}
+            onColleagueChange={setCardColleague}
+            className="flex-1 sm:w-[136px] sm:flex-none"
+          />
+          <WeeklyProgressCard
+            metricKind="lead_added"
+            colleague={cardColleague}
+            onColleagueChange={setCardColleague}
+            className="flex-1 sm:w-[184px] sm:flex-none"
+          />
         </div>
 
         {filtered.length === 0 ? (
