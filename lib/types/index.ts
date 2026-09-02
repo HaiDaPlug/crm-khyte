@@ -267,6 +267,21 @@ export interface GoalsSnapshot {
 }
 
 /**
+ * The weekly non-negotiables and this week's counts, for the small progress
+ * cards on the CRM pages.
+ *
+ * A narrow slice of GoalsSnapshot rather than a second source: the cards resolve
+ * a goal's number exactly as GoalsEditor and DisplayBoard do, so /leads,
+ * /prospects, /goals and the wallpaper cannot disagree about the same week.
+ */
+export interface WeeklyProgress {
+  /** `weekly`-section goals only, in the editor's own order. */
+  goals: Goal[]
+  /** This week's event counts, keyed by `CrmEventKind`. */
+  counts: Record<string, number>
+}
+
+/**
  * The full working set the client store is built with on boot.
  * Produced server-side by lib/db/queries.loadSnapshot().
  */
