@@ -286,6 +286,17 @@ rather than an import: the store stays unaware of the UI, and nothing listening
 is a no-op. The poll stays for work logged in another tab and to roll the day and
 week over without a reload.
 
+**The shared poll is refcounted, and getting that wrong froze one card while the
+other kept moving.** The first version guarded the interval with a `polling`
+boolean, which made it the property of whichever card mounted first: when *that*
+card unmounted it cleared the timer for every card still on screen, and the
+survivor never started a new one. The two do not mount together — the week card
+returns `null` whenever no weekly goal is bound to its metric — so the pair could
+end up displaying counts fetched hours apart, which is exactly how it was caught
+(a screenshot showing a week figure last true at 10:06 beside a day figure last
+true at 14:29). `mounted` now counts subscribers and the interval lives while at
+least one card needs it.
+
 Worth knowing when reading these numbers: the week boundary is Monday 00:00
 **local**, and `occurred_at` is `timestamptz` against a UTC server, so a
 back-dated event sits at 22:00Z on the previous day and still counts in the right

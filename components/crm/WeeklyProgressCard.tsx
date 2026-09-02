@@ -39,7 +39,19 @@ import { useTranslations } from '@/lib/hooks/useTranslations'
  */
 let cached: WeeklyProgress | null = null
 const subscribers = new Set<(p: WeeklyProgress) => void>()
-let polling = false
+/**
+ * The shared poll, refcounted by how many cards are mounted.
+ *
+ * A plain `polling` boolean was wrong: whichever card mounted first owned the
+ * interval, and when *that* card unmounted it cleared the timer for every card
+ * still on screen, which then never started a new one. The two cards do not
+ * mount and unmount together — the week card returns null whenever no weekly
+ * goal is bound to its metric — so the survivor could sit on a frozen number
+ * indefinitely while its neighbour kept updating. Counting mounts instead means
+ * the timer lives exactly as long as at least one card needs it.
+ */
+let timer: ReturnType<typeof setInterval> | null = null
+let mounted = 0
 
 /**
  * Re-read the counts and push them to every mounted card.
@@ -79,20 +91,19 @@ function useWeeklyProgress(): WeeklyProgress | null {
     const onWrite = () => refresh()
     window.addEventListener('khyte:crm-write', onWrite)
 
-    if (!polling) {
-      polling = true
-      const timer = setInterval(refresh, 60_000)
-      return () => {
-        subscribers.delete(setProgress)
-        window.removeEventListener('khyte:crm-write', onWrite)
-        clearInterval(timer)
-        polling = false
-      }
-    }
+    // Refcounted so the timer belongs to the page, not to whichever card
+    // happened to mount first — see the note on `mounted` above.
+    mounted += 1
+    timer ??= setInterval(refresh, 60_000)
 
     return () => {
       subscribers.delete(setProgress)
       window.removeEventListener('khyte:crm-write', onWrite)
+      mounted -= 1
+      if (mounted === 0 && timer) {
+        clearInterval(timer)
+        timer = null
+      }
     }
   }, [])
 
