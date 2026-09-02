@@ -7,6 +7,7 @@ import { AddProspectModal } from '@/components/crm/AddProspectModal'
 import { Button } from '@/components/crm/Button'
 import { ConfirmDialog } from '@/components/crm/ConfirmDialog'
 import { SearchInput } from '@/components/crm/SearchInput'
+import { WeeklyProgressCard } from '@/components/crm/WeeklyProgressCard'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useDialogBehavior } from '@/lib/hooks/useDialog'
@@ -340,11 +341,14 @@ export default function LeadsPage() {
       <Topbar />
       <main className="min-w-0 flex-1 px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:px-8 lg:py-8">
         <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.leads.allLeads}</h2>
-            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
-              {t.leads.count(filtered.length, leads.length)}
-            </p>
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-5">
+            <div>
+              <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.leads.allLeads}</h2>
+              <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
+                {t.leads.count(filtered.length, leads.length)}
+              </p>
+            </div>
+            <WeeklyProgressCard metricKind="lead_added" className="sm:w-56" />
           </div>
           <div className="flex w-full flex-col gap-2.5 sm:w-auto sm:flex-row sm:items-center">
             <SearchInput

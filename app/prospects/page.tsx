@@ -5,6 +5,8 @@ import { Topbar } from '@/components/layout/Topbar'
 import { CRMTable, TableRow } from '@/components/crm/CRMTable'
 import { FilterBar } from '@/components/crm/FilterBar'
 import { SearchInput } from '@/components/crm/SearchInput'
+import { QuickFilters, QuickFilter } from '@/components/crm/QuickFilters'
+import { WeeklyProgressCard } from '@/components/crm/WeeklyProgressCard'
 import { ViewToggle, ViewMode } from '@/components/crm/ViewToggle'
 import { DetailDrawer } from '@/components/crm/DetailDrawer'
 import { AddProspectModal } from '@/components/crm/AddProspectModal'
@@ -12,12 +14,11 @@ import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useBoardPan } from '@/lib/hooks/useBoardPan'
-import { Stage, Priority, Note } from '@/lib/types'
+import { Stage, Priority, Note, ColleagueId } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Plus, Download } from 'lucide-react'
 import { STAGES, stageColors, stageDot, priorityDot } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
-import { ColleagueId } from '@/lib/types'
 import {
   buildExportRows,
   downloadCSV,
@@ -41,6 +42,8 @@ export default function ProspectsPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedStages, setSelectedStages] = useState<Stage[]>([])
   const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([])
+  const [quickFilters, setQuickFilters] = useState<QuickFilter[]>([])
+  const [colleagueFilter, setColleagueFilter] = useState<ColleagueId | null>(null)
   const [view, setView] = useState<ViewMode>('table')
   const boardRef = useRef<HTMLDivElement>(null)
   useBoardPan(boardRef)
@@ -72,9 +75,35 @@ export default function ProspectsPage() {
   }
 
   const filteredRows = useMemo(() => {
+    // Monday 00:00 local, matching lib/db/board-metrics.weekStart — the same
+    // week boundary the goal counters use, so "contacted this week" here and
+    // the progress card above it agree on which days count. Reimplemented
+    // rather than imported because that module is server-only.
+    const monday = new Date()
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
+    monday.setHours(0, 0, 0, 0)
+    const today = new Date()
+    today.setHours(23, 59, 59, 999)
+
     return allRows.filter(row => {
       if (selectedStages.length > 0 && !selectedStages.includes(row.opportunity.stage)) return false
       if (selectedPriorities.length > 0 && !selectedPriorities.includes(row.opportunity.priority)) return false
+      if (colleagueFilter && row.opportunity.followedUpBy !== colleagueFilter) return false
+
+      if (quickFilters.includes('thisWeek')) {
+        const last = row.opportunity.lastInteraction
+        if (!last || new Date(last) < monday) return false
+      }
+      if (quickFilters.includes('needsFollowUp')) {
+        // Due today or already past — an empty date is not overdue, it is
+        // unscheduled, and sweeping those in would bury the real ones.
+        const due = row.opportunity.followUpDate
+        if (!due || new Date(due) > today) return false
+      }
+      if (quickFilters.includes('hot')) {
+        if (row.opportunity.priority !== 'high' && row.opportunity.priority !== 'critical') return false
+      }
+
       const q = searchQuery.trim().toLowerCase()
       if (q) {
         const match = row.company.name.toLowerCase().includes(q) ||
@@ -85,7 +114,7 @@ export default function ProspectsPage() {
       }
       return true
     })
-  }, [allRows, selectedStages, selectedPriorities, searchQuery])
+  }, [allRows, selectedStages, selectedPriorities, searchQuery, quickFilters, colleagueFilter])
 
   const drawerNotes = useMemo((): Note[] => {
     if (!selectedRow) return []
@@ -109,11 +138,14 @@ export default function ProspectsPage() {
       <Topbar />
       <main className="min-w-0 flex-1 px-4 py-5 animate-fade-in-up sm:px-6 sm:py-6 lg:px-8 lg:py-8">
         <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.prospects.allProspects}</h2>
-            <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
-              {t.prospects.count(filteredRows.length, allRows.length)}
-            </p>
+          <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-5">
+            <div>
+              <h2 className="text-[26px] font-jakarta font-semibold text-foreground tracking-[-0.02em] leading-none sm:text-[30px]">{t.prospects.allProspects}</h2>
+              <p className="text-[15px] text-foreground/60 mt-1.5 font-mono tabular-nums">
+                {t.prospects.count(filteredRows.length, allRows.length)}
+              </p>
+            </div>
+            <WeeklyProgressCard metricKind="prospect_contacted" className="sm:w-56" />
           </div>
           <div className="flex w-full items-center gap-2.5 sm:w-auto">
             <ViewToggle view={view} onChange={setView} />
@@ -141,6 +173,14 @@ export default function ProspectsPage() {
           </div>
         </div>
 
+        <QuickFilters
+          active={quickFilters}
+          onChange={setQuickFilters}
+          colleague={colleagueFilter}
+          onColleagueChange={setColleagueFilter}
+          className="mb-3 -mx-4 px-4 sm:mx-0 sm:px-0"
+        />
+
         <div className="mb-4 flex flex-col gap-2.5 sm:flex-row sm:items-start sm:gap-3">
           <SearchInput
             value={searchQuery}
@@ -167,13 +207,16 @@ export default function ProspectsPage() {
         ) : filteredRows.length === 0 ? (
           <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-8 text-center">
             <p className="text-[15px] text-foreground/70">{t.crm.table.empty}</p>
-            {(selectedStages.length > 0 || selectedPriorities.length > 0 || searchQuery.trim() !== '') && (
+            {(selectedStages.length > 0 || selectedPriorities.length > 0 || searchQuery.trim() !== '' ||
+              quickFilters.length > 0 || colleagueFilter !== null) && (
               <button
                 type="button"
                 onClick={() => {
                   setSelectedStages([])
                   setSelectedPriorities([])
                   setSearchQuery('')
+                  setQuickFilters([])
+                  setColleagueFilter(null)
                 }}
                 className="mt-3 min-h-11 rounded-lg px-4 text-[14px] font-medium text-accent transition-colors hover:bg-accent-light"
               >

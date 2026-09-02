@@ -21,6 +21,15 @@ const sv = {
     clearFilters: 'Rensa filter',
     clearSearch: 'Rensa sökningen',
   },
+  weeklyProgress: {
+    of: 'av',
+  },
+  quickFilters: {
+    mine: 'Mina',
+    thisWeek: 'Kontaktade denna vecka',
+    needsFollowUp: 'Behöver uppföljning',
+    hot: 'Heta',
+  },
   nav: {
     dashboard: 'Översikt',
     leads: 'Leads',
@@ -434,6 +443,15 @@ const en: Dictionary = {
     keepEditing: 'Keep editing', required: '(required)', autofilled: 'Autofilled',
     willBeCreated: 'Will be created', search: 'Search...', clearFilters: 'Clear filters',
     clearSearch: 'Clear search',
+  },
+  weeklyProgress: {
+    of: 'of',
+  },
+  quickFilters: {
+    mine: 'Mine',
+    thisWeek: 'Contacted this week',
+    needsFollowUp: 'Needs follow-up',
+    hot: 'Hot',
   },
   nav: {
     dashboard: 'Dashboard', leads: 'Leads', prospects: 'Prospects', pipeline: 'Pipeline', strategy: 'Strategy',

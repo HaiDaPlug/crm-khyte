@@ -2,7 +2,7 @@ import 'server-only'
 
 import { connection } from 'next/server'
 
-import type { CRMSnapshot, GoalsSnapshot } from '@/lib/types'
+import type { CRMSnapshot, GoalsSnapshot, WeeklyProgress } from '@/lib/types'
 import { isSupabaseConfigured } from '@/lib/supabase/server'
 import { getDb, isDirectDbConfigured } from './pg'
 import { isClockSkew, isTransientRead, withRetry } from './retry'
@@ -192,6 +192,47 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
     personalGoals: (personalGoals as unknown as PersonalGoalRow[]).map(fromPersonalGoalRow),
     weeklyCounts,
     totals,
+  }
+}
+
+/**
+ * Just the weekly non-negotiables and their counts, for the progress cards the
+ * CRM pages show.
+ *
+ * Deliberately not `loadGoals()`. That reads three tables plus the derived
+ * revenue/customers/pipeline totals, and a card on /leads needs exactly one of
+ * those things — the `weekly` goals and the counts they resolve against. It is
+ * also not folded into `loadSnapshot()`: that runs in the root layout on every
+ * page load, and most pages have no progress card to feed.
+ *
+ * `archiveFinishedWeeks` is *not* called here, unlike in loadGoals. Closing out
+ * a finished week is a write, and the polling that keeps these cards fresh
+ * would otherwise fire it from every open CRM tab several times a minute. The
+ * wallpaper and /goals already trigger it, which is enough — this read stays a
+ * read.
+ */
+export async function loadWeeklyProgress(): Promise<WeeklyProgress> {
+  await connection()
+
+  if (!isSupabaseConfigured || !isDirectDbConfigured) {
+    return {
+      goals: mockGoals.filter((g) => g.section === 'weekly'),
+      counts: {},
+    }
+  }
+
+  const sql = getDb()
+
+  const [goals, counts] = await withDbErrors('weekly progress read', () =>
+    Promise.all([
+      sql`select * from goals where section = 'weekly' order by sort_order`,
+      countEventsSince(weekStart(new Date())),
+    ])
+  )
+
+  return {
+    goals: (goals as unknown as GoalRow[]).map(fromGoalRow),
+    counts,
   }
 }
 
