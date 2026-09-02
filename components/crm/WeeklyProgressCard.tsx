@@ -37,6 +37,39 @@ import { useTranslations } from '@/lib/hooks/useTranslations'
  * per card — two cards would otherwise poll the same endpoint on their own
  * timers.
  */
+/**
+ * Where the last payload is kept between visits.
+ *
+ * The module cache alone only survives client-side navigation; a reload or a
+ * fresh tab started from nothing, so the cards popped in a moment after the page
+ * did. Seeding from localStorage means a returning viewer sees last known
+ * numbers immediately and watches them correct themselves in place, instead of
+ * watching two cards appear out of nowhere. Stale-by-seconds is a far better
+ * first frame than absent.
+ */
+const STORAGE_KEY = 'khyte:weekly-progress'
+
+function readStored(): WeeklyProgress | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    return raw ? (JSON.parse(raw) as WeeklyProgress) : null
+  } catch {
+    // Private mode, blocked site data, or a half-written value. A card that
+    // cannot read its cache simply loads the normal way.
+    return null
+  }
+}
+
+function writeStored(data: WeeklyProgress) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  } catch {
+    // Quota or blocked storage — the live fetch still works.
+  }
+}
+
 let cached: WeeklyProgress | null = null
 const subscribers = new Set<(p: WeeklyProgress) => void>()
 /**
@@ -68,6 +101,7 @@ export async function refreshWeeklyProgress() {
     if (!res.ok) return
     const data = (await res.json()) as WeeklyProgress
     cached = data
+    writeStored(data)
     subscribers.forEach((fn) => fn(data))
   } catch {
     // A card that fails to load is a card that isn't drawn. This is ambient
@@ -83,6 +117,19 @@ function useWeeklyProgress(): WeeklyProgress | null {
 
   useEffect(() => {
     subscribers.add(setProgress)
+
+    // Seed from the last visit before the network answers. Read here rather
+    // than in useState's initialiser: the server renders without localStorage,
+    // so seeding during render would make the first client render disagree with
+    // the server HTML and trip a hydration mismatch.
+    if (!cached) {
+      const stored = readStored()
+      if (stored) {
+        cached = stored
+        setProgress(stored)
+      }
+    }
+
     refresh()
 
     // A write on this page updates the count immediately; the interval below is
@@ -118,6 +165,32 @@ function useWeeklyProgress(): WeeklyProgress | null {
  * assigning, so the bucket that reveals them has to be reachable.
  */
 export type BreakdownKey = ColleagueId | 'unassigned'
+
+/**
+ * The card's own shape while the first payload is in flight.
+ *
+ * Built from the same box, padding and row heights as `CountCard`, so the real
+ * numbers replace it without the layout shifting a pixel. Only ever seen on a
+ * genuine first visit — a returning viewer is seeded from localStorage and goes
+ * straight to numbers.
+ */
+function CardSkeleton({ withBar, className }: { withBar: boolean; className?: string }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={cn('rounded-xl border border-border bg-surface px-4 py-3', className)}
+    >
+      {/* The placeholder bars are shorter than the text they stand in for, so
+          the row is held to the real line-height explicitly — otherwise the
+          card grows by 6px the moment the numbers land. */}
+      <div className="flex h-[17px] items-center justify-between gap-2">
+        <span className="skeleton h-[11px] w-20" />
+        <span className="skeleton h-[11px] w-9" />
+      </div>
+      <div className="mt-2 h-1.5">{withBar && <span className="skeleton block h-1.5 w-full rounded-full" />}</div>
+    </div>
+  )
+}
 
 interface CardProps {
   metricKind: CrmEventKind
@@ -349,9 +422,12 @@ export function WeeklyProgressCard({
   const { t } = useTranslations()
   const progress = useWeeklyProgress()
 
-  if (!progress) return null
+  // First visit only — a returning viewer is seeded from localStorage above.
+  if (!progress) return <CardSkeleton withBar className={className} />
 
   const goal = progress.goals.find((g) => g.metricKind === metricKind)
+  // No weekly goal bound to this metric is a real "nothing to show", not a
+  // pending state, so this stays absent rather than shimmering forever.
   if (!goal || goal.metricTarget === undefined) return null
 
   const breakdown = progress.byColleague[metricKind] ?? {}
@@ -385,7 +461,7 @@ export function DailyCountCard({
   const { t } = useTranslations()
   const progress = useWeeklyProgress()
 
-  if (!progress) return null
+  if (!progress) return <CardSkeleton withBar={false} className={className} />
 
   const breakdown = progress.todayByColleague[metricKind] ?? {}
   const actual = colleague

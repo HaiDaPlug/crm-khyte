@@ -286,6 +286,27 @@ rather than an import: the store stays unaware of the UI, and nothing listening
 is a no-op. The poll stays for work logged in another tab and to roll the day and
 week over without a reload.
 
+**No pop-in (2026-09-02).** Both cards used to render `null` until the first
+fetch answered, so they appeared out of nowhere a moment after the page did. The
+last payload is now mirrored to `localStorage` (`khyte:weekly-progress`) and read
+back on mount, so a returning viewer gets last known numbers in the first frame
+and watches them correct themselves in place — stale by seconds beats absent.
+Seeding happens in an effect rather than `useState`'s initialiser: the server
+renders without `localStorage`, so seeding during render would make the first
+client render disagree with the server HTML and trip a hydration mismatch. Every
+read and write is wrapped in try/catch for private mode and blocked site data.
+
+A genuine first visit (nothing stored yet) shows a shimmer placeholder instead —
+`.skeleton` in `globals.css`, reusing the `shimmer` keyframe the grain buttons
+already had, and reduced to a flat block under `prefers-reduced-motion`. The
+skeleton is built from the same box, padding and row heights as the real card and
+**measured to match**: the label row is pinned to `h-[17px]` because the 11px
+placeholder bars are shorter than the text they stand in for, which otherwise
+grew the card by 6px the instant the numbers arrived. Both variants now render at
+exactly 57px, loaded or not. A metric with no weekly goal bound still renders
+nothing at all — that is a real absence, not a pending state, so it must not
+shimmer forever.
+
 **The shared poll is refcounted, and getting that wrong froze one card while the
 other kept moving.** The first version guarded the interval with a `polling`
 boolean, which made it the property of whichever card mounted first: when *that*
