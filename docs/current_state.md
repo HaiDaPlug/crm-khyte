@@ -223,12 +223,29 @@ Erik" rather than two that can disagree. On `/leads` it scopes the cards only:
 a Lead's `followedUpBy` is who should chase it, while the card counts who
 *added* it, so filtering the grid by that name would answer a different question.
 
-Events with no colleague are shown as "Utan ansvarig" rather than dropped, and
-the row is deliberately not selectable — it names nobody to filter to. This is
-not cosmetic: roughly a tenth of the log has no colleague (12 of 86 this week),
-so omitting it would leave a breakdown that visibly fails to add up to the total
-printed beside it. Verified against live data — week 35/28/12/11 = 86 = the
-total, today 16/10/7/4 = 37 = the total.
+Events with no colleague are shown as "Utan ansvarig" rather than dropped. This
+is not cosmetic: roughly a tenth of the log has no colleague (12 of 86 this
+week), so omitting it would leave a breakdown that visibly fails to add up to
+the total printed beside it. Verified against live data — week 35/28/12/11 = 86
+= the total, today 16/10/7/4 = 37 = the total.
+
+**That row is selectable too (2026-09-02)**, having started as display-only on
+the reasoning that it names nobody to filter to. It does select something worth
+seeing: the prospects nobody is named on are exactly the ones worth pulling up
+and assigning. The selection type widened from `ColleagueId | null` to
+`BreakdownKey | null` (`ColleagueId | 'unassigned' | null`) through the cards and
+the page's table filter. Two things had to change with it — the card's own label
+does a dictionary lookup for this case, since `colleagues` has no `unassigned`
+entry to read a name from, and the table filter needs an explicit
+`if (row.followedUpBy) return false` branch: a plain `!==` against the sentinel
+matches every row and empties the table.
+
+**The card's number and the table's row count can differ here, and both are
+right.** The card counts *events* that carried no colleague when they happened;
+the table lists *prospects* with no owner now. Against live data that is 12
+events against 2 rows — the other ten were assigned an owner after the fact,
+which drops them from the list while their unattributed history stands. The same
+distinction the whole log/state split rests on, surfacing in the UI.
 
 The week card's target stays the team's even when narrowed to one person.
 Dividing it by three would invent a per-person target nobody agreed to.
@@ -247,12 +264,34 @@ card has no use for. It also deliberately does **not** call
 fresh would otherwise fire it from every open tab several times a minute. The
 wallpaper and `/goals` already trigger the archive.
 
-The card polls every 60s (picking up outreach logged in another tab, and rolling
-the week over without a reload) and caches at module level so moving between the
-two pages doesn't refetch. A failed fetch renders nothing — this is ambient
-encouragement, not data being worked from, and must never take a page down.
-Verified against the live database: `prospect_contacted` 52/30 (green, bar
-clamped at 100%), `lead_added` 13/50, `deal_won` correctly absent.
+The cards refresh on every persisted write and poll every 60s as a backstop,
+caching at module level so moving between the two pages doesn't refetch. A failed
+fetch renders nothing — this is ambient encouragement, not data being worked
+from, and must never take a page down. Verified against the live database:
+`prospect_contacted` 90/120, `lead_added` 13/50, `deal_won` correctly absent.
+
+**The write-triggered refresh was added 2026-09-02, after the card was seen
+reading 73/120 against a real 90.** Nothing was miscounted — the API, the
+breakdown and the database all agreed on 90, and the per-person figures summed
+to it exactly. The card was simply stale: it only had the 60s poll, and this
+team records outreach in bursts (18 `prospect_contacted` events inside the 10:00
+hour that day), so the running total crossed 73 and kept going while the card
+waited for its next tick. A counter that lags the work it is counting by up to a
+minute, on a page where you *do* that work, undercuts the whole point of putting
+it there.
+
+`persist()` in `lib/store/store.ts` now broadcasts a `khyte:crm-write` event
+after each write settles, and the cards listen for it. Deliberately an event
+rather than an import: the store stays unaware of the UI, and nothing listening
+is a no-op. The poll stays for work logged in another tab and to roll the day and
+week over without a reload.
+
+Worth knowing when reading these numbers: the week boundary is Monday 00:00
+**local**, and `occurred_at` is `timestamptz` against a UTC server, so a
+back-dated event sits at 22:00Z on the previous day and still counts in the right
+local week. Grouping the log by a bare `occurred_at::date` instead reads 16 of
+this week's events into Sunday and undercounts by that much — a trap when
+querying the table by hand rather than a defect in the app.
 
 **Layout (polished 2026-09-02).** The header had grown three stacked full-width
 control rows — chips, then search + filter, then the pager — with the count cards

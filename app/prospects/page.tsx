@@ -6,7 +6,7 @@ import { CRMTable, TableRow } from '@/components/crm/CRMTable'
 import { FilterBar } from '@/components/crm/FilterBar'
 import { SearchInput } from '@/components/crm/SearchInput'
 import { QuickFilters, QuickFilter } from '@/components/crm/QuickFilters'
-import { WeeklyProgressCard, DailyCountCard } from '@/components/crm/WeeklyProgressCard'
+import { WeeklyProgressCard, DailyCountCard, BreakdownKey } from '@/components/crm/WeeklyProgressCard'
 import { ViewToggle, ViewMode } from '@/components/crm/ViewToggle'
 import { DetailDrawer } from '@/components/crm/DetailDrawer'
 import { AddProspectModal } from '@/components/crm/AddProspectModal'
@@ -43,7 +43,7 @@ export default function ProspectsPage() {
   const [selectedStages, setSelectedStages] = useState<Stage[]>([])
   const [selectedPriorities, setSelectedPriorities] = useState<Priority[]>([])
   const [quickFilters, setQuickFilters] = useState<QuickFilter[]>([])
-  const [colleagueFilter, setColleagueFilter] = useState<ColleagueId | null>(null)
+  const [colleagueFilter, setColleagueFilter] = useState<BreakdownKey | null>(null)
   const [view, setView] = useState<ViewMode>('table')
   const boardRef = useRef<HTMLDivElement>(null)
   useBoardPan(boardRef)
@@ -88,7 +88,20 @@ export default function ProspectsPage() {
     return allRows.filter(row => {
       if (selectedStages.length > 0 && !selectedStages.includes(row.opportunity.stage)) return false
       if (selectedPriorities.length > 0 && !selectedPriorities.includes(row.opportunity.priority)) return false
-      if (colleagueFilter && row.opportunity.followedUpBy !== colleagueFilter) return false
+      if (colleagueFilter === 'unassigned') {
+        // The prospects nobody is named on — the ones worth finding and
+        // assigning. A plain !== comparison against the sentinel would match
+        // every row and empty the table instead.
+        //
+        // The row count here can legitimately be lower than the card's number
+        // beside it: the card counts *events* that were unattributed when they
+        // happened, and a prospect assigned an owner afterwards keeps its
+        // unattributed history while dropping out of this list. Both figures
+        // are right — they answer different questions.
+        if (row.opportunity.followedUpBy) return false
+      } else if (colleagueFilter && row.opportunity.followedUpBy !== colleagueFilter) {
+        return false
+      }
 
       if (quickFilters.includes('thisWeek')) {
         const last = row.opportunity.lastInteraction
