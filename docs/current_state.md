@@ -286,6 +286,38 @@ rather than an import: the store stays unaware of the UI, and nothing listening
 is a no-op. The poll stays for work logged in another tab and to roll the day and
 week over without a reload.
 
+**No pop-in (2026-09-02).** Both cards used to render `null` until the first
+fetch answered, so they appeared out of nowhere a moment after the page did. The
+last payload is now mirrored to `localStorage` (`khyte:weekly-progress`) and read
+back on mount, so a returning viewer gets last known numbers in the first frame
+and watches them correct themselves in place — stale by seconds beats absent.
+Seeding happens in an effect rather than `useState`'s initialiser: the server
+renders without `localStorage`, so seeding during render would make the first
+client render disagree with the server HTML and trip a hydration mismatch. Every
+read and write is wrapped in try/catch for private mode and blocked site data.
+
+A genuine first visit (nothing stored yet) shows a shimmer placeholder instead —
+`.skeleton` in `globals.css`, reusing the `shimmer` keyframe the grain buttons
+already had, and reduced to a flat block under `prefers-reduced-motion`. The
+skeleton is built from the same box, padding and row heights as the real card and
+**measured to match**: the label row is pinned to `h-[17px]` because the 11px
+placeholder bars are shorter than the text they stand in for, which otherwise
+grew the card by 6px the instant the numbers arrived. Both variants now render at
+exactly 57px, loaded or not. A metric with no weekly goal bound still renders
+nothing at all — that is a real absence, not a pending state, so it must not
+shimmer forever.
+
+**The shared poll is refcounted, and getting that wrong froze one card while the
+other kept moving.** The first version guarded the interval with a `polling`
+boolean, which made it the property of whichever card mounted first: when *that*
+card unmounted it cleared the timer for every card still on screen, and the
+survivor never started a new one. The two do not mount together — the week card
+returns `null` whenever no weekly goal is bound to its metric — so the pair could
+end up displaying counts fetched hours apart, which is exactly how it was caught
+(a screenshot showing a week figure last true at 10:06 beside a day figure last
+true at 14:29). `mounted` now counts subscribers and the interval lives while at
+least one card needs it.
+
 Worth knowing when reading these numbers: the week boundary is Monday 00:00
 **local**, and `occurred_at` is `timestamptz` against a UTC server, so a
 back-dated event sits at 22:00Z on the previous day and still counts in the right
@@ -1509,6 +1541,7 @@ prospects board's cards separate from the page.
 - Card hover glow: `.card-glow` (subtle amber shadow on hover)
 - Gradient line dividers: `.line-accent`
 - Pulsing indicator: `.ember-dot`
+- Loading placeholder: `.skeleton` — a slow sheen across `--background-raised`, reusing the `shimmer` keyframe the grain buttons already animate on hover. Sized by the caller so a placeholder can match the real content's box exactly; flattens to a static block under `prefers-reduced-motion`
 - Animations: fadeInUp, slideInDown, scaleIn, glow-pulse, line-reveal, ember-glow
 - Staggered children reveal with 50ms delays
 - Smooth cubic-bezier easings throughout
@@ -1797,6 +1830,21 @@ for a few weeks and found to actually track "things a person would flag."
 ---
 
 ## Known issues / open decisions
+
+- **Pushing follow-up commits to a branch whose PR has already merged strands
+  them (hit 2026-09-02).** PR #9 was merged when
+  `feat/unassigned-filter-live-counts` held one commit; two more were pushed to
+  the same branch afterwards — the count cards' polling refcount fix and the
+  storage-seeding/shimmer work. GitHub does not pick those up, so they sat on a
+  branch it considered done, never reached `master`, and never deployed. The
+  symptom is the confusing one: the deployment is *correct* for what it was
+  given, so "I merged it and nothing changed" looks like a build or cache
+  problem rather than a git one. Diagnosed by diffing the branch against
+  `origin/master` and grepping `master` for the identifiers the fixes introduce
+  (`let mounted = 0`, `khyte:weekly-progress`, `CardSkeleton`, `.skeleton`) —
+  all four absent. Recovered by cherry-picking the two commits onto a fresh
+  branch off `master`. **Once a PR is open, either check it has not merged
+  before pushing a follow-up, or start a new branch for the next fix.**
 
 - ~~No data persistence — all state resets on page refresh~~ — fixed: the store
   hydrates from Postgres and writes back through Server Actions. Still resets on
