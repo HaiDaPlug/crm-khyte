@@ -414,8 +414,7 @@ const sv = {
     pageTitle: 'Något gick fel · Khyte CRM',
     title: 'Något gick fel',
     message: 'Khyte kunde inte läsa in din arbetsyta. Appen stannar här i stället för att visa en tom pipeline som ser ut som riktiga data.',
-    helpBeforeEnv: 'Det här är vanligtvis tillfälligt. Om det fortsätter, kontrollera att databasen går att nå och att uppgifterna i',
-    helpAfterEnv: 'fortfarande är giltiga.',
+    help: 'Det här är ofta tillfälligt — försök igen först. Om det fortsätter står hela felmeddelandet i serverloggen; orsaken syns där, inte här.',
     reference: 'Referens:',
     retry: 'Försök igen',
     dashboard: 'Till översikten',
@@ -645,8 +644,8 @@ const en: Dictionary = {
   globalError: {
     pageTitle: 'Something went wrong · Khyte CRM', title: 'Something went wrong',
     message: "Khyte couldn't load your workspace. The app stops here rather than showing you an empty pipeline that looks like real data.",
-    helpBeforeEnv: 'This is usually temporary. If it keeps happening, check that the database is reachable and the credentials in',
-    helpAfterEnv: 'are still valid.', reference: 'Reference:', retry: 'Try again', dashboard: 'Back to dashboard',
+    help: 'This is often temporary — try again first. If it keeps happening, the full error is in the server log; the cause shows up there, not here.',
+    reference: 'Reference:', retry: 'Try again', dashboard: 'Back to dashboard',
   },
   stages: {
     New: 'Researched', Ongoing: 'Ongoing', Contacted: 'Contacted', Warm: 'Warm', 'Meeting Booked': 'Meeting Booked',
