@@ -291,6 +291,22 @@ fetch answered, so they appeared out of nowhere a moment after the page did. The
 last payload is now mirrored to `localStorage` (`khyte:weekly-progress`) and read
 back on mount, so a returning viewer gets last known numbers in the first frame
 and watches them correct themselves in place — stale by seconds beats absent.
+
+**The seed is stamped and expires (fixed 2026-09-03).** The first version stored
+the bare payload with no timestamp, which meant a browser that had cached a
+figure showed it as the first frame *forever* — a deployment was seen reporting
+74/120 the next morning against a real 90, having seeded a value written the
+previous afternoon. Two things made that persist rather than flicker: nothing
+aged the entry out, and `refreshWeeklyProgress` swallows a failed fetch by
+design, so any hiccup left the stale seed standing with nothing to distinguish
+it from a live count. The stored value is now an envelope — `savedAt` plus the
+local `day` it describes — rejected if older than five minutes or written on
+another day, and *removed* on rejection rather than left to be reconsidered on
+every mount. Payloads from the older format have no envelope and are discarded
+on sight. The seed exists to cover a few hundred milliseconds of network, not to
+serve yesterday's numbers: a cached figure with no expiry is indistinguishable
+from a broken counter, because nothing tells the operator which one they are
+looking at.
 Seeding happens in an effect rather than `useState`'s initialiser: the server
 renders without `localStorage`, so seeding during render would make the first
 client render disagree with the server HTML and trip a hydration mismatch. Every
