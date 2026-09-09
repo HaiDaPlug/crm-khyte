@@ -88,7 +88,9 @@ export async function searchRecords(db: Queryable, input: unknown) {
 
 function insert(plan: Plan, table: string, entity: string, row: Row) {
   const columns = Object.keys(row).map(k => `"${k}"`).join(', ')
-  plan.statements.push({ sql: `insert into ${table} (${columns}) select ${columns} from jsonb_populate_record(null::${table}, $1::jsonb)`, values: [JSON.stringify(row)] })
+  // Bind pre-serialized JSON as text. postgres.js otherwise infers jsonb and
+  // JSON.stringify's the string again, turning the object into a JSON scalar.
+  plan.statements.push({ sql: `insert into ${table} (${columns}) select ${columns} from jsonb_populate_record(null::${table}, $1::text::jsonb)`, values: [JSON.stringify(row)] })
   plan.changes.push({ entity, id: String(row.id), operation: 'create', fields: camel(row) })
 }
 
@@ -96,7 +98,7 @@ function update(plan: Plan, table: string, entity: string, id: string, patch: Ro
   const columns = Object.keys(patch)
   if (!columns.length) return
   plan.statements.push({ sql: `update ${table} t set ${columns.map(k => `"${k}" = x."${k}"`).join(', ')}
-    from jsonb_populate_record(null::${table}, $1::jsonb) x where t.id = $2`, values: [JSON.stringify(patch), id] })
+    from jsonb_populate_record(null::${table}, $1::text::jsonb) x where t.id = $2`, values: [JSON.stringify(patch), id] })
   plan.changes.push({ entity, id, operation: 'update', fields: camel(patch) })
 }
 
@@ -118,7 +120,7 @@ function event(plan: Plan, requestId: string, kind: string, subjectId: string, c
   // Keep existing per-prospect/day outreach counts, independent of message count.
   plan.statements.push({
     sql: `insert into crm_events (id, kind, subject_id, colleague, detail, occurred_at)
-      select $1, $2::crm_event_kind, $3, $4, $5::jsonb, $6::timestamptz
+      select $1, $2::crm_event_kind, $3, $4, $5::text::jsonb, $6::timestamptz
       where $2 <> 'prospect_contacted' or not exists (
         select 1 from crm_events where kind = 'prospect_contacted' and subject_id = $3
         and occurred_at >= $6::timestamptz and occurred_at < $7::timestamptz)`,
@@ -265,7 +267,7 @@ export async function commitAction(db: Database, action: ActionName, raw: unknow
     for (const statement of plan.statements) await tx.query(statement.sql, statement.values)
     const record = await getRecord(tx, { entity: plan.entity, id: plan.id })
     const result = { status: 'saved', action, requestId: input.requestId, changes: plan.changes, ...record }
-    await tx.query(`insert into crm_tool_receipts (request_id, action, payload_hash, connection_id, result) values ($1,$2,$3,$4,$5::jsonb)`,
+    await tx.query(`insert into crm_tool_receipts (request_id, action, payload_hash, connection_id, result) values ($1,$2,$3,$4,$5::text::jsonb)`,
       [input.requestId, action, hash, actor.connectionId, JSON.stringify(result)])
     return result
   })
