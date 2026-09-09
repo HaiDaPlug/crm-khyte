@@ -14,6 +14,7 @@ import { authenticateBearer, exchangeToken, issueCode, revokeToken, validateAuth
 import { config, hashToken, pkceChallenge, previewToken, readEnvelope, signEnvelope, verifyPreview } from '../lib/mcp/security'
 import { checkOrigin, readBody } from '../lib/mcp/http'
 import { loginReturnTo } from '../lib/auth/return-to'
+import { register } from '../instrumentation'
 
 // No .env files, remote database, production credentials, or network access.
 process.env.MCP_PUBLIC_URL = 'https://crm.example.test'
@@ -21,7 +22,8 @@ process.env.MCP_SECRET = 'test-only-signing-secret-with-at-least-32-characters'
 process.env.MCP_CLIENT_ID = 'test-chatgpt'
 process.env.MCP_CLIENT_SECRET = 'test-only-client-secret-with-at-least-32-characters'
 process.env.MCP_REDIRECT_URIS = 'https://chatgpt.com/connector_platform_oauth_redirect'
-process.env.TZ = 'Europe/Stockholm'
+process.env.NEXT_RUNTIME = 'nodejs'
+register()
 const pg = new PGlite()
 const wrap = (client: Pick<PGlite, 'query'>): Queryable => ({ async query<T extends Row>(sql: string, values: unknown[] = []) { return (await client.query<T>(sql, values)).rows } })
 const db: Database = { ...wrap(pg), transaction: run => pg.transaction(tx => run(wrap(tx))) }
@@ -30,6 +32,13 @@ const lead = () => ({ requestId: randomUUID(), companyName: `Lead ${randomUUID()
 const task = () => ({ requestId: randomUUID(), title: 'Send the agreed proposal', assignee: 'hai' as const, dueDate: null, tags: ['proposal'] })
 const outreach = () => ({ requestId: randomUUID(), target: { kind: 'new' as const, company: { name: `Company ${randomUUID()}` }, contact: { name: 'Anna', email: `${randomUUID()}@example.test` } },
   occurredOn: '2026-08-18', channel: 'email' as const, summary: 'Sent an introduction.', followedUpBy: 'erik' as const, tags: ['outbound'] })
+
+test('server initialization uses Stockholm day boundaries in winter, summer and DST transitions', () => {
+  assert.equal(new Date(2026, 0, 15).toISOString(), '2026-01-14T23:00:00.000Z')
+  assert.equal(new Date(2026, 6, 15).toISOString(), '2026-07-14T22:00:00.000Z')
+  assert.equal(new Date(2026, 2, 30).toISOString(), '2026-03-29T22:00:00.000Z')
+  assert.equal(new Date(2026, 9, 26).toISOString(), '2026-10-25T23:00:00.000Z')
+})
 
 before(async () => {
   await pg.exec(`create role anon; create role authenticated; create schema auth; create table auth.users (id uuid primary key);

@@ -41,9 +41,11 @@ This change does not add new tag-editing controls to the browser UI.
   unassigned. Never infer a person from the shared login.
 - `dueDate: null` means no deadline. On outreach, an omitted `followUpDate`
   preserves the current date; `null` clears it. No default follow-up is invented.
-- The team calendar is Europe/Stockholm. Set `TZ=Europe/Stockholm` on the server,
-  because existing UI event logging, daily counts and exports use server-local
-  calendar boundaries. Dates are `YYYY-MM-DD`, currency values are SEK.
+- The team calendar is Europe/Stockholm. `instrumentation.ts` sets the Node server
+  timezone before requests because existing UI event logging, daily counts and
+  exports use server-local calendar boundaries. Vercel reserves the `TZ` deployment
+  variable, so no environment setting is needed. Dates are `YYYY-MM-DD`, currency
+  values are SEK.
 - Logging an older interaction never moves `lastInteraction` backwards. Stage
   changes are explicit; a sent email does not imply Warm or Meeting Booked.
 - Imported stage timing is classified as logged evidence, not a historically
@@ -112,7 +114,6 @@ The integration never falls back to demo data or reports a no-op as saved.
    | `MCP_CLIENT_SECRET` | A new random secret, at least 32 characters |
    | `MCP_SECRET` | A different random secret, at least 32 characters |
    | `MCP_REDIRECT_URIS` | Exact callback URL(s) displayed by ChatGPT, comma-separated |
-   | `TZ` | `Europe/Stockholm` |
 
    Generate each secret locally with
    `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`.
