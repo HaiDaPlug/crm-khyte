@@ -79,12 +79,19 @@ test('authorization requires the shared session and explicit same-origin consent
   const page = await fetch(url, { headers: { cookie } })
   assert.equal(page.status, 200)
   assert.equal(page.headers.get('x-frame-options'), 'DENY')
+  // Under 'no-referrer' the browser serializes this page's own same-origin form
+  // POST as 'Origin: null' (Fetch, "append a request Origin header"), which the
+  // consent handler then refuses as invalid_origin. 'same-origin' still withholds
+  // the referrer from the cross-origin callback, but keeps a real Origin here.
+  assert.equal(page.headers.get('referrer-policy'), 'same-origin')
   const html = await page.text()
   assert.ok(html.includes('Ni kan fortfarande logga för varandra'))
   const approval = /name="approval" value="([^"]+)"/.exec(html)[1]
   const form = new URLSearchParams({ approval, decision: 'deny' })
   const missingOrigin = await fetch(`${origin}/oauth/authorize`, { method: 'POST', headers: { cookie }, body: form, redirect: 'manual' })
   assert.equal(missingOrigin.status, 400)
+  const nulledOrigin = await fetch(`${origin}/oauth/authorize`, { method: 'POST', headers: { cookie, origin: 'null' }, body: form, redirect: 'manual' })
+  assert.equal(nulledOrigin.status, 400)
   const denied = await fetch(`${origin}/oauth/authorize`, { method: 'POST', headers: { cookie, origin: 'https://crm.example.test' }, body: form, redirect: 'manual' })
   assert.equal(denied.status, 303)
   const callback = new URL(denied.headers.get('location'))

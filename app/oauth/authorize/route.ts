@@ -34,7 +34,7 @@ export async function GET(request: Request) {
       <p>Ni kan fortfarande logga för varandra. Vem som följde upp och vem som tilldelas en uppgift väljs separat.</p>
       <p>Anslutning: ${escape(c.clientId)}<br>Återgår till: ${escape(new URL(authorization.redirect_uri).origin)}</p>
       <form method="post" action="/oauth/authorize"><input type="hidden" name="approval" value="${escape(approval)}"><button name="decision" value="allow">Anslut</button><button name="decision" value="deny">Avbryt</button></form>
-      </main></body></html>`, { headers: { ...noStore, 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'no-referrer',
+      </main></body></html>`, { headers: { ...noStore, 'Content-Type': 'text/html; charset=utf-8', 'Referrer-Policy': 'same-origin',
         'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'", 'X-Frame-Options': 'DENY' } })
   } catch (error) { return oauthError(error) }
 }
