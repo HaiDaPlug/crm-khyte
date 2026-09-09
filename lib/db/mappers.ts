@@ -216,6 +216,7 @@ export function fromLeadRow(row: LeadRow): Lead {
   return {
     id: row.id,
     companyName: row.company_name,
+    tags: row.tags ?? [],
     ...(row.contact_name ? { contactName: row.contact_name } : {}),
     ...(row.connection ? { connection: row.connection } : {}),
     ...(row.source ? { source: row.source } : {}),
@@ -230,6 +231,7 @@ export function toLeadInsert(lead: Lead) {
   return {
     id: lead.id,
     company_name: lead.companyName,
+    ...(lead.tags ? { tags: lead.tags } : {}),
     contact_name: nullIfBlank(lead.contactName),
     connection: nullIfBlank(lead.connection),
     source: nullIfBlank(lead.source),
@@ -242,6 +244,7 @@ export function toLeadInsert(lead: Lead) {
 
 export function toLeadUpdate(updates: Partial<Lead>) {
   return pickDefined<LeadRow>([
+    ['tags', updates.tags],
     ['company_name', updates.companyName],
     ['contact_name', updates.contactName === undefined ? undefined : nullIfBlank(updates.contactName)],
     ['connection', updates.connection === undefined ? undefined : nullIfBlank(updates.connection)],
@@ -357,6 +360,7 @@ export function fromTaskRow(row: TaskRow): Task {
   return {
     id: row.id,
     title: row.title,
+    tags: row.tags ?? [],
     ...(row.description ? { description: row.description } : {}),
     ...(row.related_opportunity_id
       ? { relatedOpportunityId: row.related_opportunity_id }
@@ -377,6 +381,7 @@ export function toTaskInsert(task: Task) {
   return {
     id: task.id,
     title: task.title,
+    ...(task.tags ? { tags: task.tags } : {}),
     description: nullIfBlank(task.description),
     related_opportunity_id: task.relatedOpportunityId ?? null,
     related_company_id: task.relatedCompanyId ?? null,
@@ -390,6 +395,7 @@ export function toTaskInsert(task: Task) {
 
 export function toTaskUpdate(updates: Partial<Task>) {
   return pickDefined<TaskRow>([
+    ['tags', updates.tags],
     ['title', updates.title],
     [
       'description',

@@ -1,5 +1,9 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+Remote ChatGPT integration: see [the MCP setup and action contract](docs/remote-mcp.md)
+for `https://crm.khyte.se/mcp`, connection scopes, logging attribution, lead/task
+parameters, verification commands, and the next in-CRM voice phase.
+
 ## Getting Started
 
 First, run the development server:

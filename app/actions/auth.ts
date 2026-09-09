@@ -2,6 +2,7 @@
 
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { loginReturnTo } from '@/lib/auth/return-to'
 
 import {
   SESSION_COOKIE,
@@ -87,7 +88,7 @@ export async function login(
 
   // Outside the try/catch-free path above on purpose: redirect() signals by
   // throwing, so it has to be the last thing the action does.
-  redirect('/')
+  redirect(loginReturnTo(formData.get('returnTo')))
 }
 
 export async function logout() {

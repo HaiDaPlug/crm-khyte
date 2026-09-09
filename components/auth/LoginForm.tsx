@@ -42,7 +42,7 @@ function SubmitButton() {
   )
 }
 
-export function LoginForm() {
+export function LoginForm({ returnTo = '/' }: { returnTo?: string }) {
   const [state, action] = useActionState<LoginState, FormData>(login, undefined)
 
   const message = state?.error
@@ -51,6 +51,7 @@ export function LoginForm() {
 
   return (
     <form action={action} className="flex w-full flex-col gap-5">
+      <input type="hidden" name="returnTo" value={returnTo} />
       <div>
         <label htmlFor="password" className="label-mono mb-2 block">
           {copy.label}
@@ -88,7 +89,7 @@ export function LoginForm() {
   )
 }
 
-export function LoginCard() {
+export function LoginCard({ returnTo = '/' }: { returnTo?: string }) {
   return (
     <div className="w-full max-w-[380px]">
       <div className="mb-7 flex flex-col items-center text-center">
@@ -101,7 +102,7 @@ export function LoginCard() {
         <p className="mt-1.5 text-[14px] text-foreground-dim">{copy.subtitle}</p>
       </div>
 
-      <LoginForm />
+      <LoginForm returnTo={returnTo} />
     </div>
   )
 }

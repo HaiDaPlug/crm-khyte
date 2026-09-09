@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { SESSION_COOKIE, verifySession } from '@/lib/auth/session'
+import { loginReturnTo } from '@/lib/auth/return-to'
 import {
   DISPLAY_TOKEN_PARAM,
   colleagueFromDisplayPath,
@@ -42,12 +43,19 @@ function forward(request: NextRequest, pathname: string) {
 
 export default function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
+  // Protocol routes perform their own token/session checks. Keep this list exact:
+  // a broad /api or /oauth bypass could expose unrelated CRM actions.
+  if (['/mcp', '/oauth/authorize', '/oauth/token', '/oauth/revoke',
+    '/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp',
+    '/.well-known/oauth-authorization-server'].includes(pathname)) {
+    return forward(request, pathname)
+  }
   const authed = verifySession(request.cookies.get(SESSION_COOKIE)?.value)
 
   if (pathname === '/login') {
     // Someone with a live session has no business on the gate.
     if (authed) {
-      return NextResponse.redirect(new URL('/', request.url))
+      return NextResponse.redirect(new URL(loginReturnTo(request.nextUrl.searchParams.get('returnTo')), request.url))
     }
     return forward(request, pathname)
   }

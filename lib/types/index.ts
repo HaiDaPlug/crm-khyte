@@ -69,6 +69,8 @@ export interface Opportunity {
 export interface Lead {
   id: string
   companyName: string
+  /** Descriptive labels, independent of priority and attribution. */
+  tags?: string[]
   /** Free text — no linked Contact record until this is promoted. */
   contactName?: string
   /** Someone in your own network who can vouch for or introduce this contact. */
@@ -131,6 +133,7 @@ export type ColleagueId = 'erik' | 'abdi' | 'hai'
 export interface Task {
   id: string
   title: string
+  tags?: string[]
   description?: string
   relatedOpportunityId?: string
   relatedCompanyId?: string

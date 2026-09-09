@@ -71,6 +71,7 @@ export interface LeadRow {
   id: string
   owner_id: string | null
   company_name: string
+  tags: string[]
   contact_name: string | null
   connection: string | null
   source: string | null
@@ -158,6 +159,7 @@ export interface PersonalGoalRow {
 }
 
 export interface TaskRow {
+  tags: string[]
   id: string
   owner_id: string | null
   title: string
