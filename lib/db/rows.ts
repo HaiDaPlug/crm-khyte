@@ -95,10 +95,23 @@ export interface NoteRow {
   updated_at: string
 }
 
+export interface StrategyBoardRow {
+  id: string
+  owner_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface StrategyBoardOpportunityRow {
+  board_id: string
+  opportunity_id: string
+  created_at: string
+}
+
 export interface StrategyColumnRow {
   id: string
   owner_id: string | null
-  opportunity_id: string
+  board_id: string
   title: string
   sort_order: number
   created_at: string
@@ -108,7 +121,6 @@ export interface StrategyColumnRow {
 export interface StrategyCardRow {
   id: string
   owner_id: string | null
-  opportunity_id: string
   column_id: string
   content: string
   sort_order: number

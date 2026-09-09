@@ -11,6 +11,8 @@ import {
   countEventsByColleagueSince,
   countEventsSince,
   loadDerivedTotals,
+  loadMeetingsBookedNow,
+  loadMeetingsBookedNowByColleague,
   weekStart,
 } from './board-metrics'
 import { mockCompanies } from '@/lib/mock-data/companies'
@@ -18,7 +20,12 @@ import { mockContacts } from '@/lib/mock-data/contacts'
 import { mockOpportunities } from '@/lib/mock-data/opportunities'
 import { mockLeads } from '@/lib/mock-data/leads'
 import { mockNotes } from '@/lib/mock-data/notes'
-import { mockStrategyCards, mockStrategyColumns } from '@/lib/mock-data/strategy'
+import {
+  mockStrategyBoardOpportunities,
+  mockStrategyBoards,
+  mockStrategyCards,
+  mockStrategyColumns,
+} from '@/lib/mock-data/strategy'
 import { mockTasks } from '@/lib/mock-data/tasks'
 import { mockPersonalGoals, mockGoalMetrics, mockGoals } from '@/lib/mock-data/goals'
 import {
@@ -30,6 +37,8 @@ import {
   fromLeadRow,
   fromNoteRow,
   fromOpportunityRow,
+  fromStrategyBoardOpportunityRow,
+  fromStrategyBoardRow,
   fromStrategyCardRow,
   fromStrategyColumnRow,
   fromTaskRow,
@@ -43,6 +52,8 @@ import type {
   LeadRow,
   NoteRow,
   OpportunityRow,
+  StrategyBoardOpportunityRow,
+  StrategyBoardRow,
   StrategyCardRow,
   StrategyColumnRow,
   TaskRow,
@@ -95,6 +106,8 @@ async function readSnapshot(): Promise<CRMSnapshot> {
     opportunities,
     leads,
     notes,
+    strategyBoards,
+    strategyBoardOpportunities,
     strategyColumns,
     strategyCards,
     tasks,
@@ -105,7 +118,9 @@ async function readSnapshot(): Promise<CRMSnapshot> {
       sql`select * from opportunities order by stage, sort_order`,
       sql`select * from leads order by created_at desc`,
       sql`select * from notes order by created_at desc`,
-      sql`select * from strategy_columns order by opportunity_id, sort_order`,
+      sql`select * from strategy_boards order by created_at`,
+      sql`select * from strategy_board_opportunities`,
+      sql`select * from strategy_columns order by board_id, sort_order`,
       sql`select * from strategy_cards order by sort_order`,
       sql`select * from tasks order by created_at desc`,
     ])
@@ -117,6 +132,10 @@ async function readSnapshot(): Promise<CRMSnapshot> {
     opportunities: (opportunities as unknown as OpportunityRow[]).map(fromOpportunityRow),
     leads: (leads as unknown as LeadRow[]).map(fromLeadRow),
     notes: (notes as unknown as NoteRow[]).map(fromNoteRow),
+    strategyBoards: (strategyBoards as unknown as StrategyBoardRow[]).map(fromStrategyBoardRow),
+    strategyBoardOpportunities: (
+      strategyBoardOpportunities as unknown as StrategyBoardOpportunityRow[]
+    ).map(fromStrategyBoardOpportunityRow),
     strategyColumns: (strategyColumns as unknown as StrategyColumnRow[]).map(
       fromStrategyColumnRow
     ),
@@ -175,17 +194,21 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
 
   // The counted numbers are read in the same pass as the rows they belong to,
   // so a goal and its count always describe the same instant.
-  const [goals, metrics, personalGoals, weeklyCounts, totals] = await withDbErrors(
-    'goals read',
-    () =>
+  const [goals, metrics, personalGoals, eventCounts, totals, meetingsBookedNow] =
+    await withDbErrors('goals read', () =>
       Promise.all([
         sql`select * from goals order by section, sort_order`,
         sql`select * from goal_metrics order by sort_order`,
         sql`select * from personal_goals order by colleague, sort_order`,
         countEventsSince(weekStart(now)),
         loadDerivedTotals(),
+        loadMeetingsBookedNow(),
       ])
-  )
+    )
+
+  // meeting_booked is current state (opportunities sitting in that stage right
+  // now), not an event tally — see loadMeetingsBookedNow in ./board-metrics.
+  const weeklyCounts = { ...eventCounts, meeting_booked: meetingsBookedNow }
 
   return {
     goals: (goals as unknown as GoalRow[]).map(fromGoalRow),
@@ -237,17 +260,27 @@ export async function loadWeeklyProgress(): Promise<WeeklyProgress> {
   const dayStart = new Date(now)
   dayStart.setHours(0, 0, 0, 0)
 
-  const [goals, counts, today, byColleague, todayByColleague] = await withDbErrors(
-    'weekly progress read',
-    () =>
+  const [goals, weekEvents, dayEvents, weekByColleague, dayByColleague, meetingsBookedNow, meetingsBookedNowByColleague] =
+    await withDbErrors('weekly progress read', () =>
       Promise.all([
         sql`select * from goals where section = 'weekly' order by sort_order`,
         countEventsSince(weekStart(now)),
         countEventsSince(dayStart),
         countEventsByColleagueSince(weekStart(now)),
         countEventsByColleagueSince(dayStart),
+        loadMeetingsBookedNow(),
+        loadMeetingsBookedNowByColleague(),
       ])
   )
+
+  // meeting_booked is current state, not an event tally — see
+  // loadMeetingsBookedNow in ./board-metrics. "Today" and "this week" both
+  // read the same live number: a stage a card sits in has no window to be
+  // counted within, unlike an event that either happened in one or didn't.
+  const counts = { ...weekEvents, meeting_booked: meetingsBookedNow }
+  const today = { ...dayEvents, meeting_booked: meetingsBookedNow }
+  const byColleague = { ...weekByColleague, meeting_booked: meetingsBookedNowByColleague }
+  const todayByColleague = { ...dayByColleague, meeting_booked: meetingsBookedNowByColleague }
 
   return {
     goals: (goals as unknown as GoalRow[]).map(fromGoalRow),
@@ -345,8 +378,13 @@ export async function loadGoalsVersion(): Promise<string> {
  * Same `max(updated_at)` + `count(*)` construction, for the same two reasons:
  * editing a row does not change a count, and deleting one does not lower a
  * timestamp. Every table below carries a `set_updated_at` trigger — the six
- * from the init migration plus `strategy_columns` and `leads` from theirs — so
- * the timestamp half is reliable across all eight.
+ * from the init migration plus `strategy_columns`, `leads` and
+ * `strategy_boards` from theirs — so the timestamp half is reliable across
+ * all nine. `strategy_board_opportunities` is the one exception: a join row
+ * is never updated, only inserted or deleted, so it has no `updated_at` to
+ * contribute — its `created_at` covers linking, and unlinking is caught by
+ * the `count(*)` half instead, the same way a deletion anywhere else in this
+ * query is.
  */
 export async function loadSnapshotVersion(): Promise<string> {
   await connection()
@@ -373,6 +411,10 @@ export async function loadSnapshotVersion(): Promise<string> {
         select updated_at from leads
         union all
         select updated_at from notes
+        union all
+        select updated_at from strategy_boards
+        union all
+        select created_at as updated_at from strategy_board_opportunities
         union all
         select updated_at from strategy_columns
         union all
@@ -432,6 +474,8 @@ function demoSnapshot(): CRMSnapshot {
     opportunities: mockOpportunities,
     leads: mockLeads,
     notes: mockNotes,
+    strategyBoards: mockStrategyBoards,
+    strategyBoardOpportunities: mockStrategyBoardOpportunities,
     strategyColumns: mockStrategyColumns,
     strategyCards: mockStrategyCards,
     tasks: mockTasks,
@@ -446,6 +490,8 @@ export type {
   LeadRow,
   NoteRow,
   OpportunityRow,
+  StrategyBoardOpportunityRow,
+  StrategyBoardRow,
   StrategyCardRow,
   StrategyColumnRow,
   TaskRow,

@@ -103,23 +103,38 @@ export interface Note {
 }
 
 /**
- * A headline on the strategy board — one lane of cards for one deal.
+ * A shared strategy board — the thing a set of headline lanes belongs to.
  *
- * Headlines are user-written and scoped to a single opportunity: two deals
- * never share a lane, and a new deal starts with an empty board. That is why
- * the title is free text rather than a fixed set — what matters about a
- * public-sector tender is not what matters about a renewal.
+ * Deliberately minimal: no title. A board is identified by which prospects
+ * are linked to it (see `strategy_board_opportunities`), not by a name of its
+ * own — most boards belong to exactly one deal, and that deal's name already
+ * says what it is. Add a title later if a board shared across several deals
+ * turns out to need one.
+ */
+export interface StrategyBoard {
+  id: string
+}
+
+/**
+ * A headline on a strategy board — one lane of cards.
+ *
+ * Headlines are user-written and belong to a board, not directly to a deal —
+ * a board can be linked to more than one opportunity (a bundle, a renewal
+ * alongside a new module), and every opportunity linked to it shares every
+ * lane. A brand-new deal has no board yet and starts with an empty one, first
+ * created the moment its first headline is added. That is why the title is
+ * free text rather than a fixed set — what matters about a public-sector
+ * tender is not what matters about a renewal.
  */
 export interface StrategyColumn {
   id: string
-  opportunityId: string
+  boardId: string
   title: string
   order: number
 }
 
 export interface StrategyCard {
   id: string
-  opportunityId: string
   columnId: string
   content: string
   order: number
@@ -312,6 +327,9 @@ export interface CRMSnapshot {
   opportunities: Opportunity[]
   leads: Lead[]
   notes: Note[]
+  strategyBoards: StrategyBoard[]
+  /** Which opportunities share which board — see `StrategyBoard`. */
+  strategyBoardOpportunities: { boardId: string; opportunityId: string }[]
   strategyColumns: StrategyColumn[]
   strategyCards: StrategyCard[]
   tasks: Task[]

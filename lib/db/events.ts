@@ -21,6 +21,12 @@ import { STAGES } from '@/lib/stage-config'
  * for: only a move from an earlier stage to at-or-past the threshold counts.
  * Moving backward records nothing, and moving forward again from below the
  * threshold counts once more, because that genuinely is a second booking.
+ *
+ * This event still gets recorded even though the "Möten bokade" weekly card no
+ * longer reads it — see loadMeetingsBookedNow in ./board-metrics, which counts
+ * opportunities currently at 'Meeting Booked' instead. The log stays useful
+ * for the export's dated history (lib/export-prospects.ts) even where the
+ * live dashboard number now comes from current state.
  */
 
 export type CrmEventKind =

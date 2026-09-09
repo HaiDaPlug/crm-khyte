@@ -5,6 +5,7 @@ import {
   Contact,
   Lead,
   Note,
+  StrategyBoard,
   StrategyCard,
   StrategyColumn,
   Task,
@@ -57,6 +58,9 @@ export interface CRMStore {
   contacts: Contact[]
   leads: Lead[]
   notes: Note[]
+  strategyBoards: StrategyBoard[]
+  /** Which opportunities share which board. */
+  strategyBoardOpportunities: { boardId: string; opportunityId: string }[]
   strategyColumns: StrategyColumn[]
   strategyCards: StrategyCard[]
   tasks: Task[]
@@ -112,6 +116,10 @@ export interface CRMStore {
   deleteNote: (noteId: string) => void
 
   // Actions — Strategy
+  createStrategyBoard: (board: StrategyBoard) => void
+  /** No-op if this pair is already linked. */
+  linkOpportunityToBoard: (boardId: string, opportunityId: string) => void
+  unlinkOpportunityFromBoard: (boardId: string, opportunityId: string) => void
   addStrategyColumn: (column: StrategyColumn) => void
   renameStrategyColumn: (columnId: string, title: string) => void
   /** Removes the headline and every card filed under it. */
@@ -126,6 +134,9 @@ export interface CRMStore {
     targetIndex?: number
   ) => void
   addStrategyCard: (card: StrategyCard) => void
+  editStrategyCard: (cardId: string, content: string) => void
+  /** Reindexes the rest of the lane so `order` stays dense. */
+  removeStrategyCard: (cardId: string) => void
 
   // Actions — Tasks
   addTask: (task: Task) => void
@@ -324,6 +335,8 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       opportunities: snapshot.opportunities,
       leads: snapshot.leads,
       notes: snapshot.notes,
+      strategyBoards: snapshot.strategyBoards,
+      strategyBoardOpportunities: snapshot.strategyBoardOpportunities,
       strategyColumns: snapshot.strategyColumns,
       strategyCards: snapshot.strategyCards,
       tasks: snapshot.tasks,
@@ -344,7 +357,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         // ends up dropped into a column that no longer exists.
         if (syncPauseDepth > 0) return false
 
-        // Only the eight data collections. Settings, sidebar, search query and
+        // Only the data collections. Settings, sidebar, search query and
         // syncError belong to this browser, not to the database, and a merge
         // that reset the user's filters every time a colleague saved something
         // would be worse than no sync at all.
@@ -354,6 +367,8 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           opportunities: snapshot.opportunities,
           leads: snapshot.leads,
           notes: snapshot.notes,
+          strategyBoards: snapshot.strategyBoards,
+          strategyBoardOpportunities: snapshot.strategyBoardOpportunities,
           strategyColumns: snapshot.strategyColumns,
           strategyCards: snapshot.strategyCards,
           tasks: snapshot.tasks,
@@ -443,15 +458,47 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist('Update lead', () => api.updateOpportunity(opportunityId, updates))
       },
 
-      // The database cascades notes and strategy cards; the local sets have to
-      // be pruned by hand or they would linger tied to a prospect that no
-      // longer exists — see removeStrategyColumn for the same shape.
+      // The database cascades notes; the local set has to be pruned by hand or
+      // it would linger tied to a prospect that no longer exists — see
+      // removeStrategyColumn for the same shape.
+      //
+      // A strategy board can now be shared by more than one prospect, so this
+      // opportunity's board(s) only disappear locally when it was the LAST
+      // prospect linked to them — mirrors the server-side cleanup in
+      // deleteOpportunity (app/actions/crm.ts), which must reach the same
+      // conclusion or a shared board would flicker in and out on the next poll.
       removeOpportunity: (opportunityId) => {
-        set((state) => ({
-          opportunities: state.opportunities.filter((o) => o.id !== opportunityId),
-          notes: state.notes.filter((n) => n.opportunityId !== opportunityId),
-          strategyCards: state.strategyCards.filter((c) => c.opportunityId !== opportunityId),
-        }))
+        set((state) => {
+          const linkedBoardIds = state.strategyBoardOpportunities
+            .filter((l) => l.opportunityId === opportunityId)
+            .map((l) => l.boardId)
+          const remainingLinks = state.strategyBoardOpportunities.filter(
+            (l) => l.opportunityId !== opportunityId
+          )
+          const orphanedBoardIds = new Set(
+            linkedBoardIds.filter(
+              (boardId) => !remainingLinks.some((l) => l.boardId === boardId)
+            )
+          )
+          const orphanedColumnIds = new Set(
+            state.strategyColumns
+              .filter((k) => orphanedBoardIds.has(k.boardId))
+              .map((k) => k.id)
+          )
+
+          return {
+            opportunities: state.opportunities.filter((o) => o.id !== opportunityId),
+            notes: state.notes.filter((n) => n.opportunityId !== opportunityId),
+            strategyBoardOpportunities: remainingLinks,
+            strategyBoards: state.strategyBoards.filter((b) => !orphanedBoardIds.has(b.id)),
+            strategyColumns: state.strategyColumns.filter(
+              (k) => !orphanedBoardIds.has(k.boardId)
+            ),
+            strategyCards: state.strategyCards.filter(
+              (c) => !orphanedColumnIds.has(c.columnId)
+            ),
+          }
+        })
         persist('Delete prospect', () => api.deleteOpportunity(opportunityId))
       },
 
@@ -524,6 +571,36 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       },
 
       // Strategy
+      createStrategyBoard: (board) => {
+        set((state) => ({ strategyBoards: [...state.strategyBoards, board] }))
+        persist('Create board', () => api.createStrategyBoard(board))
+      },
+
+      linkOpportunityToBoard: (boardId, opportunityId) => {
+        set((state) =>
+          state.strategyBoardOpportunities.some(
+            (l) => l.boardId === boardId && l.opportunityId === opportunityId
+          )
+            ? state
+            : {
+                strategyBoardOpportunities: [
+                  ...state.strategyBoardOpportunities,
+                  { boardId, opportunityId },
+                ],
+              }
+        )
+        persist('Link prospect', () => api.linkOpportunityToBoard(boardId, opportunityId))
+      },
+
+      unlinkOpportunityFromBoard: (boardId, opportunityId) => {
+        set((state) => ({
+          strategyBoardOpportunities: state.strategyBoardOpportunities.filter(
+            (l) => !(l.boardId === boardId && l.opportunityId === opportunityId)
+          ),
+        }))
+        persist('Unlink prospect', () => api.unlinkOpportunityFromBoard(boardId, opportunityId))
+      },
+
       addStrategyColumn: (column) => {
         set((state) => ({ strategyColumns: [...state.strategyColumns, column] }))
         persist('Save headline', () => api.createStrategyColumn(column))
@@ -584,6 +661,42 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       addStrategyCard: (card) => {
         set((state) => ({ strategyCards: [...state.strategyCards, card] }))
         persist('Save strategy card', () => api.createStrategyCard(card))
+      },
+
+      editStrategyCard: (cardId, content) => {
+        set((state) => ({
+          strategyCards: state.strategyCards.map((c) =>
+            c.id === cardId ? { ...c, content } : c
+          ),
+        }))
+        persist('Edit strategy card', () => api.updateStrategyCard(cardId, { content }))
+      },
+
+      removeStrategyCard: (cardId) => {
+        const card = get().strategyCards.find((c) => c.id === cardId)
+        if (!card) return
+
+        // Same dense 0..n-1 reindex moveStrategyCard keeps the lane in —
+        // removing the middle card of three must not leave orders 0 and 2
+        // with a gap, or the next drag into this lane inherits it.
+        const remainingInLane = get()
+          .strategyCards.filter((c) => c.columnId === card.columnId && c.id !== cardId)
+          .sort((a, b) => a.order - b.order)
+          .map((c, order) => ({ ...c, order }))
+        const byId = new Map(remainingInLane.map((c) => [c.id, c]))
+
+        set((state) => ({
+          strategyCards: state.strategyCards
+            .filter((c) => c.id !== cardId)
+            .map((c) => byId.get(c.id) ?? c),
+        }))
+
+        persist('Delete strategy card', () => api.deleteStrategyCard(cardId))
+        for (const c of remainingInLane) {
+          persist('Reorder strategy card', () =>
+            api.updateStrategyCard(c.id, { order: c.order })
+          )
+        }
       },
 
       // Tasks
