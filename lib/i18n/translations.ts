@@ -28,6 +28,7 @@ const sv = {
     everyone: 'Alla',
     unassigned: 'Utan ansvarig',
     showAll: 'Visa alla igen',
+    helpText: 'Räknar händelser den här perioden, inte kort som ligger i kolumnen just nu — ett kort som gått vidare räknas ändå med.',
   },
   quickFilters: {
     mine: 'Mina',
@@ -178,11 +179,23 @@ const sv = {
     headlinePlaceholder: 'Namnge rubriken...',
     renameHeadline: 'Byt namn på rubrik',
     deleteHeadline: 'Ta bort rubrik',
+    editCard: 'Redigera kort',
+    deleteCard: 'Ta bort kort',
     confirmDelete: 'Ta bort?',
     emptyBoardTitle: 'Inga rubriker ännu',
     emptyBoardBody:
       'Bygg tavlan för den här affären. Lägg till rubrikerna som betyder något här – utmaningar, intressenter, vad som helst.',
     addFirstHeadline: 'Lägg till första rubriken',
+    newProspect: 'Nytt prospekt',
+    manageLinked: 'Hantera länkade prospekt',
+    linked: 'Länkad:',
+    linkModal: {
+      title: 'Länkade prospekt',
+      subtitle: 'Välj vilka prospekt som delar den här tavlan.',
+      searchPlaceholder: 'Sök prospekt...',
+      noMatches: 'Inga prospekt matchar den här sökningen.',
+      done: 'Klar',
+    },
   },
   companies: {
     title: 'Företag',
@@ -458,6 +471,7 @@ const en: Dictionary = {
     everyone: 'Everyone',
     unassigned: 'Unassigned',
     showAll: 'Show everyone again',
+    helpText: "Counts events in this period, not cards currently sitting in the column — a card that has since moved on still counts.",
   },
   quickFilters: {
     mine: 'Mine',
@@ -535,11 +549,22 @@ const en: Dictionary = {
     searchDeals: 'Search deal...', searchDealsLabel: 'Search deal',
     noMatches: 'No deals match this search.',
     addHeadline: 'Add headline', headlinePlaceholder: 'Name this headline...',
-    renameHeadline: 'Rename headline', deleteHeadline: 'Delete headline', confirmDelete: 'Delete?',
+    renameHeadline: 'Rename headline', deleteHeadline: 'Delete headline',
+    editCard: 'Edit card', deleteCard: 'Delete card', confirmDelete: 'Delete?',
     emptyBoardTitle: 'No headlines yet',
     emptyBoardBody:
       'Build the board for this deal. Add the headlines that matter here — pain points, stakeholders, whatever it takes.',
     addFirstHeadline: 'Add the first headline',
+    newProspect: 'New prospect',
+    manageLinked: 'Manage linked prospects',
+    linked: 'Linked:',
+    linkModal: {
+      title: 'Linked prospects',
+      subtitle: 'Choose which prospects share this board.',
+      searchPlaceholder: 'Search prospects...',
+      noMatches: 'No prospects match this search.',
+      done: 'Done',
+    },
   },
   companies: {
     title: 'Companies', tracked: (count) => `${count} companies tracked`, filter: 'Filter companies...',

@@ -22,11 +22,12 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { Check, ChevronRight, Plus, X } from 'lucide-react'
+import { Check, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { StrategyCard, StrategyColumn } from '@/lib/types'
 import { useCRMStore } from '@/lib/store'
 import { cn, newId } from '@/lib/utils'
 import { useTranslations } from '@/lib/hooks/useTranslations'
+import { useBoardIdForOpportunity } from '@/lib/hooks/useBoardIdForOpportunity'
 
 /**
  * Lane colours are positional, not semantic. Headlines are free text, so there
@@ -82,6 +83,14 @@ function useForwardScrollAffordance(
 }
 
 function SortableStrategyCard({ card }: { card: StrategyCard }) {
+  const { t } = useTranslations()
+  const editStrategyCard = useCRMStore((s) => s.editStrategyCard)
+  const removeStrategyCard = useCRMStore((s) => s.removeStrategyCard)
+
+  const [editing, setEditing] = useState(false)
+  const [content, setContent] = useState(card.content)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+
   const {
     attributes,
     listeners,
@@ -89,11 +98,71 @@ function SortableStrategyCard({ card }: { card: StrategyCard }) {
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: card.id })
+  } = useSortable({ id: card.id, disabled: editing })
 
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
+  }
+
+  const commitEdit = () => {
+    const next = content.trim()
+    if (next && next !== card.content) editStrategyCard(card.id, next)
+    else setContent(card.content)
+    setEditing(false)
+  }
+
+  const startEditing = () => {
+    setContent(card.content)
+    setEditing(true)
+  }
+
+  if (editing) {
+    return (
+      <div
+        ref={setNodeRef}
+        style={style}
+        className="rounded-xl border border-accent/40 bg-surface p-3.5 ring-1 ring-accent/10"
+      >
+        <textarea
+          autoFocus
+          rows={3}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => {
+            // Enter saves, like the headline rename field; Shift+Enter still
+            // breaks the line, since a card's content can run to a few lines.
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              commitEdit()
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              setContent(card.content)
+              setEditing(false)
+            }
+          }}
+          className="w-full resize-none border-0 bg-transparent p-0 text-[14.5px] leading-snug text-foreground outline-none"
+        />
+        <div className="mt-2 flex items-center justify-end gap-1.5">
+          <button
+            type="button"
+            onClick={() => { setContent(card.content); setEditing(false) }}
+            className="flex min-h-11 touch-manipulation items-center rounded-md px-2 text-[13px] text-foreground/60 transition-colors active:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:min-h-0 sm:py-1 sm:hover:text-foreground"
+          >
+            {t.common.cancel}
+          </button>
+          <button
+            type="button"
+            onClick={commitEdit}
+            className="flex min-h-11 touch-manipulation items-center rounded-md bg-accent/15 px-2 text-[13px] font-medium text-accent transition-colors active:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:min-h-0 sm:py-1"
+          >
+            {t.common.save}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -103,13 +172,72 @@ function SortableStrategyCard({ card }: { card: StrategyCard }) {
       {...attributes}
       {...listeners}
       className={cn(
-        'min-h-11 touch-manipulation select-none rounded-xl border border-border bg-surface p-3.5 text-[14.5px] leading-snug text-foreground/85 [-webkit-touch-callout:none]',
+        'group/card relative min-h-11 touch-manipulation select-none rounded-xl border border-border bg-surface p-3.5 pr-[4.5rem] text-[14.5px] leading-snug text-foreground/85 [-webkit-touch-callout:none]',
         'cursor-grab active:cursor-grabbing',
         'transition-all duration-150 active:border-border-accent focus-visible:border-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:hover:border-border-accent',
         isDragging && 'opacity-30 shadow-md'
       )}
     >
       {card.content}
+
+      {/* Isolated from the card's own drag listeners with stopPropagation
+          rather than by living outside the draggable element — the whole
+          card is the drag handle, so a button nested inside it still needs
+          its pointerdown kept from reaching dnd-kit. A plain click survives
+          regardless (6px/250ms activation constraints on the sensors), this
+          only matters for a press-and-hold that starts on the icon itself. */}
+      <div
+        className={cn(
+          'absolute right-2 top-2 flex items-center gap-0.5 opacity-100 transition-opacity sm:opacity-0 sm:group-hover/card:opacity-100',
+          confirmingDelete && 'sm:opacity-100'
+        )}
+      >
+        {confirmingDelete ? (
+          <>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => removeStrategyCard(card.id)}
+              aria-label={t.strategy.confirmDelete}
+              className="flex size-7 touch-manipulation items-center justify-center rounded-md text-danger transition-colors active:bg-danger-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 sm:hover:bg-danger-muted"
+            >
+              <Check size={13} />
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setConfirmingDelete(false)}
+              aria-label={t.common.cancel}
+              className="flex size-7 touch-manipulation items-center justify-center rounded-md text-foreground/60 transition-colors active:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:hover:text-foreground"
+            >
+              <X size={13} />
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={startEditing}
+              aria-label={t.strategy.editCard}
+              title={t.strategy.editCard}
+              className="flex size-7 touch-manipulation items-center justify-center rounded-md text-foreground/50 transition-colors active:bg-surface-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30 sm:hover:bg-surface-raised sm:hover:text-foreground"
+            >
+              <Pencil size={12} />
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => setConfirmingDelete(true)}
+              aria-label={t.strategy.deleteCard}
+              title={t.strategy.deleteCard}
+              className="flex size-7 touch-manipulation items-center justify-center rounded-md text-foreground/50 transition-colors active:bg-danger-muted active:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/40 sm:hover:bg-danger-muted sm:hover:text-danger"
+            >
+              <Trash2 size={12} />
+            </button>
+          </>
+        )}
+      </div>
     </div>
   )
 }
@@ -346,8 +474,11 @@ interface StrategyBoardProps {
 
 export function StrategyBoard({ opportunityId }: StrategyBoardProps) {
   const { t } = useTranslations()
+  const boardId = useBoardIdForOpportunity(opportunityId)
   const allColumns = useCRMStore((s) => s.strategyColumns)
   const allCards = useCRMStore((s) => s.strategyCards)
+  const createStrategyBoard = useCRMStore((s) => s.createStrategyBoard)
+  const linkOpportunityToBoard = useCRMStore((s) => s.linkOpportunityToBoard)
   const addStrategyColumn = useCRMStore((s) => s.addStrategyColumn)
   const renameStrategyColumn = useCRMStore((s) => s.renameStrategyColumn)
   const removeStrategyColumn = useCRMStore((s) => s.removeStrategyColumn)
@@ -363,12 +494,15 @@ export function StrategyBoard({ opportunityId }: StrategyBoardProps) {
     useSensor(KeyboardSensor, KEYBOARD_SENSOR_OPTIONS)
   )
 
+  // `boardId` is null for a prospect with no board yet — nothing matches the
+  // filter below, and the empty-board state further down renders as it
+  // always has, with no special-casing needed for "no board" vs. "no columns".
   const columns = useMemo(
     () =>
       allColumns
-        .filter((k) => k.opportunityId === opportunityId)
+        .filter((k) => k.boardId === boardId)
         .sort((a, b) => a.order - b.order),
-    [allColumns, opportunityId]
+    [allColumns, boardId]
   )
 
   const cardsByColumn = useMemo(() => {
@@ -431,9 +565,18 @@ export function StrategyBoard({ opportunityId }: StrategyBoardProps) {
   }
 
   const handleAddColumn = (title: string) => {
+    // First headline on a prospect with no board yet: create the board and
+    // link this prospect to it in the same gesture. Later prospects sharing
+    // this same board arrive via the link picker on /strategy, never here.
+    let targetBoardId = boardId
+    if (!targetBoardId) {
+      targetBoardId = newId()
+      createStrategyBoard({ id: targetBoardId })
+      linkOpportunityToBoard(targetBoardId, opportunityId)
+    }
     addStrategyColumn({
       id: newId(),
-      opportunityId,
+      boardId: targetBoardId,
       title,
       order: columns.length,
     })
@@ -442,7 +585,6 @@ export function StrategyBoard({ opportunityId }: StrategyBoardProps) {
   const handleAddCard = (columnId: string, content: string) => {
     addStrategyCard({
       id: newId(),
-      opportunityId,
       columnId,
       content,
       order: cardsByColumn.get(columnId)?.length ?? 0,

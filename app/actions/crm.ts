@@ -7,6 +7,7 @@ import type {
   Stage,
   Note,
   Opportunity,
+  StrategyBoard,
   StrategyCard,
   StrategyColumn,
   Task,
@@ -283,12 +284,53 @@ export async function updateOpportunity(
   return result
 }
 
-/** Notes and strategy cards filed under it go with it (`on delete cascade`). */
+/**
+ * Notes go with it (`on delete cascade`). Strategy boards do not, unless this
+ * was the board's last remaining link — see the cleanup below.
+ *
+ * A board can now be shared by more than one prospect, so a plain cascading
+ * delete would wipe a board still in use by others the moment any one of them
+ * is removed. Instead: read which boards this opportunity links to, delete
+ * the opportunity (cascading its own link row), then delete only the boards
+ * that read has left with zero remaining links — the common case (a board
+ * used by exactly one prospect) still disappears with it, same as before.
+ */
 export async function deleteOpportunity(id: string): Promise<ActionResult> {
   if (skipUnconfigured()) return guardedOk()
-  return run('opportunities', async () =>
+  await requireAuth()
+
+  const { data: links } = await getSupabase()
+    .from('strategy_board_opportunities')
+    .select('board_id')
+    .eq('opportunity_id', id)
+  const boardIds = [...new Set((links ?? []).map((l) => l.board_id as string))]
+
+  const result = await run('opportunities', async () =>
     getSupabase().from('opportunities').delete().eq('id', id)
   )
+  if (!result.ok || boardIds.length === 0) return result
+
+  const { data: stillLinked } = await getSupabase()
+    .from('strategy_board_opportunities')
+    .select('board_id')
+    .in('board_id', boardIds)
+  const stillLinkedIds = new Set((stillLinked ?? []).map((l) => l.board_id as string))
+  const orphanedIds = boardIds.filter((boardId) => !stillLinkedIds.has(boardId))
+
+  if (orphanedIds.length > 0) {
+    // Failing here must not turn a successful prospect deletion into a
+    // reported failure — an orphaned board left behind is a cleanup gap, not
+    // a lost edit, and the next visit to a board sharing none of its links
+    // never surfaces it again anyway.
+    const cleanup = await run('strategy_boards', async () =>
+      getSupabase().from('strategy_boards').delete().in('id', orphanedIds)
+    )
+    if (!cleanup.ok) {
+      console.error('[khyte] orphaned strategy board cleanup failed:', cleanup.error)
+    }
+  }
+
+  return result
 }
 
 // --- leads -------------------------------------------------------------
@@ -364,6 +406,58 @@ export async function deleteNote(id: string): Promise<ActionResult> {
   )
 }
 
+// --- strategy boards ---------------------------------------------------------
+
+export async function createStrategyBoard(board: StrategyBoard): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk()
+  return run('strategy_boards', async () =>
+    getSupabase().from('strategy_boards').insert({ id: board.id })
+  )
+}
+
+/**
+ * Idempotent: two clicks on the same checkbox, or a retried write, must not
+ * insert the same link twice and fail on the table's primary key.
+ */
+export async function linkOpportunityToBoard(
+  boardId: string,
+  opportunityId: string
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk()
+  return run('strategy_board_opportunities', async () =>
+    getSupabase()
+      .from('strategy_board_opportunities')
+      .upsert(
+        { board_id: boardId, opportunity_id: opportunityId },
+        { onConflict: 'board_id,opportunity_id', ignoreDuplicates: true }
+      )
+  )
+}
+
+export async function unlinkOpportunityFromBoard(
+  boardId: string,
+  opportunityId: string
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk()
+  return run('strategy_board_opportunities', async () =>
+    getSupabase()
+      .from('strategy_board_opportunities')
+      .delete()
+      .eq('board_id', boardId)
+      .eq('opportunity_id', opportunityId)
+  )
+}
+
+/** Columns and cards go with it (`on delete cascade`). Only ever called from
+ * the orphan cleanup in deleteOpportunity — a board is never deleted directly
+ * from the UI, only by unlinking every prospect from it. */
+export async function deleteStrategyBoard(id: string): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk()
+  return run('strategy_boards', async () =>
+    getSupabase().from('strategy_boards').delete().eq('id', id)
+  )
+}
+
 // --- strategy headlines ----------------------------------------------------
 
 export async function createStrategyColumn(
@@ -415,6 +509,13 @@ export async function updateStrategyCard(
   if (Object.keys(payload).length === 0) return guardedOk()
   return run('strategy_cards', async () =>
     getSupabase().from('strategy_cards').update(payload).eq('id', id)
+  )
+}
+
+export async function deleteStrategyCard(id: string): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk()
+  return run('strategy_cards', async () =>
+    getSupabase().from('strategy_cards').delete().eq('id', id)
   )
 }
 

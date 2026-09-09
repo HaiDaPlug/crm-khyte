@@ -316,6 +316,7 @@ function CountCard({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-controls={panelId}
+        title={t.weeklyProgress.helpText}
         className={cn(
           'w-full rounded-xl border bg-surface px-4 py-3 text-left transition-colors',
           'hover:border-border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',

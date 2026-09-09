@@ -3,9 +3,13 @@
 import { useState, useMemo, useRef, useEffect, useId } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
 import { StrategyBoard } from '@/components/crm/StrategyBoard'
+import { AddProspectModal } from '@/components/crm/AddProspectModal'
+import { LinkProspectsModal } from '@/components/crm/LinkProspectsModal'
+import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
-import { ChevronDown, Search } from 'lucide-react'
+import { useBoardIdForOpportunity } from '@/lib/hooks/useBoardIdForOpportunity'
+import { ChevronDown, Link2, Plus, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
@@ -15,11 +19,14 @@ export default function StrategyPage() {
   const fmt = useFormat()
   const opportunities = useCRMStore((s) => s.opportunities)
   const companies = useCRMStore((s) => s.companies)
+  const strategyBoardOpportunities = useCRMStore((s) => s.strategyBoardOpportunities)
 
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(opportunities[1]?.id ?? opportunities[0]?.id)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
+  const [addProspectOpen, setAddProspectOpen] = useState(false)
+  const [linkProspectsOpen, setLinkProspectsOpen] = useState(false)
 
   const searchInputId = useId()
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -34,6 +41,23 @@ export default function StrategyPage() {
     () => companies.find(c => c.id === selectedOpp?.companyId),
     [selectedOpp, companies]
   )
+
+  const boardId = useBoardIdForOpportunity(selectedOpportunityId ?? '')
+
+  // Other prospects sharing the currently-viewed board, company name only —
+  // resolving stage/value here would be noise for what's meant to be a quick
+  // "who else is on this" glance, not a second summary strip.
+  const linkedProspects = useMemo(() => {
+    if (!boardId) return []
+    return strategyBoardOpportunities
+      .filter((l) => l.boardId === boardId && l.opportunityId !== selectedOpportunityId)
+      .map((l) => {
+        const opp = opportunities.find((o) => o.id === l.opportunityId)
+        const company = opp ? companies.find((c) => c.id === opp.companyId) : undefined
+        return company?.name
+      })
+      .filter((name): name is string => Boolean(name))
+  }, [strategyBoardOpportunities, boardId, selectedOpportunityId, opportunities, companies])
 
   const q = query.trim().toLowerCase()
   const filteredOpportunities = useMemo(() => {
@@ -102,6 +126,7 @@ export default function StrategyPage() {
         <div className="mb-5">
           <h2 className="mb-4 text-[26px] font-jakarta font-semibold leading-none tracking-[-0.02em] text-foreground sm:text-[30px]">{t.strategy.dealStrategy}</h2>
 
+          <div className="flex flex-wrap items-start gap-2">
           {/* Opportunity selector */}
           <div className="relative block sm:inline-block">
             <button
@@ -195,6 +220,28 @@ export default function StrategyPage() {
               </>
             )}
           </div>
+
+          <Button variant="secondary" size="sm" onClick={() => setAddProspectOpen(true)}>
+            <Plus size={14} />
+            {t.strategy.newProspect}
+          </Button>
+
+          {selectedOpp && (
+            <Button variant="secondary" size="sm" onClick={() => setLinkProspectsOpen(true)}>
+              <Link2 size={14} />
+              {t.strategy.manageLinked}
+            </Button>
+          )}
+          </div>
+
+          {/* Only shown once this board is actually shared — a single-prospect
+              board (the common case) needs no reminder that it's alone. */}
+          {linkedProspects.length > 0 && (
+            <p className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[13px] text-foreground/60">
+              <span className="label-mono">{t.strategy.linked}</span>
+              {linkedProspects.join(', ')}
+            </p>
+          )}
         </div>
 
         {/* Opportunity summary strip */}
@@ -220,6 +267,21 @@ export default function StrategyPage() {
 
         <StrategyBoard opportunityId={selectedOpportunityId} />
       </main>
+
+      <AddProspectModal
+        open={addProspectOpen}
+        onClose={() => setAddProspectOpen(false)}
+        onCreated={(opportunityId) => setSelectedOpportunityId(opportunityId)}
+      />
+
+      {selectedOpp && (
+        <LinkProspectsModal
+          open={linkProspectsOpen}
+          onClose={() => setLinkProspectsOpen(false)}
+          boardId={boardId}
+          currentOpportunityId={selectedOpp.id}
+        />
+      )}
     </>
   )
 }

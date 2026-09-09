@@ -7,17 +7,24 @@ import { getDb } from './pg'
  *
  * Two kinds, and the distinction is the whole design:
  *
- *   CURRENT STATE — intäkt, kunder, pipeline. Recomputed from `opportunities`
- *   on every read. Moving a deal out of Won lowers revenue again, because the
- *   number describes how things stand, not what once happened. No log involved.
+ *   CURRENT STATE — intäkt, kunder, pipeline, and (despite living under the
+ *   'meeting_booked' metric key) möten bokade. Recomputed from `opportunities`
+ *   on every read. Moving a deal out of Won lowers revenue again, exactly as
+ *   moving a card out of Meeting Booked lowers that count again — the number
+ *   describes how things stand, not what once happened. No log involved.
  *
- *   EVENTS — meetings booked, prospects reached out, leads added. Counted from
- *   `crm_events` within the current week. "We booked three meetings" stays true
- *   after all three go to Lost, because it describes something that happened.
+ *   EVENTS — prospects reached out, leads added. Counted from `crm_events`
+ *   within the current week. "We contacted twelve prospects" stays true even
+ *   after some of them go to Lost, because it describes something that
+ *   happened, not where things stand now.
  *
- * Getting these two the wrong way round is the easy mistake: a revenue figure
- * counted from events would never fall, and a meeting counter read from current
- * stages would drop every time a deal progressed past Meeting Booked.
+ * meeting_booked used to be an EVENT — see loadMeetingsBookedNow for why it
+ * moved. The `crm_events` rows for it are still written (lib/db/events.ts)
+ * and still feed the export's dated history; they are simply no longer what
+ * the live weekly card reads. Getting the two kinds the wrong way round is
+ * the easy mistake elsewhere: a revenue figure counted from events would
+ * never fall, and prospects-contacted read from current stages would drop
+ * every time one progressed past Contacted.
  */
 
 /** Monday 00:00 local, the start of the week a moment belongs to. */
@@ -73,6 +80,54 @@ export async function loadDerivedTotals(): Promise<DerivedTotals> {
     customers: Number(r.customers),
     pipeline: Number(r.pipeline),
   }
+}
+
+/**
+ * How many opportunities are sitting at 'Meeting Booked' right now.
+ *
+ * Deliberately current state, not an event tally: the operator reading the
+ * "Möten bokade" card wants it to agree with what the pipeline board shows in
+ * that column at the same moment, not a running total of bookings made this
+ * week regardless of what happened to them since. A card booked and then
+ * walked back to Kontaktad should stop counting immediately, the same way a
+ * deal leaving Won immediately lowers revenue in loadDerivedTotals above.
+ *
+ * `meeting_booked` events are still recorded (lib/db/events.ts) for the
+ * export's dated history, but nothing here reads them — this is a straight
+ * count of `opportunities.stage`.
+ */
+export async function loadMeetingsBookedNow(): Promise<number> {
+  const sql = getDb()
+
+  const [row] = await sql`
+    select count(*) as total from opportunities where stage = 'Meeting Booked'
+  `
+  return Number((row as unknown as { total: string | number }).total)
+}
+
+/**
+ * The same count, split by who currently owns each card.
+ *
+ * Attributed by `opportunities.followed_up_by` — the current owner — rather
+ * than by colleague on a past event, because there is no "who booked it"
+ * event this reads at all. A card with no owner falls under `unassigned`,
+ * matching how `countEventsByColleagueSince` treats an event with none.
+ */
+export async function loadMeetingsBookedNowByColleague(): Promise<Record<string, number>> {
+  const sql = getDb()
+
+  const rows = await sql`
+    select coalesce(followed_up_by, 'unassigned') as who, count(*) as total
+    from opportunities
+    where stage = 'Meeting Booked'
+    group by followed_up_by
+  `
+
+  const byWho: Record<string, number> = {}
+  for (const row of rows as unknown as Array<{ who: string; total: string | number }>) {
+    byWho[row.who] = Number(row.total)
+  }
+  return byWho
 }
 
 /**

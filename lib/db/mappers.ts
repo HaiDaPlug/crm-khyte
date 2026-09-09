@@ -7,6 +7,7 @@ import type {
   Lead,
   Note,
   Opportunity,
+  StrategyBoard,
   StrategyCard,
   StrategyColumn,
   Task,
@@ -20,6 +21,8 @@ import type {
   LeadRow,
   NoteRow,
   OpportunityRow,
+  StrategyBoardOpportunityRow,
+  StrategyBoardRow,
   StrategyCardRow,
   StrategyColumnRow,
   TaskRow,
@@ -293,12 +296,24 @@ export function toNoteUpdate(updates: Partial<Note>) {
   ])
 }
 
+// --- strategy boards ---------------------------------------------------------
+
+export function fromStrategyBoardRow(row: StrategyBoardRow): StrategyBoard {
+  return { id: row.id }
+}
+
+export function fromStrategyBoardOpportunityRow(
+  row: StrategyBoardOpportunityRow
+): { boardId: string; opportunityId: string } {
+  return { boardId: row.board_id, opportunityId: row.opportunity_id }
+}
+
 // --- strategy headlines ----------------------------------------------------
 
 export function fromStrategyColumnRow(row: StrategyColumnRow): StrategyColumn {
   return {
     id: row.id,
-    opportunityId: row.opportunity_id,
+    boardId: row.board_id,
     title: row.title,
     order: row.sort_order,
   }
@@ -307,7 +322,7 @@ export function fromStrategyColumnRow(row: StrategyColumnRow): StrategyColumn {
 export function toStrategyColumnInsert(column: StrategyColumn) {
   return {
     id: column.id,
-    opportunity_id: column.opportunityId,
+    board_id: column.boardId,
     title: column.title,
     sort_order: column.order,
   }
@@ -325,7 +340,6 @@ export function toStrategyColumnUpdate(updates: Partial<StrategyColumn>) {
 export function fromStrategyCardRow(row: StrategyCardRow): StrategyCard {
   return {
     id: row.id,
-    opportunityId: row.opportunity_id,
     columnId: row.column_id,
     content: row.content,
     order: row.sort_order,
@@ -335,7 +349,6 @@ export function fromStrategyCardRow(row: StrategyCardRow): StrategyCard {
 export function toStrategyCardInsert(card: StrategyCard) {
   return {
     id: card.id,
-    opportunity_id: card.opportunityId,
     column_id: card.columnId,
     content: card.content,
     sort_order: card.order,
@@ -344,7 +357,6 @@ export function toStrategyCardInsert(card: StrategyCard) {
 
 export function toStrategyCardUpdate(updates: Partial<StrategyCard>) {
   return pickDefined<StrategyCardRow>([
-    ['opportunity_id', updates.opportunityId],
     ['column_id', updates.columnId],
     ['content', updates.content],
     ['sort_order', updates.order],

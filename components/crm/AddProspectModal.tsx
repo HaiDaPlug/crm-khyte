@@ -38,9 +38,17 @@ interface AddProspectModalProps {
   /** Opens pre-filled from this lead, as if it had just been picked from the
    * "start from a lead" search below. */
   fromLeadId?: string | null
+  /** Called with the new prospect's id right before the modal closes on a
+   * successful submit — lets a caller (e.g. /strategy) switch to viewing it. */
+  onCreated?: (opportunityId: string) => void
 }
 
-export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspectModalProps) {
+export function AddProspectModal({
+  open,
+  onClose,
+  fromLeadId = null,
+  onCreated,
+}: AddProspectModalProps) {
   const { t } = useTranslations()
   const copy = t.crm.prospectForm
   const companies = useCRMStore((s) => s.companies)
@@ -332,8 +340,9 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
     const typedValue = Number(dealValue.replace(/[^0-9.]/g, ''))
     const parsedValue = Number.isFinite(typedValue) ? fmt.toBase(typedValue) : NaN
 
+    const opportunityId = newId()
     addOpportunity({
-      id: newId(),
+      id: opportunityId,
       companyId: company.id,
       contactId: contact.id,
       stage: stage ?? 'New',
@@ -354,6 +363,7 @@ export function AddProspectModal({ open, onClose, fromLeadId = null }: AddProspe
     // as this prospect.
     if (leadId) removeLead(leadId)
 
+    onCreated?.(opportunityId)
     onClose()
   }
 
