@@ -165,6 +165,25 @@ function tokenForm(code: string) {
     redirect_uri: config().redirects[0], code, code_verifier: verifier, resource: config().resource })
 }
 
+test('authorization tolerates ChatGPT extras and an absent resource, and names bad fields', async () => {
+  const base = { response_type: 'code', client_id: config().clientId, redirect_uri: config().redirects[0],
+    state: 'state-value', code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256', scope: 'crm:read' }
+  // An unrecognized parameter is ignored, not fatal (RFC 6749 3.1).
+  const extra = validateAuthorization({ ...base, resource: config().resource, prompt: 'consent' })
+  assert.equal(extra.resource, config().resource)
+  assert.equal((extra as Record<string, unknown>).prompt, undefined)
+  // An omitted resource defaults to this server's only resource (RFC 8707).
+  assert.equal(validateAuthorization(base).resource, config().resource)
+  // A resource that disagrees is still refused.
+  assert.throws(() => validateAuthorization({ ...base, resource: 'https://evil.example/mcp' }), /Unrecognized/)
+  // A genuinely malformed request names the field instead of the old opaque fallback.
+  assert.throws(() => validateAuthorization({ ...base, state: '' }), /missing or malformed: state/)
+  // The token endpoint takes the same latitude on resource.
+  const code = new URL(await issueCode(db, validateAuthorization(base))).searchParams.get('code')!
+  const form = tokenForm(code); form.delete('resource')
+  assert.equal((await exchangeToken(db, form)).token_type, 'Bearer')
+})
+
 test('OAuth binds callback/resource/client/PKCE, consumes codes once, rotates tokens and revokes', async () => {
   assert.equal(authorizationMetadata().code_challenge_methods_supported[0], 'S256')
   assert.throws(() => validateAuthorization({ ...authorization(), redirect_uri: 'https://evil.example/' }), /Unrecognized/)

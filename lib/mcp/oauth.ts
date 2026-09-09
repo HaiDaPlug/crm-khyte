@@ -5,16 +5,31 @@ import type { Database } from '@/lib/crm/database'
 import { CrmError } from '@/lib/crm/errors'
 import { SCOPES, config, hashToken, pkceChallenge, randomToken, secureEqual } from './security'
 
-export const authorizationSchema = z.strictObject({
+// Unknown parameters are stripped, not rejected: RFC 6749 3.1 requires the
+// authorization endpoint to ignore parameters it does not understand, and
+// ChatGPT sends several of its own. A strict object refused the whole request
+// instead, which surfaced only as the generic oauthError fallback.
+export const authorizationSchema = z.object({
   response_type: z.literal('code'), client_id: z.string().max(200), redirect_uri: z.url().max(2000),
-  state: z.string().min(1).max(2000), resource: z.url(),
+  state: z.string().min(1).max(2000),
+  // Optional per RFC 8707 — MCP says clients SHOULD send it, not MUST. Absent
+  // means this server's only resource; a value that disagrees is still refused.
+  resource: z.url().optional(),
   code_challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/), code_challenge_method: z.literal('S256'),
   scope: z.string().max(300),
 })
-export type Authorization = z.infer<typeof authorizationSchema>
+/** `resource` is always filled in by validateAuthorization. */
+export type Authorization = z.infer<typeof authorizationSchema> & { resource: string }
 
 export function validateAuthorization(raw: unknown): Authorization {
-  const a = authorizationSchema.parse(raw), c = config()
+  const c = config(), parsed = authorizationSchema.safeParse(raw)
+  // Name the fields at fault. A ZodError is not a CrmError, so it used to fall
+  // through to "Unable to complete the connection request." with nothing to act on.
+  if (!parsed.success) {
+    const fields = [...new Set(parsed.error.issues.map(i => i.path.join('.') || 'request'))]
+    throw new CrmError('invalid_request', `Authorization request is missing or malformed: ${fields.join(', ')}.`)
+  }
+  const a: Authorization = { ...parsed.data, resource: parsed.data.resource ?? c.resource }
   if (a.client_id !== c.clientId || !c.redirects.includes(a.redirect_uri) || a.resource !== c.resource) {
     throw new CrmError('invalid_request', 'Unrecognized client, callback or resource. Check the ChatGPT connection settings.')
   }
@@ -44,7 +59,10 @@ function authenticateClient(form: URLSearchParams) {
 
 export async function exchangeToken(db: Database, form: URLSearchParams) {
   const c = authenticateClient(form)
-  if (form.get('resource') !== c.resource) throw new CrmError('invalid_target', 'The resource does not match this CRM MCP server.')
+  // Same RFC 8707 latitude as the authorization request: absent means this
+  // server's only resource, a disagreeing value is refused.
+  const target = form.get('resource')
+  if (target !== null && target !== c.resource) throw new CrmError('invalid_target', 'The resource does not match this CRM MCP server.')
   const access = randomToken(), refresh = randomToken()
   return db.transaction(async tx => {
     let connectionId: string, scopes: string[]
