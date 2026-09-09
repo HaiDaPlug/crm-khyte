@@ -84,6 +84,11 @@ test('authorization requires the shared session and explicit same-origin consent
   // consent handler then refuses as invalid_origin. 'same-origin' still withholds
   // the referrer from the cross-origin callback, but keeps a real Origin here.
   assert.equal(page.headers.get('referrer-policy'), 'same-origin')
+  // Chrome applies form-action to the redirect that follows the submission, so
+  // the callback origin must be listed or approval navigates nowhere at all.
+  const csp = page.headers.get('content-security-policy')
+  assert.ok(csp.includes("form-action 'self' https://chatgpt.com;"), csp)
+  assert.ok(csp.includes("frame-ancestors 'none'"), csp)
   const html = await page.text()
   assert.ok(html.includes('Ni kan fortfarande logga för varandra'))
   const approval = /name="approval" value="([^"]+)"/.exec(html)[1]
