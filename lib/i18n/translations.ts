@@ -168,6 +168,9 @@ const sv = {
   strategy: {
     title: 'Strategi',
     dealStrategy: 'Affärsstrategi',
+    searchDeals: 'Sök affär...',
+    searchDealsLabel: 'Sök affär',
+    noMatches: 'Inga affärer matchar den här sökningen.',
     nextStep: 'Nästa steg',
     followUp: 'Uppföljning',
     priority: 'Prioritet',
@@ -529,6 +532,8 @@ const en: Dictionary = {
   strategy: {
     title: 'Strategy', dealStrategy: 'Deal Strategy', nextStep: 'Next Step', followUp: 'Follow-up',
     priority: 'Priority',
+    searchDeals: 'Search deal...', searchDealsLabel: 'Search deal',
+    noMatches: 'No deals match this search.',
     addHeadline: 'Add headline', headlinePlaceholder: 'Name this headline...',
     renameHeadline: 'Rename headline', deleteHeadline: 'Delete headline', confirmDelete: 'Delete?',
     emptyBoardTitle: 'No headlines yet',

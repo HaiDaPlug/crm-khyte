@@ -1,11 +1,11 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect, useId } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
 import { StrategyBoard } from '@/components/crm/StrategyBoard'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
@@ -18,6 +18,12 @@ export default function StrategyPage() {
 
   const [selectedOpportunityId, setSelectedOpportunityId] = useState(opportunities[1]?.id ?? opportunities[0]?.id)
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [activeIndex, setActiveIndex] = useState(0)
+
+  const searchInputId = useId()
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
 
   const selectedOpp = useMemo(
     () => opportunities.find(o => o.id === selectedOpportunityId),
@@ -28,6 +34,66 @@ export default function StrategyPage() {
     () => companies.find(c => c.id === selectedOpp?.companyId),
     [selectedOpp, companies]
   )
+
+  const q = query.trim().toLowerCase()
+  const filteredOpportunities = useMemo(() => {
+    if (!q) return opportunities
+    return opportunities.filter((opp) => {
+      const company = companies.find((c) => c.id === opp.companyId)
+      return company?.name.toLowerCase().includes(q)
+    })
+  }, [opportunities, companies, q])
+
+  // Typing changes what the list means, so a stale highlight could Enter into
+  // a row that's no longer under the cursor — same reasoning as the modal
+  // combobox in FormFields.tsx.
+  useEffect(() => {
+    setActiveIndex(0)
+  }, [q])
+
+  useEffect(() => {
+    if (!dropdownOpen) {
+      setQuery('')
+      setActiveIndex(0)
+      return
+    }
+    // Autofocus the search field the moment the panel opens, so typing works
+    // immediately without an extra click.
+    searchInputRef.current?.focus()
+  }, [dropdownOpen])
+
+  useEffect(() => {
+    if (!dropdownOpen) return
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`)
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex, dropdownOpen])
+
+  const commit = (id: string) => {
+    setSelectedOpportunityId(id)
+    setDropdownOpen(false)
+  }
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      if (filteredOpportunities.length === 0) return
+      const delta = e.key === 'ArrowDown' ? 1 : -1
+      setActiveIndex((i) => (i + delta + filteredOpportunities.length) % filteredOpportunities.length)
+      return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      const target = filteredOpportunities[activeIndex]
+      if (target) commit(target.id)
+      return
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      setDropdownOpen(false)
+    }
+  }
 
   return (
     <>
@@ -65,28 +131,66 @@ export default function StrategyPage() {
                   className="fixed inset-0 z-10"
                   onClick={() => setDropdownOpen(false)}
                 />
-                <div className="absolute left-0 right-0 top-full z-20 mt-1.5 rounded-xl border border-border bg-surface py-1 shadow-lg shadow-black/20 animate-slide-in-down sm:right-auto sm:w-72">
-                  {opportunities.map(opp => {
-                    const company = companies.find(c => c.id === opp.companyId)
-                    return (
-                      <button
-                        key={opp.id}
-                        onClick={() => {
-                          setSelectedOpportunityId(opp.id)
-                          setDropdownOpen(false)
-                        }}
-                        className={cn(
-                          'w-full flex items-center justify-between gap-3 px-3.5 py-2.5 text-left text-[14.5px] transition-colors',
-                          opp.id === selectedOpportunityId
-                            ? 'bg-accent-light text-foreground'
-                            : 'hover:bg-surface-raised text-foreground/80 hover:text-foreground'
-                        )}
-                      >
-                        <span className="font-medium">{company?.name}</span>
-                        <span className="text-[13px] text-foreground/60 font-mono shrink-0">{t.stages[opp.stage]}</span>
-                      </button>
-                    )
-                  })}
+                <div className="absolute left-0 right-0 top-full z-20 mt-1.5 overflow-hidden rounded-xl border border-border bg-surface shadow-lg shadow-black/20 animate-slide-in-down sm:right-auto sm:w-72">
+                  <div className="relative border-b border-border p-1.5">
+                    <Search size={13} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-foreground/50" aria-hidden="true" />
+                    <input
+                      id={searchInputId}
+                      ref={searchInputRef}
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={handleSearchKeyDown}
+                      placeholder={t.strategy.searchDeals}
+                      aria-label={t.strategy.searchDealsLabel}
+                      role="combobox"
+                      aria-expanded="true"
+                      aria-controls={`${searchInputId}-listbox`}
+                      autoComplete="off"
+                      className="h-9 w-full rounded-lg border border-transparent bg-transparent pl-7 pr-2.5 text-[14px] text-foreground outline-none placeholder:text-foreground/45 focus:border-accent/40 focus:bg-surface-raised"
+                    />
+                  </div>
+
+                  {/* Capped height so a long roster scrolls in place instead of
+                      pushing the panel past the viewport. min() keeps it from
+                      overflowing a short viewport too — same pattern as the
+                      modal combobox's listbox in FormFields.tsx. */}
+                  <div
+                    ref={listRef}
+                    id={`${searchInputId}-listbox`}
+                    role="listbox"
+                    className="max-h-[min(320px,50dvh)] overflow-y-auto overscroll-contain py-1"
+                  >
+                    {filteredOpportunities.length === 0 ? (
+                      <p className="px-3.5 py-3 text-[13.5px] text-foreground/50">{t.strategy.noMatches}</p>
+                    ) : (
+                      filteredOpportunities.map((opp, i) => {
+                        const company = companies.find(c => c.id === opp.companyId)
+                        return (
+                          <button
+                            key={opp.id}
+                            id={`${searchInputId}-listbox-${opp.id}`}
+                            type="button"
+                            role="option"
+                            aria-selected={opp.id === selectedOpportunityId}
+                            data-index={i}
+                            onMouseEnter={() => setActiveIndex(i)}
+                            onClick={() => commit(opp.id)}
+                            className={cn(
+                              'w-full flex items-center justify-between gap-3 px-3.5 py-2.5 text-left text-[14.5px] transition-colors',
+                              opp.id === selectedOpportunityId
+                                ? 'bg-accent-light text-foreground'
+                                : i === activeIndex
+                                  ? 'bg-surface-raised text-foreground'
+                                  : 'text-foreground/80 hover:bg-surface-raised hover:text-foreground'
+                            )}
+                          >
+                            <span className="font-medium">{company?.name}</span>
+                            <span className="text-[13px] text-foreground/60 font-mono shrink-0">{t.stages[opp.stage]}</span>
+                          </button>
+                        )
+                      })
+                    )}
+                  </div>
                 </div>
               </>
             )}
