@@ -49,11 +49,47 @@ import { useTranslations } from '@/lib/hooks/useTranslations'
  */
 const STORAGE_KEY = 'khyte:weekly-progress'
 
+/**
+ * How long a stored payload may still be shown as the first frame.
+ *
+ * Short on purpose. The seed exists to cover the few hundred milliseconds
+ * before the fetch answers, not to serve yesterday's numbers: a cached figure
+ * with no expiry is indistinguishable from a broken counter, because the
+ * operator has no way to tell "still loading" from "this is the count".
+ */
+const SEED_MAX_AGE_MS = 5 * 60 * 1000
+
+interface StoredPayload {
+  savedAt: number
+  /** The local day the counts describe — a seed from yesterday is never right. */
+  day: string
+  data: WeeklyProgress
+}
+
+/** `YYYY-MM-DD` local, matching how the week/day boundaries are computed. */
+function localDay(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 function readStored(): WeeklyProgress | null {
   if (typeof window === 'undefined') return null
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as WeeklyProgress) : null
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StoredPayload>
+    // Written by an older build, with no envelope — discard rather than trust.
+    if (!parsed || typeof parsed.savedAt !== 'number' || !parsed.data) return null
+    // Too old, or from a previous day: the day counter would read yesterday's
+    // total and the week counter could be a whole week out.
+    if (Date.now() - parsed.savedAt > SEED_MAX_AGE_MS || parsed.day !== localDay()) {
+      // Drop it rather than leaving it to be reconsidered on every mount. If the
+      // network is down this is the difference between a card that shimmers and
+      // one that confidently shows a number from another day.
+      window.localStorage.removeItem(STORAGE_KEY)
+      return null
+    }
+    return parsed.data
   } catch {
     // Private mode, blocked site data, or a half-written value. A card that
     // cannot read its cache simply loads the normal way.
@@ -64,7 +100,8 @@ function readStored(): WeeklyProgress | null {
 function writeStored(data: WeeklyProgress) {
   if (typeof window === 'undefined') return
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+    const payload: StoredPayload = { savedAt: Date.now(), day: localDay(), data }
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
   } catch {
     // Quota or blocked storage — the live fetch still works.
   }
