@@ -116,8 +116,14 @@ export async function loadMeetingsBookedNow(): Promise<number> {
 export async function loadMeetingsBookedNowByColleague(): Promise<Record<string, number>> {
   const sql = getDb()
 
+  // followed_up_by is the crm_colleague enum, not text — coalescing it
+  // straight against the 'unassigned' literal fails with "invalid input value
+  // for enum crm_colleague" because Postgres tries to read the literal as
+  // that enum first. Casting to text before the coalesce is what
+  // countEventsByColleagueSince gets for free, since crm_events.colleague is
+  // already plain text.
   const rows = await sql`
-    select coalesce(followed_up_by, 'unassigned') as who, count(*) as total
+    select coalesce(followed_up_by::text, 'unassigned') as who, count(*) as total
     from opportunities
     where stage = 'Meeting Booked'
     group by followed_up_by
