@@ -8,7 +8,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 import type { Database, Queryable, Row } from '../lib/crm/database'
 import { actionSchemas, calendarDate } from '../lib/crm/contracts'
-import { commitAction, previewAction, getRecord, searchRecords, safeError } from '../lib/crm/service'
+import { commitAction, previewAction, getRecord, searchRecords, safeError,
+  previewBulkOutreach, commitBulkOutreach, getBulkResult } from '../lib/crm/service'
 import { createCrmMcpServer } from '../lib/mcp/server'
 import { authenticateBearer, exchangeToken, issueCode, revokeToken, validateAuthorization, authorizationMetadata } from '../lib/mcp/oauth'
 import { config, hashToken, pkceChallenge, previewToken, readEnvelope, signEnvelope, verifyPreview } from '../lib/mcp/security'
@@ -155,6 +156,118 @@ test('preview tokens bind action, normalized values, connection and expiry', () 
   assert.throws(() => readEnvelope(`${token}tampered`), /Invalid/)
 })
 
+test('bulk preview classifies rows, applies defaults, and never guesses an existing company', async () => {
+  // An existing company with a live deal, so the matcher has something to find.
+  const seed = { ...outreach(), target: { kind: 'new' as const, company: { name: 'Nordvik Bulk AB' }, contact: { name: 'Anna', email: 'anna@nordvikbulk.test' } } }
+  await commitAction(db, 'log_outreach', seed, actor)
+
+  const batchId = randomUUID()
+  const preview = await previewBulkOutreach(db, {
+    batchId,
+    defaults: { occurredOn: '2026-08-20', channel: 'email', summary: 'Email outreach sent.', followedUpBy: 'hai' },
+    records: [
+      { ref: 'fresh', companyName: 'Brand New Bulk AB', contactName: 'Bo', email: 'bo@brandnewbulk.test' },
+      { ref: 'by-email', companyName: 'Whatever', contactName: 'Anna', email: 'anna@nordvikbulk.test' },
+      { ref: 'by-company', companyName: 'Nordvik Bulk AB', contactName: 'Someone Else' },
+      { ref: 'no-company', contactName: 'Nobody' },
+    ],
+  })
+
+  assert.equal(preview.counts.requested, 4)
+  assert.equal(preview.counts.ready, 1)
+  assert.equal(preview.counts.ambiguous, 2)
+  assert.equal(preview.counts.invalid, 1)
+
+  // Defaults reach the row without being restated per record.
+  const ready = preview.ready[0] as Record<string, any>
+  assert.equal(ready.ref, 'fresh')
+  assert.equal(ready.parameters.occurredOn, '2026-08-20')
+  assert.equal(ready.parameters.followedUpBy, 'hai')
+  assert.equal(ready.parameters.summary, 'Email outreach sent.')
+
+  // An email hit reports the existing prospect rather than logging against it.
+  const byEmail = preview.ambiguous.find(r => (r as Record<string, unknown>).ref === 'by-email') as Record<string, any>
+  assert.ok(byEmail.opportunityId, 'email match should return a candidate prospect')
+  assert.ok(byEmail.expectedVersion, 'candidate must carry a version for the follow-up commit')
+
+  // A company-name hit is surfaced, never merged.
+  const byCompany = preview.ambiguous.find(r => (r as Record<string, unknown>).ref === 'by-company') as Record<string, any>
+  assert.match(byCompany.reason, /already has prospects|already exists/)
+
+  assert.equal((preview.invalid[0] as Record<string, unknown>).ref, 'no-company')
+
+  // Preview writes nothing.
+  const after = await db.query("select count(*)::int n from companies where name = 'Brand New Bulk AB'")
+  assert.equal(after[0].n, 0)
+})
+
+test('bulk commit saves ready rows, skips unresolved ones, and replays without duplicating', async () => {
+  const batchId = randomUUID()
+  const body = {
+    batchId,
+    defaults: { occurredOn: '2026-08-21', channel: 'email' as const, summary: 'Bulk email sent.', followedUpBy: 'erik' as const },
+    records: [
+      { ref: 'a', companyName: 'Bulk Commit One AB', contactName: 'Ada', email: 'ada@bulkone.test' },
+      { ref: 'b', companyName: 'Bulk Commit Two AB', contactName: 'Bea', email: 'bea@bulktwo.test' },
+      { ref: 'bad', contactName: 'Missing Company' },
+    ],
+    previewToken: 'unused-by-the-service-layer',
+  }
+
+  const first = await commitBulkOutreach(db, body, actor)
+  assert.equal(first.counts.saved, 2)
+  assert.equal(first.counts.newlySaved, 2)
+  assert.equal(first.counts.alreadySaved, 0)
+  assert.equal(first.counts.skippedInvalid, 1)
+  assert.equal(first.counts.failed, 0)
+
+  const created = await db.query("select count(*)::int n from companies where name like 'Bulk Commit%'")
+  assert.equal(created[0].n, 2)
+
+  // Replaying the same batch is idempotent: same rows, no new records.
+  const second = await commitBulkOutreach(db, body, actor)
+  assert.equal(second.counts.saved, 2)
+  assert.equal(second.counts.alreadySaved, 2)
+  assert.equal(second.counts.newlySaved, 0)
+  const afterReplay = await db.query("select count(*)::int n from companies where name like 'Bulk Commit%'")
+  assert.equal(afterReplay[0].n, 2, 'replay must not create duplicate companies')
+
+  // Interactions are not duplicated either.
+  const interactions = await db.query("select count(*)::int n from crm_interactions where summary = 'Bulk email sent.'")
+  assert.equal(interactions[0].n, 2)
+
+  // The receipt trail is retrievable by batchId alone.
+  const receipt = await getBulkResult(db, batchId, actor)
+  assert.equal(receipt.status, 'found')
+  assert.equal(receipt.savedRows, 2)
+})
+
+test('a stale version fails only its own row and leaves the rest of the batch saved', async () => {
+  const seed = { ...outreach(), target: { kind: 'new' as const, company: { name: 'Stale Row AB' }, contact: { name: 'Cal', email: 'cal@stalerow.test' } } }
+  const saved = await commitAction(db, 'log_outreach', seed, actor)
+  const opportunityId = String((saved as Record<string, any>).record.id)
+
+  const result = await commitBulkOutreach(db, {
+    batchId: randomUUID(),
+    defaults: { occurredOn: '2026-08-22', channel: 'email' as const, summary: 'Second touch.', followedUpBy: 'hai' as const },
+    records: [
+      { ref: 'stale', opportunityId, expectedVersion: '1999-01-01 00:00:00+00' },
+      { ref: 'fine', companyName: 'Unrelated Row AB', contactName: 'Dee', email: 'dee@unrelatedrow.test' },
+    ],
+    previewToken: 'unused-by-the-service-layer',
+  }, actor)
+
+  assert.equal(result.counts.failed, 1)
+  assert.equal(result.counts.saved, 1)
+  const failure = result.failed[0] as Record<string, any>
+  assert.equal(failure.ref, 'stale')
+  assert.equal(failure.code, 'conflict')
+  assert.equal((result.saved[0] as Record<string, unknown>).ref, 'fine')
+  // The healthy row still persisted despite its neighbour failing.
+  const ok = await db.query("select count(*)::int n from companies where name = 'Unrelated Row AB'")
+  assert.equal(ok[0].n, 1)
+})
+
 const verifier = 'a'.repeat(64)
 function authorization() {
   return validateAuthorization({ response_type: 'code', client_id: config().clientId, redirect_uri: config().redirects[0],
@@ -227,7 +340,7 @@ test('MCP client discovers annotated schemas, previews then saves a task, and en
   await server.connect(serverTransport); await client.connect(clientTransport)
   try {
     const list = await client.listTools()
-    assert.equal(list.tools.length, 9)
+    assert.equal(list.tools.length, 12)
     assert.equal(list.tools.find(t => t.name === 'preview_crm_action')?.annotations?.readOnlyHint, true)
     assert.equal(list.tools.find(t => t.name === 'create_task')?.annotations?.readOnlyHint, false)
     assert.equal(list.tools.find(t => t.name === 'create_task')?.annotations?.idempotentHint, true)
@@ -266,7 +379,7 @@ test('stateless Streamable HTTP supports fresh servers for initialization, disco
     const data = await response.json()
     assert.equal(data.error, undefined)
     if (call.method === 'initialize') assert.equal(data.result.serverInfo.name, 'khyte-crm')
-    if (call.method === 'tools/list') assert.equal(data.result.tools.length, 9)
+    if (call.method === 'tools/list') assert.equal(data.result.tools.length, 12)
     if (call.method === 'tools/call') assert.equal(data.result.structuredContent.timezone, 'Europe/Stockholm')
   }
 })
