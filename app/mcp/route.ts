@@ -8,6 +8,9 @@ import { config } from '@/lib/mcp/security'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+// A bulk import commits each row separately, so the request is far longer-lived
+// than a single tool call. Vercel's per-plan ceiling still applies above this.
+export const maxDuration = 300
 
 export async function POST(request: Request) {
   let server: ReturnType<typeof createCrmMcpServer> | undefined

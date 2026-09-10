@@ -84,6 +84,76 @@ export const outreachSchema = z.strictObject({
   tags: tags.default([]).describe('Tags to add to the prospect; existing tags are preserved.'),
 })
 
+/* ———— bulk outreach ———— */
+
+/**
+ * One row of a bulk import. Deliberately flatter than outreachSchema's
+ * discriminated target: a bulk caller is pasting a list of sent emails and does
+ * not yet know which rows map to existing prospects. preview_bulk_outreach
+ * resolves that and hands back IDs, which the caller passes here as
+ * opportunityId/companyId/contactId on the next attempt.
+ *
+ * Anything omitted falls back to `defaults`, so a 200-row batch does not repeat
+ * the same date, channel and attribution 200 times.
+ */
+export const bulkRowSchema = z.strictObject({
+  /** Caller's own reference, echoed in every result so rows can be matched up. */
+  ref: text('Your reference for this row, e.g. a spreadsheet line number or message ID.', 200).optional(),
+  companyName: text('Company the outreach went to.').optional(),
+  companyDomain: text('Verified company domain, without scheme or path.').regex(/^[a-zA-Z0-9-]+(?:.[a-zA-Z0-9-]+)+$/).optional(),
+  contactName: text('Person contacted.').optional(),
+  email: z.email().max(320).optional().describe('Contact email. The strongest dedup signal; supply it whenever known.'),
+  // Resolved IDs from a previous preview. Supplying one is how a caller says
+  // "yes, this row is that record" — reuse is never inferred from a name match.
+  opportunityId: id.optional().describe('Resolved existing prospect from a previous preview. Reuse is explicit, never inferred.'),
+  expectedVersion: version.optional().describe('Required with opportunityId. Version from the preview or get_crm_record.'),
+  companyId: id.optional().describe('Resolved existing company from a previous preview.'),
+  contactId: id.optional().describe('Resolved existing contact from a previous preview.'),
+  occurredOn: calendarDate.optional(),
+  channel: z.enum(['email', 'phone', 'meeting', 'linkedin', 'other']).optional(),
+  summary: text('Factual account of this interaction.', 10000).optional(),
+  followedUpBy: colleague.nullable().optional(),
+  stage: z.enum(STAGES as [string, ...string[]]).optional(),
+  nextStep: text('Agreed next action.').optional(),
+  followUpDate: calendarDate.nullable().optional(),
+  priority: priority.optional(),
+  dealValueSek: z.number().positive().max(999999999999).optional(),
+  tags: tags.optional(),
+  sourceMessageId: text('Exact source message ID for this row.', 500).optional(),
+})
+
+/** Values applied to every row that does not state its own. */
+export const bulkDefaultsSchema = z.strictObject({
+  occurredOn: calendarDate.optional(),
+  channel: z.enum(['email', 'phone', 'meeting', 'linkedin', 'other']).optional(),
+  summary: text('Shared summary, e.g. "Email outreach sent 2026-09-10".', 10000).optional(),
+  followedUpBy: colleague.nullable().optional(),
+  stage: z.enum(STAGES as [string, ...string[]]).optional(),
+  priority: priority.optional(),
+  tags: tags.optional(),
+})
+
+// 200 rows is ~42KB of JSON against readBody's 64KB cap, leaving room for
+// defaults and envelope. Larger imports should be split into several batches.
+export const BULK_MAX_ROWS = 200
+
+export const bulkPreviewSchema = z.strictObject({
+  batchId: z.uuid().describe('One ID for this whole import. Reuse it unchanged when retrying the same import; each row derives its own request ID from it.'),
+  defaults: bulkDefaultsSchema.default({}),
+  records: z.array(bulkRowSchema).min(1).max(BULK_MAX_ROWS),
+  source: z.strictObject({
+    system: text('Source system, e.g. gmail, outlook or manual_bulk_outreach.', 60),
+    account: text('Stable mailbox/account identifier. Do not supply a credential.', 320),
+    label: text('Human label for this import, e.g. "Hai outreach 2026-09-10".', 200).optional(),
+  }).optional().describe('Provenance for the whole import. With per-row sourceMessageId this also deduplicates re-imports.'),
+})
+
+export const bulkCommitSchema = bulkPreviewSchema.extend({
+  previewToken: z.string().min(1).max(20000).describe('Token from preview_bulk_outreach for these exact parameters and this connection.'),
+})
+
+export const bulkResultSchema = z.strictObject({ batchId: z.uuid() })
+
 export const actionSchemas = {
   create_lead: createLeadSchema,
   log_outreach: outreachSchema,

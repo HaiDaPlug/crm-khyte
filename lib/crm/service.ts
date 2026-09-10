@@ -1,7 +1,8 @@
 import 'server-only'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { actionSchemas, type ActionName, searchSchema, recordSchema } from './contracts'
+import { actionSchemas, type ActionName, searchSchema, recordSchema,
+  bulkPreviewSchema, bulkCommitSchema, BULK_MAX_ROWS, type bulkRowSchema } from './contracts'
 import type { Database, Queryable, Row } from './database'
 import { CrmError } from './errors'
 import { eventsForArrival } from '@/lib/db/events'
@@ -242,6 +243,220 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
       { reportedFrom: previousStage, reportedTo: stage, loggedVia: 'crm_tool' })
   }
   return plan
+}
+
+/* ———— bulk outreach ———— */
+
+type BulkRow = z.infer<typeof bulkRowSchema>
+type Resolution =
+  | { kind: 'ready'; parameters: Row }
+  | { kind: 'ambiguous'; reason: string; candidates: Row }
+  | { kind: 'invalid'; reason: string }
+
+/**
+ * Merge one row over the batch defaults and turn it into log_outreach parameters.
+ *
+ * Returns a classification instead of throwing, which is the whole point: one bad
+ * row in a 200-row import must not abort the other 199. matching() keeps throwing
+ * for the single-record path, which is unchanged.
+ */
+async function resolveRow(db: Queryable, row: BulkRow, defaults: Row, batchId: string, index: number,
+  source: { system: string; account: string; label?: string } | undefined): Promise<Resolution> {
+  const requestId = generatedId(batchId, 'row:' + index)
+  const stated = Object.fromEntries(Object.entries(row).filter(([, v]) => v !== undefined))
+  const merged = { ...defaults, ...stated } as Row
+  const occurredOn = merged.occurredOn as string | undefined
+  const summary = merged.summary as string | undefined
+  if (!occurredOn) return { kind: 'invalid', reason: 'No occurredOn on the row or in defaults.' }
+  if (!summary) return { kind: 'invalid', reason: 'No summary on the row or in defaults.' }
+  if (occurredOn > stockholmToday()) return { kind: 'invalid', reason: 'Outreach must have happened already.' }
+  if (merged.followedUpBy === undefined) return { kind: 'invalid', reason: 'followedUpBy must be stated explicitly, including null.' }
+
+  const common: Row = {
+    requestId, occurredOn, summary,
+    channel: merged.channel ?? 'email',
+    followedUpBy: merged.followedUpBy,
+    tags: (merged.tags as string[] | undefined) ?? [],
+    ...(merged.stage !== undefined ? { stage: merged.stage } : {}),
+    ...(merged.nextStep !== undefined ? { nextStep: merged.nextStep } : {}),
+    ...(merged.followUpDate !== undefined ? { followUpDate: merged.followUpDate } : {}),
+    ...(merged.priority !== undefined ? { priority: merged.priority } : {}),
+    ...(merged.dealValueSek !== undefined ? { dealValueSek: merged.dealValueSek } : {}),
+    // A per-row message ID makes re-importing the same mailbox idempotent at the
+    // database level, independently of batchId.
+    ...(source && row.sourceMessageId
+      ? { source: { system: source.system, account: source.account, messageId: row.sourceMessageId } }
+      : {}),
+  }
+
+  // The caller resolved this row on an earlier preview: honour it verbatim.
+  if (row.opportunityId) {
+    if (!row.expectedVersion) return { kind: 'invalid', reason: 'opportunityId requires expectedVersion from the preview.' }
+    return { kind: 'ready', parameters: { ...common, target: { kind: 'existing', opportunityId: row.opportunityId, expectedVersion: row.expectedVersion } } }
+  }
+
+  const companyName = merged.companyName as string | undefined
+  const contactName = merged.contactName as string | undefined
+  const email = merged.email as string | undefined
+  if (!companyName && !row.companyId) return { kind: 'invalid', reason: 'No companyName, companyId or opportunityId.' }
+  if (!contactName && !row.contactId) return { kind: 'invalid', reason: 'No contactName, contactId or opportunityId.' }
+
+  // Strongest signal first: an exact email already in the CRM identifies the
+  // contact, and through it the company and any live deal.
+  if (!row.companyId && !row.contactId && email) {
+    const byEmail = await db.query(`select c.id as contact_id, c.company_id,
+        (select o.id from opportunities o where o.contact_id = c.id order by o.updated_at desc limit 1) as opportunity_id,
+        (select o.updated_at::text from opportunities o where o.contact_id = c.id order by o.updated_at desc limit 1) as version
+      from contacts c where lower(c.email) = lower($1) limit 5`, [email])
+    if (byEmail.length > 1) {
+      return { kind: 'ambiguous', reason: 'That email matches several contacts.', candidates: { contactIds: byEmail.map(r => r.contact_id) } }
+    }
+    if (byEmail.length === 1) {
+      const hit = byEmail[0]
+      if (!hit.opportunity_id) {
+        return { kind: 'ambiguous', reason: 'The contact exists but has no prospect. Confirm before creating one.',
+          candidates: { contactId: hit.contact_id, companyId: hit.company_id } }
+      }
+      return { kind: 'ambiguous', reason: 'An existing prospect matches this email. Re-send this row with opportunityId and expectedVersion to log against it.',
+        candidates: { opportunityId: hit.opportunity_id, expectedVersion: hit.version, contactId: hit.contact_id, companyId: hit.company_id } }
+    }
+  }
+
+  // No email match. If the company already exists it is reported, never merged
+  // silently: picking a deal for the caller is exactly the guess to avoid.
+  if (!row.companyId && companyName) {
+    const domain = (merged.companyDomain as string | undefined) ?? null
+    const byCompany = await db.query(`select id from companies
+      where lower(trim(name)) = lower(trim($1)) or ($2::text is not null and lower(domain) = lower($2)) limit 5`,
+      [companyName, domain])
+    if (byCompany.length) {
+      const ids = byCompany.map(r => r.id as string)
+      const deals = await db.query('select id, company_id, updated_at::text as version from opportunities where company_id = any($1::uuid[]) limit 10', [ids])
+      return {
+        kind: 'ambiguous',
+        reason: deals.length
+          ? 'This company already has prospects. Choose the correct deal and re-send with opportunityId and expectedVersion.'
+          : 'This company already exists. Re-send with companyId to attach a new prospect to it.',
+        candidates: { companyIds: ids, opportunities: deals.map(d => ({ opportunityId: d.id, companyId: d.company_id, expectedVersion: d.version })) },
+      }
+    }
+  }
+
+  const company: Row = row.companyId
+    ? { id: row.companyId }
+    : { name: companyName as string, ...(merged.companyDomain ? { domain: merged.companyDomain } : {}) }
+  const contact: Row = row.contactId
+    ? { id: row.contactId }
+    : { name: contactName as string, ...(email ? { email } : {}) }
+  return { kind: 'ready', parameters: { ...common, target: { kind: 'new', company, contact } } }
+}
+
+export async function previewBulkOutreach(db: Database, raw: unknown) {
+  const input = bulkPreviewSchema.parse(raw)
+  const ready: Row[] = [], ambiguous: Row[] = [], invalid: Row[] = []
+  for (const [index, row] of input.records.entries()) {
+    const ref = row.ref ?? String(index)
+    const resolution = await resolveRow(db, row, input.defaults as Row, input.batchId, index, input.source)
+    if (resolution.kind === 'ready') {
+      // Validate against the real action schema here, so a row that would fail at
+      // commit is reported now rather than surviving the preview.
+      const parsed = actionSchemas.log_outreach.safeParse(resolution.parameters)
+      if (parsed.success) ready.push({ ref, index, parameters: parsed.data })
+      else invalid.push({ ref, index, reason: 'Invalid fields.', fields: parsed.error.issues.map(i => ({ path: i.path.join('.'), message: i.message })) })
+    } else if (resolution.kind === 'ambiguous') {
+      ambiguous.push({ ref, index, reason: resolution.reason, ...resolution.candidates })
+    } else {
+      invalid.push({ ref, index, reason: resolution.reason })
+    }
+  }
+  return {
+    status: 'preview' as const,
+    batchId: input.batchId,
+    counts: { requested: input.records.length, ready: ready.length, ambiguous: ambiguous.length, invalid: invalid.length },
+    ready, ambiguous, invalid,
+    guidance: 'No records have been saved. Ambiguous rows are never guessed: re-send them with the returned opportunityId/companyId/contactId to reuse a record. Commit with the same batchId and these exact parameters; ambiguous and invalid rows are skipped.',
+  }
+}
+
+/**
+ * Commit the ready rows one at a time.
+ *
+ * Deliberately not one transaction for the whole batch. commitAction takes the
+ * 'khyte:crm-tools' advisory lock, and holding it across 200 rows would block
+ * every other tool write, and the UI behind them, for the whole import. Per-row
+ * commits keep each lock window short and give real partial success: a failing
+ * row is reported and the rest still land. Each row's requestId is derived from
+ * batchId, so retrying a batch returns already_saved per row rather than
+ * duplicating anything.
+ */
+export async function commitBulkOutreach(db: Database, raw: unknown, actor: Actor) {
+  const input = bulkCommitSchema.parse(raw)
+  const { previewToken: _previewToken, ...preview } = input
+
+  // Receipts first, before any re-resolution.
+  //
+  // A replay of an already-committed batch would otherwise re-resolve every row
+  // against a database that now contains the records the first run created, so
+  // rows would come back "ambiguous" against their own results and never reach
+  // commitAction — which is the thing that knows how to answer already_saved.
+  // Reading the receipts up front means a retry reports what landed instead of
+  // rediscovering it as a conflict.
+  const requestIds = input.records.map((_row, index) => generatedId(input.batchId, 'row:' + index))
+  const receipts = new Map((await db.query<{ request_id: string; result: Row }>(
+    'select request_id, result from crm_tool_receipts where connection_id = $1 and request_id = any($2::uuid[])',
+    [actor.connectionId, requestIds])).map(r => [r.request_id, r.result]))
+
+  const plan = await previewBulkOutreach(db, preview)
+  const saved: Row[] = [], failed: Row[] = []
+
+  // Rows already receipted under this batch, whatever the fresh preview thinks.
+  for (const [index, row] of input.records.entries()) {
+    const receipt = receipts.get(requestIds[index])
+    if (!receipt) continue
+    saved.push({ ref: row.ref ?? String(index), index, requestId: requestIds[index], status: 'already_saved', prospectId: receipt.id ?? null })
+  }
+
+  for (const row of plan.ready) {
+    const parameters = row.parameters as Row
+    if (receipts.has(String(parameters.requestId))) continue
+    try {
+      const result = await commitAction(db, 'log_outreach', parameters, actor)
+      saved.push({ ref: row.ref, index: row.index, requestId: parameters.requestId, status: result.status, prospectId: result.id ?? null })
+    } catch (error) {
+      // Fail closed per row: a version conflict or duplicate stops that row only.
+      failed.push({ ref: row.ref, index: row.index, ...safeError(error) })
+    }
+  }
+  const alreadySaved = saved.filter(r => r.status === 'already_saved').length
+  // A row that already saved is not also "skipped": on a replay the fresh
+  // preview flags it against its own first run, which is noise, not a decision
+  // waiting for the caller.
+  const settled = new Set(saved.map(r => r.index))
+  const ambiguous = plan.ambiguous.filter(r => !settled.has(r.index as number))
+  const invalid = plan.invalid.filter(r => !settled.has(r.index as number))
+  return {
+    status: 'committed' as const,
+    batchId: input.batchId,
+    counts: {
+      requested: input.records.length, saved: saved.length, newlySaved: saved.length - alreadySaved, alreadySaved,
+      skippedAmbiguous: ambiguous.length, skippedInvalid: invalid.length, failed: failed.length,
+    },
+    saved, failed, ambiguous, invalid,
+    guidance: 'Only rows listed under saved persisted. Retrying this batchId returns already_saved for those and does not duplicate them. Resolve ambiguous rows explicitly before re-sending them.',
+  }
+}
+
+/** What a batch actually persisted, by replaying its derived per-row request IDs. */
+export async function getBulkResult(db: Queryable, batchId: string, actor: Actor) {
+  const requestIds = Array.from({ length: BULK_MAX_ROWS }, (_, i) => generatedId(batchId, 'row:' + i))
+  const rows = await db.query<{ request_id: string; result: Row }>(
+    'select request_id, result from crm_tool_receipts where connection_id = $1 and request_id = any($2::uuid[]) order by created_at',
+    [actor.connectionId, requestIds])
+  return {
+    status: rows.length ? ('found' as const) : ('not_found' as const),
+    batchId, savedRows: rows.length,
+    saved: rows.map(r => ({ requestId: r.request_id, result: r.result })),
+  }
 }
 
 export async function previewAction(db: Database, action: ActionName, raw: unknown, actor: Actor) {

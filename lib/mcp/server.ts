@@ -1,8 +1,10 @@
 import 'server-only'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
-import { actionSchemas, loggingRules, previewSchema, recordSchema, searchSchema, type ActionName } from '@/lib/crm/contracts'
-import { commitAction, getRecord, previewAction, safeError, searchRecords, stockholmToday } from '@/lib/crm/service'
+import { actionSchemas, loggingRules, previewSchema, recordSchema, searchSchema, type ActionName,
+  bulkPreviewSchema, bulkCommitSchema, bulkResultSchema, BULK_MAX_ROWS } from '@/lib/crm/contracts'
+import { commitAction, getRecord, previewAction, safeError, searchRecords, stockholmToday,
+  previewBulkOutreach, commitBulkOutreach, getBulkResult } from '@/lib/crm/service'
 import type { Database } from '@/lib/crm/database'
 import { ACTION_SCOPES, config, previewToken, verifyPreview } from './security'
 
@@ -74,6 +76,37 @@ export function createCrmMcpServer(db: Database, principal: Principal) {
       return commitAction(db, action, parameters, principal)
     }))
   }
+
+  server.registerTool('preview_bulk_outreach', {
+    title: 'Preview a bulk outreach import',
+    description: `Resolve and validate up to ${BULK_MAX_ROWS} outreach rows in one call, without writing anything. Use this instead of calling search_crm and preview_crm_action per record when logging a list of sent emails or calls. Values in defaults apply to every row that does not state its own. Returns each row as ready, ambiguous or invalid: ambiguous rows carry the candidate opportunityId/companyId/contactId and are never guessed. Re-send an ambiguous row with the returned IDs to reuse that record.`,
+    inputSchema: bulkPreviewSchema, outputSchema, annotations: readAnnotations,
+    _meta: { securitySchemes: security('crm:read'), 'khyte/category': 'preview' },
+  }, args => run('crm:read', async () => {
+    const result = await previewBulkOutreach(db, args)
+    // The token binds the whole batch, matching how the single-record tools bind
+    // one action's normalized parameters to this connection.
+    return { ...result, previewToken: previewToken('log_outreach', { bulk: args }, principal.connectionId) }
+  }))
+
+  server.registerTool('commit_bulk_outreach', {
+    title: 'Save a previewed bulk outreach import',
+    description: 'Save the ready rows from preview_bulk_outreach using the same batchId, parameters and its previewToken. Ambiguous and invalid rows are skipped, never guessed. Each row commits separately, so one conflict or duplicate fails that row alone and the rest still save. Retrying the same batchId returns already_saved for rows that landed and never duplicates them. Returns a per-row receipt with counts.',
+    inputSchema: bulkCommitSchema, outputSchema,
+    annotations: { ...writeAnnotations, destructiveHint: true },
+    _meta: { securitySchemes: security('crm:outreach:write'), 'khyte/category': 'outreach' },
+  }, args => run('crm:outreach:write', async () => {
+    const { previewToken: token, ...parameters } = args
+    verifyPreview(token, 'log_outreach', { bulk: parameters }, principal.connectionId)
+    return commitBulkOutreach(db, args, principal)
+  }))
+
+  server.registerTool('get_bulk_operation_result', {
+    title: 'Verify a bulk import',
+    description: 'Check what a bulk import actually persisted after a timeout or lost response. Supply the original batchId. Returns the saved per-row receipts. A missing receipt is not proof a request still running will fail; retry the same batchId rather than starting a new import.',
+    inputSchema: bulkResultSchema, outputSchema, annotations: readAnnotations,
+    _meta: { securitySchemes: security('crm:read'), 'khyte/category': 'verification' },
+  }, args => run('crm:read', () => getBulkResult(db, args.batchId, principal)))
 
   server.registerTool('get_operation_result', {
     title: 'Verify a previous save', description: 'Check whether an operation persisted after a timeout or lost response. Supply the original requestId. A missing receipt is not proof a request still running will fail; retry the same operation ID, never create a replacement blindly.',
