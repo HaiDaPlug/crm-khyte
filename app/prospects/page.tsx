@@ -26,6 +26,7 @@ import {
   hasBeenContacted,
   toCSV,
 } from '@/lib/export-prospects'
+import { loadExportEvents } from '@/app/actions/export'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export default function ProspectsPage() {
@@ -35,6 +36,8 @@ export default function ProspectsPage() {
   const companies = useCRMStore((s) => s.companies)
   const contacts = useCRMStore((s) => s.contacts)
   const notes = useCRMStore((s) => s.notes)
+  // Read for the export only — the table itself shows no tasks.
+  const tasks = useCRMStore((s) => s.tasks)
 
   // Local to this page, not the store's global `searchQuery` — that one field is
   // shared by every page that reads it, so a query typed here would follow you
@@ -67,11 +70,34 @@ export default function ProspectsPage() {
     [allRows]
   )
 
-  const handleExport = () => {
-    const rows = buildExportRows(contactedRows, (id) =>
-      id && id in colleagues ? colleagues[id as ColleagueId].name : ''
-    )
-    downloadCSV(toCSV(rows), exportFilename())
+  const [exporting, setExporting] = useState(false)
+
+  const handleExport = async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      // The activity log is server-side, so the dated history is fetched here
+      // rather than read from the store — see app/actions/export.ts. A failed
+      // read still exports: the history columns degrade to `history_quality =
+      // none` and every other column is unaffected.
+      const history = await loadExportEvents(contactedRows.map((row) => row.opportunity.id))
+      if (!history.ok) {
+        console.error('[khyte] exporting without event history:', history.error)
+      }
+
+      // Notes and tasks come along too, so each row carries its written record
+      // beside the log — see the header of lib/export-prospects.ts.
+      const rows = buildExportRows(contactedRows, {
+        colleagueName: (id) =>
+          id && id in colleagues ? colleagues[id as ColleagueId].name : '',
+        notes,
+        tasks,
+        events: history.ok ? history.events : {},
+      })
+      downloadCSV(toCSV(rows), exportFilename())
+    } finally {
+      setExporting(false)
+    }
   }
 
   const filteredRows = useMemo(() => {
@@ -129,6 +155,27 @@ export default function ProspectsPage() {
     })
   }, [allRows, selectedStages, selectedPriorities, searchQuery, quickFilters, colleagueFilter])
 
+  /**
+   * Why the table is empty, when the reason is worth explaining.
+   *
+   * Only for the unassigned bucket, and only when nothing else is narrowing the
+   * list — with a stage filter or a search term also on, "no matches" is the
+   * honest answer and this would be guessing at which filter the operator meant.
+   */
+  const emptyReason = useMemo(() => {
+    if (colleagueFilter !== 'unassigned') return null
+    const otherFiltersActive =
+      selectedStages.length > 0 ||
+      selectedPriorities.length > 0 ||
+      quickFilters.length > 0 ||
+      searchQuery.trim() !== ''
+    if (otherFiltersActive) return null
+    return {
+      title: t.crm.table.emptyUnassigned,
+      hint: t.crm.table.emptyUnassignedHint,
+    }
+  }, [colleagueFilter, selectedStages, selectedPriorities, quickFilters, searchQuery, t])
+
   const drawerNotes = useMemo((): Note[] => {
     if (!selectedRow) return []
     return notes.filter(n =>
@@ -162,7 +209,9 @@ export default function ProspectsPage() {
             <Button
               variant="secondary"
               onClick={handleExport}
-              disabled={contactedRows.length === 0}
+              // Also disabled while the event history is in flight — the export
+              // is a round-trip now, not instant.
+              disabled={contactedRows.length === 0 || exporting}
               // The label collapses to an icon on phones, so name the button
               // explicitly rather than leaving a bare glyph for screen readers.
               aria-label={t.prospects.exportContacted}
@@ -233,7 +282,23 @@ export default function ProspectsPage() {
           </div>
         </div>
 
-        {view === 'table' ? (
+        {filteredRows.length === 0 && emptyReason ? (
+          // Pressing "Utan ansvarig" and getting a bare "no matches" reads as a
+          // broken filter. It is not: the card counts events, the table lists
+          // prospects, and when every prospect has an owner this bucket is
+          // legitimately empty. Say which, and offer the way back.
+          <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface/60 px-5 py-8 text-center">
+            <p className="text-[15px] text-foreground/70">{emptyReason.title}</p>
+            <p className="mt-1.5 max-w-md text-[13px] text-foreground/55">{emptyReason.hint}</p>
+            <button
+              type="button"
+              onClick={() => setColleagueFilter(null)}
+              className="mt-3 min-h-11 rounded-lg px-4 text-[14px] font-medium text-accent transition-colors hover:bg-accent-light"
+            >
+              {t.weeklyProgress.showAll}
+            </button>
+          </div>
+        ) : view === 'table' ? (
           <CRMTable
             data={filteredRows}
             onRowClick={(row) => setSelectedRow(row)}

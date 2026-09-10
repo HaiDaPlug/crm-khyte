@@ -1,9 +1,110 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-09-01
+**Date:** 2026-09-09
 **Phase:** MVP + persistence + password gate + derived direction board +
 cross-browser live sync
 (Supabase live; shared-password auth, no accounts)
+
+## Session update — remote MCP and verified ChatGPT writes (2026-09-09)
+
+**Current result:** the remote MCP is deployed at `https://crm.khyte.se/mcp`,
+connected in ChatGPT, and a real outreach record has been saved through ChatGPT
+and verified in the live database. This section supersedes older statements
+below about integration availability; the earlier feature history is retained.
+
+### Integration shipped
+
+- Kept the shared CRM login and added separate OAuth connection approval.
+  Connection authorization does not identify the colleague being credited:
+  `followedUpBy` and task `assignee` remain explicit, selectable fields so team
+  members can log work for each other.
+- Exposed nine annotated tools with validated parameters: `get_logging_rules`,
+  `search_crm`, `get_crm_record`, `preview_crm_action`, `create_lead`,
+  `log_outreach`, `create_task`, `assign_task`, and `get_operation_result`.
+  Lead/task tags, attribution, and assignment are part of the contracts.
+- Writes use a validated preview and signed preview token, then a database
+  transaction and persisted receipt. Request IDs support safe retries; matching
+  and source-message deduplication guard against duplicate records. Logging
+  outreach does not send email.
+- Implementation lives in `lib/crm/`, `lib/mcp/`, `app/mcp/`, and `app/oauth/`,
+  with discovery routes under `app/.well-known/`. Setup is documented in
+  [remote-mcp.md](remote-mcp.md). The additive
+  `20260909120000_remote_mcp.sql` migration is applied in production, including
+  OAuth/receipt storage, interaction history, and lead/task tags.
+- The initial integration shipped through PR #11. Subsequent OAuth
+  compatibility/consent fixes are preserved in production, including the
+  callback-origin form-action fix from PR #16. Server date handling uses
+  Stockholm boundaries, including DST.
+
+### ChatGPT diagnosis and write fix
+
+The original conversation could discover the installed app but did not expose
+its CRM actions. After refreshing the app actions and selecting Khyte CRM in a
+fresh conversation, actual `search_crm` calls succeeded in both regular ChatGPT
+and ChatGPT Work. This was followed by a real write test rather than treating
+successful discovery or preview as proof that saving worked.
+
+That first write returned `service_unavailable` and had no saved receipt.
+Reproduction with the real postgres.js driver found SQLSTATE `22023`,
+`cannot call populate_composite on a scalar`: already-stringified JSON was
+bound as inferred JSONB, so the driver serialized it again into a JSON string.
+`lib/crm/service.ts` now binds serialized JSON as text before casting to JSONB
+(`::text::jsonb`) for inserts, updates, event details, and receipt results.
+
+The two-file fix and regression test shipped in
+[PR #17](https://github.com/HaiDaPlug/crm-khyte/pull/17), merged as
+`d82f439acc2ad5c74f08bef519f7099a495c1100`. Vercel preview and production builds
+passed; production deployment `6356474973` was verified successful for that
+exact commit before the ChatGPT retry.
+
+**Validation:** all 14 MCP tests passed. The new
+`tests/mcp-postgres.test.ts` also passed against real Postgres, covering outreach
+inserts, task assignment updates, JSON event details, and receipt replay.
+It requires explicit `MCP_TEST_DATABASE_URL`, does not load `.env.local`
+automatically, and always rolls back its test transaction. Run it with
+`node --conditions=react-server --import tsx --test tests/mcp-postgres.test.ts`.
+The in-memory tests alone had missed this driver-specific failure. The local
+production build ran out of memory; standalone typechecking then lacked the
+generated image declarations. The successful Vercel builds supplied the
+production build verification.
+
+### One live outreach record saved and verified
+
+ChatGPT retried the original request ID after deployment, refreshed its preview,
+called `log_outreach`, received `saved`, checked the receipt (`already_saved`),
+and read the prospect back with `get_crm_record`. A separate database read
+confirmed exactly one receipt for this request and the saved fields:
+
+| Field | Verified value |
+|---|---|
+| Company | Mittstäd i Norrland |
+| Contact | Lars Holmlund |
+| Email | lars@mittstad.se |
+| Stage / attribution | `Contacted` / `hai` |
+| Outreach date / channel | `2026-09-09` / `email` |
+| Summary | Email outreach sent on 2026-09-09. |
+| Request ID | `0a870e7d-b772-4d49-843f-f4cd133bc12b` |
+| Prospect ID | `65194bc8-e67f-466a-8268-0a09e62068e6` |
+| Interaction ID | `e4f6384b-e326-4d7f-82aa-b62dc6ec9b95` |
+
+The saved prospect has no follow-up date or next step, tags are empty, and no
+source system/message ID was invented. This is a prospect/outreach record,
+not a raw lead. The diagnostic regression transactions left no test records.
+
+**Remaining scope:** the other 51 prepared outreach records were not imported.
+Bulk logging/compact receipts remain a potential improvement for large batches;
+no bulk endpoint was added. Voice orchestration inside the CRM remains a next
+phase, separate from the existing dashboard dictation/mock assistant. Live
+ChatGPT verification covered outreach; lead creation and task operations have
+automated coverage but were not separately committed through ChatGPT in this
+session. ChatGPT can still present a per-action approval before a write.
+
+The release used an isolated worktree to preserve unrelated local changes.
+The main checkout still contains pre-existing edits and is not a clean mirror
+of the deployed branch; do not discard or broadly stage them as part of a
+future MCP change.
+
+---
 
 The database is provisioned and running. Project ref `wmnobqhypkocirfybqsj`
 (eu-north-1); schema and seed applied; reads and writes verified end to end
@@ -118,13 +219,13 @@ components/
     FilterBar.tsx      — stage + priority filters with semantic expanded/pressed state, inert collapsed content, horizontally scrollable mobile chips and 44px phone targets
     WeeklyProgressCard.tsx — exports two cards for one `metricKind`: `WeeklyProgressCard` (count against the `/goals` target, with a bar) and `DailyCountCard` (today's bare tally, no target, always renders including at 0). Both read one shared module-scope payload and 60s poll, so a page with both runs a single timer. The week card renders nothing when no weekly goal is bound to the metric; either renders nothing if the fetch fails
     QuickFilters.tsx   — preset chips over the prospects table (this week / needs follow-up / hot). Composes with `FilterBar` rather than replacing it; filtering by person lives on the count cards, which show each person's number as well
-    (export lives in lib/export-prospects.ts, not components/ — it renders no UI; `/prospects` owns the one button that calls it)
+    (export lives in lib/export-prospects.ts, not components/ — it renders no UI; `/prospects` owns the one button that calls it. Its 48-column contract is documented for the consuming model in docs/export-schema.md, and it awaits app/actions/export.ts for the dated event history)
     SearchInput.tsx    — the search field shared by `/prospects` and `/leads`. Controlled (`value`/`onChange`), with a leading magnifier and a clear button that appears only once there's a query. `type="search"` so phones offer the search key, but the WebKit-only native clear affordance is suppressed in favour of the explicit button — it's the only one that exists cross-browser and the only one that routes through `onChange`. Each page owns its own query state; the component holds none
     ViewToggle.tsx     — labelled table/board toggle group with pressed states and full-width phone layout
     EmptyState.tsx     — centered empty state with icon + message
     Modal.tsx          — safe-area-aware portaled modal shell, unmounted when closed; phone gutters, responsive title/spacing and stacked full-width mobile footer. Shared `useDialogBehavior` supplies focus trap, Escape, scroll lock and focus return; title labelling and nested-dialog suspension remain. The scroll container keeps pointer events and owns close-on-press; the backdrop is now purely the scrim — see Known issues for why
     ConfirmDialog.tsx  — safe-area-aware `role="alertdialog"` with stacked full-width phone actions and focus on the safe choice
-    FormFields.tsx     — shared mobile-safe form primitives. Inputs are 44px/16px on phones (prevents iOS focus zoom); all modal `Field` labels are wired to stable control IDs, comboboxes retain full keyboard/listbox semantics, `AssigneePicker` has labelled group semantics, and `ColorSlider`/`DateStepper` remain keyboard operable. Gained `InlineSelect<T extends string>` — a small dark popover (button + absolutely-positioned `role="listbox"`, click-outside-to-close) standing in for native `<select>`; used by `DetailDrawer` for Stage/Priority/Followed-up-by, the general-purpose version of the popover pattern `/settings` already used
+    FormFields.tsx     — shared mobile-safe form primitives. Inputs are 44px/16px on phones (prevents iOS focus zoom); all modal `Field` labels are wired to stable control IDs, comboboxes retain full keyboard/listbox semantics — with **no implicit highlight (fixed 2026-09-03)**: `activeIndex` starts at `-1` and resets to `-1` on every keystroke, so Enter only picks a row that was actually arrowed onto or hovered. It defaulted to `0` before, which meant a row was always silently armed: typing a *new* contact or company in full and pressing Enter replaced it with whichever existing record substring-matched first, so "Anna Nilsson" survived but "Anna Bergström Måleri" would autocorrect into "Anna Bergström". Arrowing from `-1` enters at the top (Down) or bottom (Up). Applies to every `Combobox` — company, contact, and the "start from a lead" picker — `AssigneePicker` has labelled group semantics, and `ColorSlider`/`DateStepper` remain keyboard operable. Gained `InlineSelect<T extends string>` — a small dark popover (button + absolutely-positioned `role="listbox"`, click-outside-to-close) standing in for native `<select>`; used by `DetailDrawer` for Stage/Priority/Followed-up-by, the general-purpose version of the popover pattern `/settings` already used
     AddLeadModal.tsx   — now the lightweight capture form for the new raw-interest `Lead` entity (company name required, contact name, connection, source, "Tillagd av"/Added-by via `AssigneePicker`, priority via `ColorSlider`, notes). No dirty-tracking or discard confirmation — it's a small form with little to lose. This filename previously held the rich Opportunity-capture modal; that component's content moved to the new `AddProspectModal.tsx` below
     AddProspectModal.tsx — the rich capture modal (renamed from the old `AddLeadModal.tsx`, unchanged behavior): single-column phone grids, 44px stage choices, labelled company/contact comboboxes, two-way autofill, pipeline membership, priority/deal/next step/follow-up/tags/notes, inline value/email validation and unsaved-changes confirmation (dirty-tracking + `ConfirmDialog`) all remain. Widened `w-[860px]` → `w-[1120px]`; the stage pill row is now `sm:flex-nowrap`/`whitespace-nowrap` so all 10 stage pills fit one line at desktop width instead of wrapping. Gained an optional "start from a lead" `Combobox` (shown only when `leads.length > 0`) that pre-fills company name/contact name/priority/notes from a `Lead` — folding the lead's connection/source into the notes text, since Opportunity has no dedicated field for either — and a `fromLeadId?: string | null` prop to open pre-filled directly. Submitting while promoted from a lead calls `removeLead(leadId)`, deleting it
     AddContactModal.tsx — contact essentials in a single-column phone layout; labelled company combobox, mobile email/phone/URL keyboards and stacked actions. Unused since `/contacts` was archived (see Routes) — its only caller was that page
@@ -224,10 +325,11 @@ a Lead's `followedUpBy` is who should chase it, while the card counts who
 *added* it, so filtering the grid by that name would answer a different question.
 
 Events with no colleague are shown as "Utan ansvarig" rather than dropped. This
-is not cosmetic: roughly a tenth of the log has no colleague (12 of 86 this
-week), so omitting it would leave a breakdown that visibly fails to add up to
-the total printed beside it. Verified against live data — week 35/28/12/11 = 86
-= the total, today 16/10/7/4 = 37 = the total.
+is not cosmetic: a fraction of the log has no colleague, so omitting it would
+leave a breakdown that visibly fails to add up to the total printed beside it.
+Verified against live data by checking each breakdown sums to its own total.
+(The attribution fix below shrinks this bucket for *new* activity; the log is
+append-only, so existing rows keep their record.)
 
 **That row is selectable too (2026-09-02)**, having started as display-only on
 the reasoning that it names nobody to filter to. It does select something worth
@@ -242,10 +344,42 @@ matches every row and empties the table.
 
 **The card's number and the table's row count can differ here, and both are
 right.** The card counts *events* that carried no colleague when they happened;
-the table lists *prospects* with no owner now. Against live data that is 12
-events against 2 rows — the other ten were assigned an owner after the fact,
-which drops them from the list while their unattributed history stands. The same
+the table lists *prospects* with no owner now. A prospect assigned an owner after
+the fact drops off the list while its unattributed history stands. The same
 distinction the whole log/state split rests on, surfacing in the UI.
+
+**Most of that gap was a bug, fixed 2026-09-06.** Both event pushes in
+`updateOpportunity` credited `updates.followedUpBy` — the owner named *by that
+edit* — which is only set when the edit is actually changing the owner. So an
+ordinary drag of a card that already belonged to Erik filed its event as
+unattributed: the prospect had an owner, the edit just wasn't about that. Live
+data showed how lopsided this had become — 24 of 29 unattributed events belonged
+to prospects that *do* have an owner (17 from stage changes, 3 from date edits, 4
+backfilled), against **zero** genuinely unowned prospects. `updateOpportunity`
+now resolves an `actor`: whoever the edit names, else whoever already owns the
+row, read from the database rather than trusted from the client. The existing
+stage read was widened to fetch `followed_up_by` alongside `stage`, so this costs
+no extra round-trip on the stage path.
+
+The fallback uses `'followedUpBy' in updates`, not `??`. Clearing an owner passes
+`{ followedUpBy: undefined }` — the identical shape to an edit that says nothing
+about ownership — and only the key's presence separates them; same treatment and
+same reason as `assignee` in `toTaskUpdate`. So deliberately unassigning still
+records as unattributed. Verified across all six shapes: silent drag with an
+owner credits it, silent drag without one stays unattributed, a reassigning drag
+credits the new person, an explicit unassign stays unattributed, and both date-
+edit cases behave the same way. **Historic events are not rewritten** — the log
+is append-only, so the existing 24 keep their unattributed record and the bucket
+converges as new activity lands.
+
+**Pressing "Utan ansvarig" now explains itself when it selects nothing.** The
+bucket can be legitimately empty (every prospect has an owner) while the card
+still shows a number, and a bare "no prospects match" reads as a broken filter.
+The page derives an `emptyReason` — only when that bucket is the *sole* active
+filter, since with a stage filter or search term also on, "no matches" is the
+honest answer and naming one filter would be guessing. It renders in both table
+and board view with a "Visa alla igen" escape, where previously the table view
+had no empty state of its own at all.
 
 The week card's target stays the team's even when narrowed to one person.
 Dividing it by three would invent a per-person target nobody agreed to.
@@ -394,18 +528,122 @@ rather than `filteredRows`. Exporting whatever happens to be on screen would
 silently omit contacted companies and reintroduce the duplicates the file exists
 to prevent.
 
-Format details that are deliberate rather than incidental: every field is quoted
-unconditionally (Swedish company names and free-text notes carry commas, quotes,
-semicolons and newlines; a conditional quoter is one unusual name away from a
-shifted column), embedded quotes are doubled per RFC 4180, whitespace inside a
-field is collapsed so a multi-line note can't visually break its record for a
-model reading the file as text, `lastContacted` stays raw `YYYY-MM-DD` rather
-than the user's display format because the file is machine input, line endings
-are CRLF, and a UTF-8 BOM is prepended or Excel mangles å/ä/ö. Rows sort newest
-contact first, so a truncated list loses the oldest touches rather than the end
-of the alphabet. Verified by round-tripping a CSV containing commas, embedded
-quotes, newlines and Swedish characters back through a parser with column counts
-intact.
+**Widened to 48 columns**, from the original eleven (37 on 2026-09-05, then the
+event-log columns on 2026-09-06). The consumer is a model asked to *reason about
+what has happened* across the sample, not just to dedup a list — and eleven
+columns with a single date answered "who did we call" while being unable to
+answer "which of these went quiet", "who is overdue", or "how long has this been
+open". Added: company size and headcount; `stage_index`, `stage_status` and
+`status` (stage rank alone can't express outcome, because `Lost` positionally
+outranks `Won` — the same quirk `crossedInto` special-cases); deal value in SEK;
+the remaining contact channels; the log-derived dates and their provenance
+(`first_contact_date`, `meeting_booked_date`, `won_date`, each with a `*_source`,
+plus `meeting_booked_status`); the history-quality group (`history_quality`,
+`event_count`, `event_day_count`, `stage_path`); `follow_up_date`,
+`last_note_date` and `last_activity_date`; the derived intervals
+(`days_since_contact`, `days_since_any_activity`, `days_until_follow_up`,
+`follow_up_status`, `days_in_pipeline`, `days_contacted_to_meeting`,
+`engagement_depth`); note and open-task counts with their dated contents; tags;
+and `exported_on`.
+
+`buildExportRows` therefore takes an `ExportContext` (`colleagueName`, plus
+optional `notes`/`tasks`/`events`/`today`) rather than a bare naming function.
+`today` is injectable so the intervals are testable; every optional field's
+absence is a supported state rather than an error. `/prospects` selects `tasks`
+from the store for the export only, and its handler is now async — the button
+disables while the history round-trip is in flight.
+
+Two derived columns are deliberately coarse. `engagement_depth` is a 0–5 count of
+distinct evidence (a recorded contact, a meeting, more than one note, an open
+task, a witnessed transition) rather than a weighted score, because a 0–100 would
+imply precision this data has not got; reversals are excluded from its
+transition point, since a card leaving Meeting Booked is movement but not
+engagement. `days_since_any_activity` sits beside `days_since_contact` because
+they answer different questions — a prospect with an old contact date but a note
+from last week has not gone quiet.
+
+**The event log was wired in 2026-09-06**, lifting the ceiling the first pass
+left. `loadEventsForSubjects` in `lib/db/events.ts` reads `crm_events` for the
+exported ids, and `app/actions/export.ts` exposes it as a Server Action the
+export button awaits. It is a Server Action rather than part of `loadSnapshot`
+because history is not current state: folding a few hundred immutable event rows
+into the boot snapshot would drag them across the wire on every page load to
+serve one occasionally-pressed button. It returns rows rather than a finished
+CSV so the derivation stays pure, testable without a database, and able to join
+the store's notes and tasks. A failed read still exports — `history_quality`
+reports `none` for every row and the operator gets a console warning — because a
+CSV without history beats no CSV.
+
+**The log is three-tier, and the export refuses to flatten it.** Probing the
+live data found `{from,to}` on 139 events (a witnessed transition), `{backfilled:
+true}` on 18 (reconstructed by `scripts/backfill-events.mjs`), and
+`{loggedVia:'last_interaction'}` on 28 (the operator typing a date into the
+drawer). These are *not* equally trustworthy, so every log-derived date ships
+beside a `*_source` column naming its tier, and `history_quality` gives the best
+tier per row. The backfilled tier is the trap: all kinds reconstructed for one
+prospect share a single date, so a naive `daysContactedToMeeting` would report 0
+for every one of them — a fabricated "we book meetings on first contact" that a
+model would average into a conclusion. That column is therefore computed **only
+when both endpoints are `observed`**, and left empty otherwise; `event_day_count`
+exists so a reader can see that a row spanning one day supports no duration at
+all. Verified: a fixture whose backfilled contact and meeting share 2026-08-21
+yields `""`, while an observed pair 14 days apart yields `14`.
+
+**Sized against reality rather than assumed.** Of 145 exportable prospects, 138
+have events on exactly one day and 4 on two; there are 8 meeting-booked events
+and zero wins. So there is deliberately no per-stage dwell-time column and no
+`lost_date` (marking a deal Lost records no event by design, so the stage is the
+only evidence and it carries no date). `won_date` ships despite being empty for
+every current row, because it populates the moment a deal closes. An empty column
+that *looks* computable is worse than an absent one.
+
+**`meeting_booked_status` tracks reversals.** Following the
+`meeting_booked_reversed` event added to `events.ts`, a booking later dragged out
+of Meeting Booked reads as `reversed` rather than standing — which is also the
+honest explanation for the file showing more meeting dates than the board shows
+cards in that column. Compared latest-booking against latest-reversal, not
+first-against-first: a deal can be booked, dragged out, and re-booked, and only
+the most recent of each decides where it stands. `meetingBookedDate` deliberately
+stays the *first* booking, so the two columns answer "when did this start" and
+"is it still true" separately. Verified across all three sequences.
+
+`follow_up_status` uses the same rule as the "Behöver uppföljning" chip (due
+today or earlier is overdue, no date is *unscheduled* rather than overdue), so
+the file and the page cannot disagree. Dismissed notes are excluded from
+`note_history` and `note_count` — the team explicitly rejected those, and
+reasoning from them would be reasoning from decisions already made against.
+
+Empty is the value for "not computable" throughout, never 0 or -1: a model
+reading 0 concludes "contacted today". Dates on notes/tasks are full ISO
+timestamps, so the day is taken via `Date` rather than by slicing the first ten
+characters — slicing reports the UTC day, and a note written at 23:30 in
+Stockholm would export as the following date.
+
+Format details that are deliberate rather than incidental: headings are
+machine-friendly identifiers (`days_since_contact`, not "Days since contact")
+because a model refers to columns by name in its own reasoning and code; every
+field is quoted unconditionally (Swedish company names and free-text notes carry
+commas, quotes, semicolons and newlines; a conditional quoter is one unusual name
+away from a shifted column); embedded quotes are doubled per RFC 4180; whitespace
+inside a field is collapsed so a multi-line note can't visually break its record
+for a model reading the file as text; multi-value fields join on ` | ` rather
+than a comma; dates stay raw `YYYY-MM-DD` rather than the user's display format
+because the file is machine input; line endings are CRLF; and a UTF-8 BOM is
+prepended or Excel mangles å/ä/ö. Rows sort newest contact first, so a truncated
+list loses the oldest touches rather than the end of the alphabet.
+
+The column-by-column contract lives in **`docs/export-schema.md`**, meant to be
+pasted alongside the CSV. It is a separate file rather than a commented preamble
+so the CSV stays strictly parseable — including its explicit list of the
+questions the file answers badly, so a model doesn't attempt stage-conversion
+analysis the data can't support.
+
+Verified against a fixture with Swedish characters, an embedded comma and quote,
+a multi-line note, a 23:30-local note, a dismissed note, a completed task and a
+row with every date missing: all 37 columns round-trip through an RFC 4180 parser
+at uniform width, the late-evening note reports the local day, dismissed and
+completed records are excluded, and the all-empty row yields blank intervals
+rather than zeros.
 
 ### Shared Config (lib/stage-config.ts)
 - `STAGES: Stage[]` — canonical ordered list of the 9 pipeline stages

@@ -1,6 +1,7 @@
 'use server'
 
 import type {
+  ColleagueId,
   Company,
   Contact,
   Lead,
@@ -226,14 +227,37 @@ export async function updateOpportunity(
    * procedure for a number on a wallpaper.
    */
   let previousStage: Stage | undefined
-  if (updates.stage !== undefined) {
+  let currentOwner: ColleagueId | undefined
+  if (updates.stage !== undefined || updates.lastInteraction) {
     const { data } = await getSupabase()
       .from('opportunities')
-      .select('stage')
+      .select('stage, followed_up_by')
       .eq('id', id)
       .maybeSingle()
-    previousStage = (data as { stage: Stage } | null)?.stage
+    const row = data as { stage: Stage; followed_up_by: ColleagueId | null } | null
+    previousStage = row?.stage
+    currentOwner = row?.followed_up_by ?? undefined
   }
+
+  /**
+   * Who to credit: whoever this edit names, else whoever already owns the row.
+   *
+   * `updates.followedUpBy` is only set when the edit is *changing* the owner, so
+   * using it alone filed every ordinary drag as unattributed — the prospect had
+   * an owner, the edit just wasn't about that. The result was a "Utan ansvarig"
+   * bucket counting work that was in fact somebody's: 24 of 29 unattributed
+   * events belonged to prospects with an owner, against 0 genuinely unowned
+   * prospects.
+   *
+   * Reading the row rather than trusting the client keeps this honest. The
+   * `in` check rather than `?? `: clearing an owner passes
+   * `{ followedUpBy: undefined }` — the same shape as an edit that says nothing
+   * about ownership — and only the key's presence tells the two apart. Same
+   * treatment, and the same reason, as `assignee` in toTaskUpdate. So
+   * deliberately unassigning still records as unattributed, while an ordinary
+   * drag credits the person who owns the prospect.
+   */
+  const actor = 'followedUpBy' in updates ? updates.followedUpBy : currentOwner
 
   const result = await run('opportunities', async () =>
     getSupabase().from('opportunities').update(payload).eq('id', id)
@@ -247,7 +271,7 @@ export async function updateOpportunity(
       events.push(
         ...eventsForArrival(previousStage, updates.stage, {
           subjectId: id,
-          colleague: updates.followedUpBy,
+          colleague: actor,
           // A drag is dated now, not by lastInteraction: moving a card today
           // is something that happened today, whatever date the deal carries.
         })
@@ -271,7 +295,7 @@ export async function updateOpportunity(
       events.push({
         kind: 'prospect_contacted',
         subjectId: id,
-        colleague: updates.followedUpBy,
+        colleague: actor,
         detail: { loggedVia: 'last_interaction' },
         occurredOn: updates.lastInteraction,
         oncePerDay: true,
