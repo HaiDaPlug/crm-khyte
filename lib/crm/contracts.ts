@@ -176,7 +176,18 @@ export const searchSchema = z.strictObject({
 })
 export const recordSchema = z.strictObject({ entity: z.enum(['company', 'contact', 'prospect', 'lead', 'task']), id })
 
+export const exportProspectsSchema = z.strictObject({
+  cursor: z.uuid().optional().describe('nextCursor from the previous page; keep filters unchanged.'),
+  limit: z.number().int().min(1).max(60).default(25),
+  fields: z.array(z.enum(['identity', 'status', 'people', 'dates', 'provenance', 'intervals', 'written', 'history'])).min(1).optional(),
+  stages: z.array(z.enum(STAGES as [string, ...string[]])).min(1).optional(),
+  contactedSince: calendarDate.optional().describe('Inclusive lower bound on lastContacted, not first contact.'),
+  asOf: calendarDate.optional().describe('Use the asOf returned by page one for consistent interval calculations.'),
+  countOnly: z.boolean().default(false),
+})
+
 export const loggingRules = {
+  export: 'Use export_prospects to read the contacted dataset without a CSV upload. Before outreach, recheck each candidate with search_crm; an export is not a permanent guarantee that a company is uncontacted.',
   timezone: 'Europe/Stockholm', currency: 'SEK', colleagues: ['erik', 'abdi', 'hai'], stages: STAGES,
   priority: ['low', 'medium', 'high', 'critical'],
   attribution: 'Authentication grants shared workspace access, not a colleague identity. followedUpBy is explicitly selected; tasks use assignee. Logging outreach credits the named colleague without changing the existing prospect owner.',
