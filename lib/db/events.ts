@@ -2,6 +2,7 @@ import 'server-only'
 
 import type { ColleagueId, Stage } from '@/lib/types'
 import { getSupabase } from '@/lib/supabase/server'
+import { getDb } from './pg'
 import { STAGES } from '@/lib/stage-config'
 
 /**
@@ -199,6 +200,109 @@ async function alreadyRecorded(
     console.error('[khyte] duplicate-event check failed, recording anyway:', message)
     return false
   }
+}
+
+/* ———— reading the log ———— */
+
+/**
+ * How a recorded event came to exist. Ships with every dated column the export
+ * derives, because the three tiers are not equally trustworthy and a model
+ * given only the dates would weigh them as though they were.
+ *
+ *   observed    — `{from, to}` on the detail. A real stage transition the CRM
+ *                 watched happen, dated when it happened. The good tier.
+ *   logged      — `{loggedVia: 'last_interaction'}`. The operator typed a
+ *                 contact date into the drawer; the date is a human's account
+ *                 of a real call, but no stage movement was witnessed.
+ *   backfilled  — `{backfilled: true}`. Reconstructed by
+ *                 scripts/backfill-events.mjs from the stage a prospect was
+ *                 already sitting in, dated by `last_interaction`. The date is
+ *                 an inference, and every kind reconstructed for one prospect
+ *                 shares it — so a backfilled 'contacted' and 'meeting booked'
+ *                 on the same day is an artifact, not a same-day booking.
+ */
+export type EventProvenance = 'observed' | 'logged' | 'backfilled'
+
+export interface CrmEventRecord {
+  kind: CrmEventKind
+  subjectId: string
+  colleague: ColleagueId | null
+  /** Local calendar day, `YYYY-MM-DD`. */
+  occurredOn: string
+  provenance: EventProvenance
+  /** Present only on the `observed` tier. */
+  fromStage: Stage | null
+  toStage: Stage | null
+}
+
+function provenanceOf(detail: Record<string, unknown> | null): EventProvenance {
+  if (!detail) return 'logged'
+  if (detail.backfilled) return 'backfilled'
+  if (detail.from !== undefined && detail.to !== undefined) return 'observed'
+  return 'logged'
+}
+
+/**
+ * The local calendar day a stored timestamp falls on.
+ *
+ * Deliberately not `toISOString().slice(0, 10)`: an event recorded at local
+ * midnight is the *previous* day in UTC, which would date a whole tier of the
+ * log one day early. Same reasoning as `dayKey` in the backfill script.
+ */
+function localDay(timestamp: string): string {
+  const date = new Date(timestamp)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+/**
+ * Every recorded event for the given subjects, oldest first.
+ *
+ * One query for the whole export rather than one per prospect: the log is a few
+ * hundred rows for this workspace and the caller needs all of it at once. Read
+ * through the same direct-Postgres path as the rest of lib/db, so it cannot hit
+ * the PostgREST clock-skew fault ./retry exists to wait out.
+ *
+ * Returns a Map keyed by subject so the caller can join without a scan per row.
+ * Subjects with no events are simply absent — which is a real state (3 of the
+ * 145 contacted prospects at time of writing) and must not be confused with a
+ * prospect whose history is merely thin.
+ */
+export async function loadEventsForSubjects(
+  subjectIds: string[]
+): Promise<Map<string, CrmEventRecord[]>> {
+  const bySubject = new Map<string, CrmEventRecord[]>()
+  if (subjectIds.length === 0) return bySubject
+
+  const rows = await getDb()`
+    select kind, subject_id, colleague, detail, occurred_at
+    from crm_events
+    where subject_id = any(${subjectIds}::uuid[])
+    order by occurred_at asc
+  `
+
+  for (const row of rows as unknown as Array<{
+    kind: CrmEventKind
+    subject_id: string
+    colleague: ColleagueId | null
+    detail: Record<string, unknown> | null
+    occurred_at: string
+  }>) {
+    const provenance = provenanceOf(row.detail)
+    const list = bySubject.get(row.subject_id) ?? []
+    list.push({
+      kind: row.kind,
+      subjectId: row.subject_id,
+      colleague: row.colleague,
+      occurredOn: localDay(row.occurred_at),
+      provenance,
+      fromStage: provenance === 'observed' ? ((row.detail?.from as Stage) ?? null) : null,
+      toStage: provenance === 'observed' ? ((row.detail?.to as Stage) ?? null) : null,
+    })
+    bySubject.set(row.subject_id, list)
+  }
+
+  return bySubject
 }
 
 /**

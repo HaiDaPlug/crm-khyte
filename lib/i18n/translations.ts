@@ -362,6 +362,13 @@ const sv = {
       followUp: 'Uppföljning',
       tags: 'Taggar',
       empty: 'Inga prospekt matchar de aktuella filtren.',
+      // Shown instead of `empty` when the only thing filtering is the
+      // "Utan ansvarig"-bucket and every prospect has en ansvarig. Kortet
+      // räknar händelser, tabellen listar prospekt — se kommentaren i
+      // app/prospects/page.tsx.
+      emptyUnassigned: 'Alla prospekt har en ansvarig.',
+      emptyUnassignedHint:
+        'Kortet räknar händelser som saknade ansvarig när de hände — de prospekten har fått en ansvarig sedan dess.',
       pagination: 'Sidnavigering',
       range: (from: number, to: number, total: number) => `${from}–${to} av ${total}`,
       previousPage: 'Föregående sida',
@@ -641,6 +648,9 @@ const en: Dictionary = {
       company: 'Company', contact: 'Contact', stage: 'Stage', addedBy: 'Added by', priority: 'Priority',
       dealValue: 'Deal Value', lastTouch: 'Last Touch', nextStep: 'Next Step', followUp: 'Follow-up', tags: 'Tags',
       empty: 'No prospects match the current filters.',
+      emptyUnassigned: 'Every prospect has an owner.',
+      emptyUnassignedHint:
+        'The card counts events that carried no owner when they happened — those prospects have since been assigned one.',
       pagination: 'Pagination',
       range: (from, to, total) => `${from}–${to} of ${total}`,
       previousPage: 'Previous page', nextPage: 'Next page',
