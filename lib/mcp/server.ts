@@ -7,6 +7,9 @@ import { commitAction, getRecord, previewAction, safeError, searchRecords, stock
   previewBulkOutreach, commitBulkOutreach, getBulkResult } from '@/lib/crm/service'
 import type { Database } from '@/lib/crm/database'
 import { ACTION_SCOPES, config, previewToken, verifyPreview } from './security'
+import { exportProspectsSchema } from '@/lib/crm/contracts'
+import { exportProspects } from './export'
+import { EXPORT_GUIDANCE, EXPORT_SCHEMA_TEXT } from './export-schema'
 
 type Principal = { connectionId: string; scopes: string[] }
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
@@ -37,6 +40,17 @@ export function createCrmMcpServer(db: Database, principal: Principal) {
       return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify(safeError(error)) }] }
     }
   }
+
+  server.registerTool('export_prospects', {
+    title: 'Read the contacted prospect dataset',
+    description: `${EXPORT_GUIDANCE} Start with countOnly or compact default fields. Optional groups: intervals, written, history. Limit 25 by default, maximum 60; byte budget may shorten pages. Text beyond 600 characters is marked in truncatedFields. Reuse asOf and filters with nextCursor.`,
+    inputSchema: exportProspectsSchema, outputSchema, annotations: readAnnotations,
+    _meta: { securitySchemes: security('crm:read'), 'khyte/category': 'search' },
+  }, args => run('crm:read', () => exportProspects(db, args)))
+  server.registerResource('export-schema', 'khyte://export-schema', { mimeType: 'text/markdown', description: 'Field groups and interpretation rules for export_prospects.' }, async uri => {
+    if (!principal.scopes.includes('crm:read')) throw new Error('crm:read is required')
+    return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: EXPORT_SCHEMA_TEXT }] }
+  })
 
   server.registerTool('get_logging_rules', {
     title: 'Read CRM logging rules and fields', description: 'Start here to understand Khyte entities, allowed colleagues/stages, required fields, attribution, tags and date rules. Returns schemas for preview parameters.',

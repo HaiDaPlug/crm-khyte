@@ -182,8 +182,52 @@ reversed (`meeting_booked_status`), and what was actually said over time
 
 ## A note on sample size
 
-At time of writing this exports ~145 prospects, of which the great majority sit
-at `Contacted` with a single recorded event. Sub-groups get small fast: there
-are single-digit counts of meetings booked and no wins at all. Report counts
-alongside any rate you compute, and prefer describing what happened to
-estimating a trend from it.
+Counts change as the CRM changes. A read-only database scan on 2026-09-10
+returned 283 contacted prospects. Use `export_prospects` with `countOnly: true`
+for the current filtered count. Report counts alongside any rate you compute,
+and prefer describing what happened to estimating a trend from small groups.
+
+## Reading this over MCP
+
+`export_prospects` exposes the same row calculations through the existing
+OAuth connection with `crm:read`. No CSV download/upload or browser session
+cookie is needed. The CSV button and file format remain unchanged.
+
+Start with `{ "countOnly": true }`, then `{ "limit": 25 }`. Follow `nextCursor`
+as `cursor`, retaining the returned `asOf` and the same filters until
+`nextCursor` is null. `total` describes the current filtered set, not the
+remaining page. Pages sort by immutable prospect ID, not last-contact date.
+They are live reads, not a frozen snapshot: inserts or newly eligible records
+behind the cursor may be absent. Recheck proposed companies with `search_crm`
+before outreach; a scan cannot guarantee they remain uncontacted.
+
+Inputs: `cursor` (UUID), `limit` (1–60, default 25), `fields` (group names),
+`stages`, `contactedSince` (inclusive last-contact date), `asOf` (interval
+reference day), and `countOnly`. Filters narrow the contacted set; `New` is
+never included. Identity and provenance are always included. Defaults also
+include status, people and dates. Request intervals, written or history
+explicitly. Contact details are included by default, as approved.
+
+Every row adds `prospectId`, `companyId`, and `contactId`. Empty values are
+omitted; numbers remain strings. Date/source pairs stay together. A failed
+event read sets `historyAvailable: false`; do not interpret this as evidence
+that the prospects have no history. Core data failures produce an error,
+never demo records.
+
+The rows array is limited to 40,000 UTF-8 bytes; a page can contain fewer rows
+than requested. Field text is limited to 600 characters, with every shortened
+field named in `truncatedFields`. Do not treat shortened identifiers or text
+as complete. If even one projected row exceeds the byte budget, the tool
+returns an error asking for fewer field groups. Detailed record retrieval is
+available through `get_crm_record` using the stable ID.
+
+`lib/mcp/export-schema.ts` is the bundled MCP guidance and field-group contract,
+also served as `khyte://export-schema`. Essential semantics appear in tool
+descriptions/responses so callers need not support resources to use the data.
+
+For overnight research, first verify a scheduled read using the connected
+Khyte CRM plugin. Store the research criteria and reporting instructions in
+the scheduled prompt. Fetch the current contacted set, research candidates,
+recheck each against CRM, and return cited findings and outreach drafts for
+review. Do not send messages or modify the CRM. The actual schedule and
+research brief must be configured separately; this endpoint schedules nothing.

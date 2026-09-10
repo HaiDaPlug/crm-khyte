@@ -16,6 +16,9 @@ import { config, hashToken, pkceChallenge, previewToken, readEnvelope, signEnvel
 import { checkOrigin, readBody } from '../lib/mcp/http'
 import { loginReturnTo } from '../lib/auth/return-to'
 import { register } from '../instrumentation'
+import { exportProspects, EXPORT_ROWS_BYTES } from '../lib/mcp/export'
+import { EXPORT_GROUPS } from '../lib/mcp/export-schema'
+import { exportProspectsSchema } from '../lib/crm/contracts'
 
 // No .env files, remote database, production credentials, or network access.
 process.env.MCP_PUBLIC_URL = 'https://crm.example.test'
@@ -52,6 +55,117 @@ before(async () => {
   }
 })
 after(async () => { await pg.close() })
+
+test('export matches the CSV builder, filters contacted stages, and preserves provenance', async () => {
+  const saved = await commitAction(db, 'log_outreach', { ...outreach(), stage: 'Lost' }, actor)
+  const id = (saved.record as Row).id as string
+  await db.query('delete from crm_events where subject_id=$1', [id])
+  for (const kind of ['prospect_contacted', 'meeting_booked']) {
+    await db.query("insert into crm_events (kind, subject_id, detail, occurred_at) values ($1::crm_event_kind,$2,'{\"backfilled\":true}'::jsonb,'2026-08-18T00:00:00+02:00')", [kind, id])
+  }
+  const page = await exportProspects(db, { stages: ['Lost'], fields: ['dates', 'intervals', 'written', 'history'], asOf: '2026-09-10' })
+  const row = page.rows.find(row => row.prospectId === id)!
+  assert.ok(row)
+  assert.equal(row.firstContactSource, 'backfilled')
+  assert.equal(row.meetingBookedSource, 'backfilled')
+  assert.equal(row.historyQuality, 'backfilled')
+  assert.equal(row.eventDayCount, '1')
+  assert.equal(row.daysContactedToMeeting, undefined)
+  assert.equal(row.exportedOn, '2026-09-10')
+  assert.equal(row.noteCount, '1')
+  assert.ok(row.noteHistory)
+  const defaults = await exportProspects(db, { stages: ['Lost'] })
+  assert.equal(defaults.rows.find(row => row.prospectId === id)?.noteHistory, undefined)
+  assert.equal((await exportProspects(db, { stages: ['New'] })).rows.length, 0)
+  assert.equal((await exportProspects(db, { stages: ['Lost'], contactedSince: '2026-09-01', countOnly: true })).total, 0)
+
+  const { buildExportRows } = await import('../lib/export-prospects')
+  const { fromOpportunityRow, fromCompanyRow, fromContactRow } = await import('../lib/db/mappers')
+  const [opp] = await db.query('select *, last_interaction::text as last_interaction, follow_up_date::text as follow_up_date from opportunities where id=$1', [id])
+  const [company] = await db.query('select * from companies where id=$1', [opp.company_id])
+  const [contact] = await db.query('select * from contacts where id=$1', [opp.contact_id])
+  const [csv] = buildExportRows([{ opportunity: fromOpportunityRow(opp as never), company: fromCompanyRow(company as never), contact: fromContactRow(contact as never) }], { colleagueName: () => 'Erik', today: new Date(2026, 8, 10) })
+  assert.equal(row.company, csv.company)
+  assert.equal(row.lastContacted, csv.lastContacted)
+  assert.equal(row.daysSinceContact, csv.daysSinceContact)
+})
+
+test('export cursor survives tied dates and edits without skipping remaining records', async () => {
+  for (let i = 0; i < 5; i++) await commitAction(db, 'log_outreach', outreach(), actor)
+  const before = await db.query('select id from opportunities where stage <> \'New\' order by id')
+  const seen: string[] = []
+  let cursor: string | undefined
+  do {
+    const result = await exportProspects(db, { limit: 2, cursor, fields: ['identity'] })
+    seen.push(...result.rows.map(row => String(row.prospectId)))
+    cursor = result.nextCursor as string | undefined
+    if (seen.length === 2) await db.query("update opportunities set last_interaction='2026-09-10' where id > $1", [cursor])
+  } while (cursor)
+  assert.deepEqual(seen, before.map(row => row.id))
+  assert.equal(new Set(seen).size, seen.length)
+})
+
+test('export bounds output, reports history failures, and validates inputs', async () => {
+  const saved = await commitAction(db, 'log_outreach', outreach(), actor)
+  const id = (saved.record as Row).id
+  await db.query('update opportunities set notes=$1 where id=$2', ['å'.repeat(10000), id])
+  const snapshots = await db.query('select (select count(*) from opportunities) as prospects, (select count(*) from crm_tool_receipts) as receipts')
+  const all = await exportProspects(db, { limit: 60, fields: ['written', 'history'] })
+  assert.ok(Buffer.byteLength(JSON.stringify(all.rows)) <= EXPORT_ROWS_BYTES)
+  const row = all.rows.find(row => row.prospectId === id)
+  assert.ok(row?.truncatedFields && (row.truncatedFields as string[]).includes('notes'))
+  assert.equal((row.notes as string).length, 600)
+  const degraded = await exportProspects({ query: async (sql, values) => {
+    if (sql.includes('from crm_events')) throw new Error('unavailable')
+    return db.query(sql, values)
+  } }, {})
+  assert.equal(degraded.historyAvailable, false)
+  assert.ok(degraded.rows.length)
+  assert.deepEqual(await db.query('select (select count(*) from opportunities) as prospects, (select count(*) from crm_tool_receipts) as receipts'), snapshots)
+  assert.equal(exportProspectsSchema.safeParse({ limit: 500 }).success, false)
+  assert.equal(exportProspectsSchema.safeParse({ fields: ['unknown'] }).success, false)
+  assert.equal(exportProspectsSchema.safeParse({ cursor: 'bad' }).success, false)
+  assert.equal(exportProspectsSchema.safeParse({ contactedSince: '2026-02-30' }).success, false)
+  assert.ok(EXPORT_GROUPS.dates.includes('firstContactDate') && EXPORT_GROUPS.dates.includes('firstContactSource'))
+  assert.ok(EXPORT_GROUPS.dates.includes('meetingBookedDate') && EXPORT_GROUPS.dates.includes('meetingBookedSource'))
+  const countOnly = await exportProspects({ query: async (sql, values) => {
+    assert.ok(sql.startsWith('select count'))
+    return db.query(sql, values)
+  } }, { countOnly: true })
+  assert.equal(countOnly.rows.length, 0)
+  await assert.rejects(exportProspects({ query: async () => { throw new Error('database unavailable') } }, {}), /database unavailable/)
+})
+
+test('export tool and schema resource require crm:read', async () => {
+  const server = createCrmMcpServer(db, { ...actor, scopes: [] })
+  const [ct, st] = InMemoryTransport.createLinkedPair()
+  const client = new Client({ name: 'export-auth-test', version: '1' })
+  await server.connect(st); await client.connect(ct)
+  try {
+    assert.equal((await client.callTool({ name: 'export_prospects', arguments: {} })).isError, true)
+    await assert.rejects(client.readResource({ uri: 'khyte://export-schema' }))
+  } finally { await client.close(); await server.close() }
+})
+
+test('byte-limited export pages resume after the last emitted row without loss', async () => {
+  for (let i = 0; i < 35; i++) {
+    const saved = await commitAction(db, 'log_outreach', { ...outreach(), stage: 'Warm', summary: '漢'.repeat(1000) }, actor)
+    await db.query('update opportunities set notes=$1, next_step=$1 where id=$2', ['漢'.repeat(2000), (saved.record as Row).id])
+  }
+  const seen = new Set<string>()
+  let cursor: string | undefined
+  let pages = 0
+  do {
+    const result = await exportProspects(db, { stages: ['Warm'], limit: 60, fields: ['written', 'history'], cursor })
+    assert.ok(Buffer.byteLength(JSON.stringify(result.rows)) <= EXPORT_ROWS_BYTES)
+    assert.ok(result.rows.length > 0)
+    for (const row of result.rows) { assert.ok(!seen.has(String(row.prospectId))); seen.add(String(row.prospectId)) }
+    cursor = result.nextCursor as string | undefined
+    pages++
+  } while (cursor)
+  assert.equal(seen.size, 35)
+  assert.ok(pages > 1)
+})
 
 test('schemas require explicit attribution/assignment, real dates, and reject invented fields', () => {
   assert.equal(calendarDate.safeParse('2026-02-30').success, false)
@@ -340,7 +454,11 @@ test('MCP client discovers annotated schemas, previews then saves a task, and en
   await server.connect(serverTransport); await client.connect(clientTransport)
   try {
     const list = await client.listTools()
-    assert.equal(list.tools.length, 12)
+    assert.equal(list.tools.length, 13)
+    assert.equal(list.tools.find(t => t.name === 'export_prospects')?.annotations?.readOnlyHint, true)
+    assert.ok((await client.listResources()).resources.some(r => r.uri === 'khyte://export-schema'))
+    assert.ok((await client.readResource({ uri: 'khyte://export-schema' })).contents.length)
+    assert.notEqual((await client.callTool({ name: 'export_prospects', arguments: { countOnly: true } })).isError, true)
     assert.equal(list.tools.find(t => t.name === 'preview_crm_action')?.annotations?.readOnlyHint, true)
     assert.equal(list.tools.find(t => t.name === 'create_task')?.annotations?.readOnlyHint, false)
     assert.equal(list.tools.find(t => t.name === 'create_task')?.annotations?.idempotentHint, true)
@@ -379,7 +497,7 @@ test('stateless Streamable HTTP supports fresh servers for initialization, disco
     const data = await response.json()
     assert.equal(data.error, undefined)
     if (call.method === 'initialize') assert.equal(data.result.serverInfo.name, 'khyte-crm')
-    if (call.method === 'tools/list') assert.equal(data.result.tools.length, 12)
+    if (call.method === 'tools/list') assert.equal(data.result.tools.length, 13)
     if (call.method === 'tools/call') assert.equal(data.result.structuredContent.timezone, 'Europe/Stockholm')
   }
 })
