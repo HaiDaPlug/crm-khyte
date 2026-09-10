@@ -388,7 +388,19 @@ function ComboboxImpl({
   id,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false)
-  const [activeIndex, setActiveIndex] = useState(0)
+  /**
+   * Which row the keyboard is on, or -1 for "none — the field holds what was
+   * typed".
+   *
+   * Starts at -1 rather than 0 on purpose. With a default of 0 there was always
+   * an implicit highlight the user never chose, so typing a *new* contact or
+   * company in full and pressing Enter silently replaced it with whichever
+   * existing record happened to substring-match first — the field would
+   * "autocorrect" a deliberate new name into an old one. Enter now only picks a
+   * row that was actually arrowed onto or hovered; otherwise it falls through
+   * and the typed text stands.
+   */
+  const [activeIndex, setActiveIndex] = useState(-1)
 
   const wrapRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -410,10 +422,12 @@ function ComboboxImpl({
 
   const showList = open && !selected && filtered.length > 0
 
-  // A changing filter can strand the highlight past the end of the list.
+  // Typing changes what the list means, so any highlight is stale — drop back
+  // to "nothing selected" rather than leaving a row armed for Enter. This also
+  // covers a filter that shrinks past the current index.
   useEffect(() => {
-    setActiveIndex((i) => (i >= filtered.length ? 0 : i))
-  }, [filtered.length])
+    setActiveIndex(-1)
+  }, [q, filtered.length])
 
   // Keep the highlighted row in view during keyboard traversal.
   useEffect(() => {
@@ -468,8 +482,12 @@ function ComboboxImpl({
         return
       }
       e.preventDefault()
-      const delta = e.key === 'ArrowDown' ? 1 : -1
-      setActiveIndex((i) => (i + delta + filtered.length) % filtered.length)
+      // From "nothing highlighted", Down enters at the top and Up at the bottom.
+      setActiveIndex((i) => {
+        if (i === -1) return e.key === 'ArrowDown' ? 0 : filtered.length - 1
+        const delta = e.key === 'ArrowDown' ? 1 : -1
+        return (i + delta + filtered.length) % filtered.length
+      })
       return
     }
 
