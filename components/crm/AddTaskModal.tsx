@@ -13,8 +13,20 @@ import { useTranslations } from '@/lib/hooks/useTranslations'
 
 const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'critical']
 
-const defaultDueDate = () =>
-  new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+/**
+ * Today, not a week out.
+ *
+ * Deliberately not `toISOString().slice(0, 10)`: that is UTC, so east of
+ * Greenwich a task added in the small hours would default to *yesterday* —
+ * 00:30 on 15 January is still the 14th in UTC. Same trap `localDay` in
+ * lib/db/events.ts is written around. Local components match the `date`
+ * column the value is stored in.
+ */
+const defaultDueDate = () => {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}
 
 interface AddTaskModalProps {
   open: boolean

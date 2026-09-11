@@ -186,7 +186,18 @@ const sv = {
     emptyBoardBody:
       'Bygg tavlan för den här affären. Lägg till rubrikerna som betyder något här – utmaningar, intressenter, vad som helst.',
     addFirstHeadline: 'Lägg till första rubriken',
-    newProspect: 'Nytt prospekt',
+    addToStrategy: 'Lägg till prospekt',
+    removeFromStrategy: 'Ta bort från strategi',
+    emptyTitle: 'Inga prospekt i strategin ännu',
+    emptyBody:
+      'Lägg till ett prospekt som redan finns i CRM:et för att börja bygga dess tavla. Det du lägger till här blir sökbart i listan ovan.',
+    addPicker: {
+      title: 'Lägg till prospekt i strategin',
+      subtitle: 'Välj ett befintligt prospekt. Inga nya företag eller kontakter skapas här.',
+      searchPlaceholder: 'Sök prospekt...',
+      noMatches: 'Inga prospekt matchar den här sökningen.',
+      allAdded: 'Alla prospekt finns redan i strategin.',
+    },
     manageLinked: 'Hantera länkade prospekt',
     linked: 'Länkad:',
     linkModal: {
@@ -562,7 +573,18 @@ const en: Dictionary = {
     emptyBoardBody:
       'Build the board for this deal. Add the headlines that matter here — pain points, stakeholders, whatever it takes.',
     addFirstHeadline: 'Add the first headline',
-    newProspect: 'New prospect',
+    addToStrategy: 'Add prospect',
+    removeFromStrategy: 'Remove from strategy',
+    emptyTitle: 'No prospects in strategy yet',
+    emptyBody:
+      'Add a prospect that already exists in the CRM to start building its board. What you add here becomes searchable in the list above.',
+    addPicker: {
+      title: 'Add a prospect to strategy',
+      subtitle: 'Pick an existing prospect. No new companies or contacts are created here.',
+      searchPlaceholder: 'Search prospects...',
+      noMatches: 'No prospects match this search.',
+      allAdded: 'Every prospect is already in strategy.',
+    },
     manageLinked: 'Manage linked prospects',
     linked: 'Linked:',
     linkModal: {
