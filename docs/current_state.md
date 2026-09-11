@@ -1,9 +1,43 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-09-09
+**Date:** 2026-09-10
 **Phase:** MVP + persistence + password gate + derived direction board +
 cross-browser live sync
 (Supabase live; shared-password auth, no accounts)
+
+## Session update — prospect export connected in ChatGPT (2026-09-10)
+
+`export_prospects` is deployed through PR #22, merge commit
+`b08a31ad6d34d5e563aa5e3aa9f3653772072f2c` (successful Vercel production
+deployment `6370765295`). It exposes contacted prospects through the existing
+OAuth MCP without CSV downloads/uploads. There are now 13 tools, including the
+bulk outreach tools shipped separately in PR #21.
+
+The export reuses CSV calculations and supplies stable prospect/company/contact
+IDs, immutable-ID cursor paging, selectable field groups, date provenance,
+explicit text truncation and a 40,000-byte rows budget. It is read-only and
+requires `crm:read`. The compiled field guidance is also available as
+`khyte://export-schema`. See [export-schema.md](export-schema.md) for the contract.
+Pages are live reads, not a snapshot; candidates must be rechecked before
+outreach. Existing CSV behavior and write actions are unchanged.
+
+Validation: production build/typecheck, 22 MCP tests and 3 HTTP checks passed.
+An initial real-database scan found 283 contacted prospects. A later complete
+scan through the connected Khyte CRM plugin returned all **370** then-current
+prospects exactly once across 7 pages. Counts are live, not fixed expectations.
+Search also returned the previously saved Mittstäd record successfully.
+
+ChatGPT's action list was refreshed. The first browser export attempt returned
+`Mcp error: -32603: Internal error`; its cause was not established. Retrying
+later with the same deployed code succeeded in the same browser conversation:
+count 370, two pages of two distinct records each, and `historyAvailable: true`
+on both. The connection and export are verified working, rather than merely
+discoverable. Verification conversation:
+https://chatgpt.com/c/6aa29702-9594-83ed-abad-b01d10a9ca24
+
+Hai will configure scheduling himself. No schedules, messages or CRM writes
+were created as part of export verification. The release used an isolated
+worktree; local uncommitted changes remain and must not be discarded wholesale.
 
 ## Session update — remote MCP and verified ChatGPT writes (2026-09-09)
 
