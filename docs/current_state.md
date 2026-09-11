@@ -631,15 +631,27 @@ only evidence and it carries no date). `won_date` ships despite being empty for
 every current row, because it populates the moment a deal closes. An empty column
 that *looks* computable is worse than an absent one.
 
-**`meeting_booked_status` tracks reversals.** Following the
-`meeting_booked_reversed` event added to `events.ts`, a booking later dragged out
-of Meeting Booked reads as `reversed` rather than standing — which is also the
+**`meeting_booked_status` tracks reversals.** A booking later dragged out of
+Meeting Booked reads as `reversed` rather than standing — which is also the
 honest explanation for the file showing more meeting dates than the board shows
-cards in that column. Compared latest-booking against latest-reversal, not
-first-against-first: a deal can be booked, dragged out, and re-booked, and only
-the most recent of each decides where it stands. `meetingBookedDate` deliberately
-stays the *first* booking, so the two columns answer "when did this start" and
-"is it still true" separately. Verified across all three sequences.
+cards in that column.
+
+It is derived from the prospect's *current stage*, not from a reversal event:
+a `meeting_booked` event plus a stage that is no longer Meeting Booked, Won or
+Lost is a reversal. Won and Lost both count as standing — a meeting that led to
+a close, either way, ran its course. See `meetingBookedStatus` in
+`lib/export-prospects.ts`.
+
+An earlier design instead emitted a `meeting_booked_reversed` event from
+`events.ts` and netted it in the weekly counters. That approach was abandoned in
+favour of the stage comparison above, and `crossedOutOf`/`foldReversals` were
+never written. The enum value survives in the database because
+`20260906120000_meeting_booked_reversed.sql` was applied before the change of
+approach; it is unused, and Postgres cannot drop an enum value without rebuilding
+the type. Nothing emits it and nothing reads it.
+
+`meetingBookedDate` deliberately stays the *first* booking, so the two columns
+answer "when did this start" and "is it still true" separately.
 
 `follow_up_status` uses the same rule as the "Behöver uppföljning" chip (due
 today or earlier is overdue, no date is *unscheduled* rather than overdue), so

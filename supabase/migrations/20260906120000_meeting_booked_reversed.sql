@@ -1,0 +1,25 @@
+-- Adds the 'meeting_booked_reversed' event kind.
+--
+-- APPLIED IN PRODUCTION, BUT UNUSED. This migration ran before the reversal
+-- feature changed approach. Nothing emits or reads this value: the export
+-- derives meeting_booked_status from the prospect's current stage instead
+-- (see meetingBookedStatus in lib/export-prospects.ts), and the crossedOutOf /
+-- foldReversals functions the original note referred to were never written.
+--
+-- Recorded here rather than deleted so the migration history reproduces the
+-- database that actually exists. Postgres cannot drop an enum value without
+-- rebuilding the type, so removing the file would only hide the drift.
+--
+-- Original note follows.
+--
+-- Recorded when a deal leaves 'Meeting Booked' for anywhere but 'Won' or
+-- 'Lost' — see crossedOutOf in lib/db/events.ts. Nets against 'meeting_booked'
+-- in the weekly counters (foldReversals in lib/db/board-metrics.ts) so a card
+-- that no longer has an open booking stops counting as one, while a genuine
+-- close still holds.
+--
+-- Postgres will not let a newly-added enum value be used inside the same
+-- transaction that added it (SQLSTATE 55P04) — same constraint documented in
+-- 20260901120000_stage_ongoing.sql — but nothing here needs a same-transaction
+-- backfill, so this ships as a single migration.
+alter type crm_event_kind add value 'meeting_booked_reversed';
