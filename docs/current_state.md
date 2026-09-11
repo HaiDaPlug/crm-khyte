@@ -1,9 +1,95 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-09-10
+**Date:** 2026-09-11
 **Phase:** MVP + persistence + password gate + derived direction board +
 cross-browser live sync
 (Supabase live; shared-password auth, no accounts)
+
+## Session update — strategy roster, task dates, migration record (2026-09-11)
+
+Three changes shipped through PR #23 (`770724c`) and PR #24 (`dabdf52`). All
+UI and record-keeping; no MCP, schema or behaviour changes to the integration.
+
+### Strategy now has a roster
+
+The deal selector was built from `opportunities` — every prospect in the CRM,
+~290 of them — so "added to strategy" did not exist as a state. The page also
+seeded its selection from `opportunities[1]`, silently opening a board for
+whichever prospect happened to be second. Adding felt wrong because there was
+nothing to add *to*.
+
+- The selector now derives from `strategyBoardOpportunities`, so it lists
+  exactly the prospects that have a board. That link table already existed from
+  `20260910120000_strategy_boards.sql`; only the read side was missing.
+- `components/crm/AddToStrategyModal.tsx` adds one. It picks an **existing**
+  prospect and never creates a company or contact — the pipeline page's
+  off-board picker, not `AddProspectModal`. It reuses the same
+  `createStrategyBoard` + `linkOpportunityToBoard` pair, in the same order, as
+  `StrategyBoard`'s first-headline path, so a board created from either entry
+  point is identical.
+- Removing unlinks only. The board and its headlines survive, so re-adding a
+  prospect restores its strategy rather than starting over.
+- With nothing added the page shows an empty state instead of choosing a
+  prospect on the user's behalf.
+- `AddProspectModal` is gone from this page but still serves `/leads` and
+  `/prospects`; its `onCreated` prop is optional, so nothing broke there.
+
+The selector also carried the implicit-highlight bug fixed in PR #20 for the
+modal combobox: `activeIndex` defaulted to `0` and reset to `0` on every
+keystroke, so typing a company name and pressing Enter committed whichever row
+matched first. It starts at `-1` now; `filtered[-1]` is `undefined`, so Enter
+falls through unless a row was arrowed onto or hovered.
+
+### Task due dates default to today
+
+New tasks defaulted a week out. They now default to the current date.
+
+The same line also used `toISOString()`, which is UTC: a task added at 00:30 on
+15 January would have defaulted to the 14th. It now builds the date from local
+components, matching `isoDate` in `lib/db/board-metrics.ts` and the warning at
+`lib/db/events.ts`. `AddTaskModal` is the only task-creation path — both
+`/tasks` and the per-colleague view use it — so the one change covers
+everything.
+
+### The orphaned migration is recorded
+
+`20260906120000_meeting_booked_reversed.sql` had been applied in production
+since 2026-09-06 — enum value present, row in
+`supabase_migrations.schema_migrations` — but the file was never committed on
+any branch. The repo could not reproduce the database it deploys against: a
+fresh `db:push` into a new environment would have built a `crm_event_kind`
+missing a value production has. Same class of drift as the `strategy_boards`
+incident on the 9th, pointing the other way.
+
+The value is unused, and deliberately so. It belonged to a reversal design that
+emitted a `meeting_booked_reversed` event and netted it in the weekly counters.
+That approach was abandoned: `meeting_booked_status` is derived from the
+prospect's current stage instead. `crossedOutOf` and `foldReversals`, which the
+migration's own note points at, were never written and exist on no branch.
+Nothing emits the value, nothing reads it, and no row carries it.
+
+Committed rather than deleted because Postgres cannot drop an enum value
+without rebuilding the type — production keeps it either way, so removing the
+file would only make the drift permanent and undocumented. `npm run db:status`
+now reports the remote as up to date with the file present. The
+`meeting_booked_status` description further down was corrected at the same
+time: it claimed the event had been added to `events.ts` and that the status
+compares latest-booking against latest-reversal. Neither was true.
+
+### Working tree and branch hygiene
+
+The local branch had drifted six commits behind `master`, so `git status`
+showed fourteen entries of which eight were phantoms — files byte-identical to
+already-merged work, flagged only because the branch predated those merges.
+Fast-forwarding cleared it to zero. Worth repeating after each merge rather
+than letting it accumulate, since a noisy status hides real changes: the
+combobox fix in PR #20 was found buried among what looked like line-ending
+noise.
+
+A related tell: PR #25 briefly appeared to be the stranded-commit trap
+documented below — GitHub reporting MERGED while `git merge-base
+--is-ancestor` disagreed. It was a stale local view of the remote, not a real
+strand. Fetch before concluding a merged PR did not land.
 
 ## Session update — prospect export connected in ChatGPT (2026-09-10)
 
@@ -1683,6 +1769,7 @@ Actions:
 - `addNote`, `dismissNote`, `applyNote`, `deleteNote` — note management; apply updates matching opportunity, delete backs `NotesTimeline`'s per-entry delete button
 - `addStrategyColumn`, `renameStrategyColumn`, `removeStrategyColumn` — strategy headlines (removing one prunes its cards locally; the database cascades)
 - `moveStrategyCard`, `addStrategyCard` — strategy card management; a move resequences the destination lane so `order` stays dense
+- `createStrategyBoard`, `linkOpportunityToBoard`, `unlinkOpportunityFromBoard` — a board is a first-class record that one or more prospects link to via `strategyBoardOpportunities`. The strategy page derives its selector from those links, so a prospect appears there once added and not merely because it exists; `AddToStrategyModal` and `StrategyBoard`'s first-headline path both create a board with the same two calls in the same order. Unlinking leaves the board and its headlines intact
 - `addTask`, `toggleTaskComplete` — task management
 - `addCompany`, `updateCompany`, `addContact`, `updateContact` — company/contact records; `updateCompany` backs both `DetailDrawer`'s click-to-edit company-name field and `CompanyDrawer`'s click-to-edit enrichment fields (revenue/employeeCount/about); `updateContact` backs `DetailDrawer`'s contact-name field
 - `addLead`, `updateLead`, `removeLead` — the new lightweight Lead entity; `updateLead` backs `LeadDrawer`'s click-to-edit contact name/source/notes fields; `removeLead` is permanent, used both when a lead is promoted into a Prospect and when removed outright
