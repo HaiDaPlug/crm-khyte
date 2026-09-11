@@ -3,13 +3,13 @@
 import { useState, useMemo, useRef, useEffect, useId } from 'react'
 import { Topbar } from '@/components/layout/Topbar'
 import { StrategyBoard } from '@/components/crm/StrategyBoard'
-import { AddProspectModal } from '@/components/crm/AddProspectModal'
+import { AddToStrategyModal } from '@/components/crm/AddToStrategyModal'
 import { LinkProspectsModal } from '@/components/crm/LinkProspectsModal'
 import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useBoardIdForOpportunity } from '@/lib/hooks/useBoardIdForOpportunity'
-import { ChevronDown, Link2, Plus, Search } from 'lucide-react'
+import { ChevronDown, Link2, Plus, Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
@@ -20,21 +20,41 @@ export default function StrategyPage() {
   const opportunities = useCRMStore((s) => s.opportunities)
   const companies = useCRMStore((s) => s.companies)
   const strategyBoardOpportunities = useCRMStore((s) => s.strategyBoardOpportunities)
+  const unlinkOpportunityFromBoard = useCRMStore((s) => s.unlinkOpportunityFromBoard)
 
-  const [selectedOpportunityId, setSelectedOpportunityId] = useState(opportunities[1]?.id ?? opportunities[0]?.id)
+  // Undefined until a prospect is actually in strategy. Deliberately not
+  // seeded from opportunities[1] as before: that silently opened a board for
+  // whichever prospect happened to be second in the CRM, which is what made
+  // "added to strategy" indistinguishable from "exists at all".
+  const [selectedOpportunityId, setSelectedOpportunityId] = useState<string | undefined>(undefined)
   const [dropdownOpen, setDropdownOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const [activeIndex, setActiveIndex] = useState(0)
-  const [addProspectOpen, setAddProspectOpen] = useState(false)
+  // -1 is "nothing highlighted", so Enter on a typed query cannot commit a row
+  // the user never chose — same fix as the combobox in FormFields.tsx.
+  const [activeIndex, setActiveIndex] = useState(-1)
+  const [addToStrategyOpen, setAddToStrategyOpen] = useState(false)
   const [linkProspectsOpen, setLinkProspectsOpen] = useState(false)
 
   const searchInputId = useId()
   const searchInputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
 
+  /**
+   * The prospects actually in strategy — the roster this page is about.
+   *
+   * Sourced from strategyBoardOpportunities rather than opportunities: a
+   * prospect belongs here once it has been added to a board, not merely
+   * because it exists. Without this the selector listed every prospect in the
+   * CRM and "add to strategy" had nothing to mean.
+   */
+  const strategyOpportunities = useMemo(() => {
+    const linked = new Set(strategyBoardOpportunities.map((l) => l.opportunityId))
+    return opportunities.filter((o) => linked.has(o.id))
+  }, [opportunities, strategyBoardOpportunities])
+
   const selectedOpp = useMemo(
-    () => opportunities.find(o => o.id === selectedOpportunityId),
-    [selectedOpportunityId, opportunities]
+    () => strategyOpportunities.find(o => o.id === selectedOpportunityId),
+    [selectedOpportunityId, strategyOpportunities]
   )
 
   const selectedCompany = useMemo(
@@ -43,6 +63,14 @@ export default function StrategyPage() {
   )
 
   const boardId = useBoardIdForOpportunity(selectedOpportunityId ?? '')
+
+  // Follow the roster: select the first prospect once one exists, and let go
+  // of a selection whose prospect was removed from strategy, so the board
+  // below never renders against something no longer on the list.
+  useEffect(() => {
+    if (selectedOpportunityId && strategyOpportunities.some((o) => o.id === selectedOpportunityId)) return
+    setSelectedOpportunityId(strategyOpportunities[0]?.id)
+  }, [strategyOpportunities, selectedOpportunityId])
 
   // Other prospects sharing the currently-viewed board, company name only —
   // resolving stage/value here would be noise for what's meant to be a quick
@@ -61,24 +89,23 @@ export default function StrategyPage() {
 
   const q = query.trim().toLowerCase()
   const filteredOpportunities = useMemo(() => {
-    if (!q) return opportunities
-    return opportunities.filter((opp) => {
+    if (!q) return strategyOpportunities
+    return strategyOpportunities.filter((opp) => {
       const company = companies.find((c) => c.id === opp.companyId)
       return company?.name.toLowerCase().includes(q)
     })
-  }, [opportunities, companies, q])
+  }, [strategyOpportunities, companies, q])
 
-  // Typing changes what the list means, so a stale highlight could Enter into
-  // a row that's no longer under the cursor — same reasoning as the modal
-  // combobox in FormFields.tsx.
+  // Typing changes what the list means, so any highlight is stale — drop back
+  // to "nothing selected" rather than leaving a row armed for Enter.
   useEffect(() => {
-    setActiveIndex(0)
+    setActiveIndex(-1)
   }, [q])
 
   useEffect(() => {
     if (!dropdownOpen) {
       setQuery('')
-      setActiveIndex(0)
+      setActiveIndex(-1)
       return
     }
     // Autofocus the search field the moment the panel opens, so typing works
@@ -102,8 +129,11 @@ export default function StrategyPage() {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
       if (filteredOpportunities.length === 0) return
-      const delta = e.key === 'ArrowDown' ? 1 : -1
-      setActiveIndex((i) => (i + delta + filteredOpportunities.length) % filteredOpportunities.length)
+      setActiveIndex((i) => {
+        if (i === -1) return e.key === 'ArrowDown' ? 0 : filteredOpportunities.length - 1
+        const delta = e.key === 'ArrowDown' ? 1 : -1
+        return (i + delta + filteredOpportunities.length) % filteredOpportunities.length
+      })
       return
     }
     if (e.key === 'Enter') {
@@ -221,15 +251,28 @@ export default function StrategyPage() {
             )}
           </div>
 
-          <Button variant="secondary" size="sm" onClick={() => setAddProspectOpen(true)}>
+          <Button variant="secondary" size="sm" onClick={() => setAddToStrategyOpen(true)}>
             <Plus size={14} />
-            {t.strategy.newProspect}
+            {t.strategy.addToStrategy}
           </Button>
 
           {selectedOpp && (
             <Button variant="secondary" size="sm" onClick={() => setLinkProspectsOpen(true)}>
               <Link2 size={14} />
               {t.strategy.manageLinked}
+            </Button>
+          )}
+
+          {/* Unlinks only. The board and its headlines survive, so re-adding
+              the prospect brings its strategy back rather than starting over. */}
+          {selectedOpp && boardId && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => unlinkOpportunityFromBoard(boardId, selectedOpp.id)}
+            >
+              <X size={14} />
+              {t.strategy.removeFromStrategy}
             </Button>
           )}
           </div>
@@ -265,13 +308,24 @@ export default function StrategyPage() {
           </div>
         )}
 
-        <StrategyBoard opportunityId={selectedOpportunityId} />
+        {selectedOpportunityId ? (
+          <StrategyBoard opportunityId={selectedOpportunityId} />
+        ) : (
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border px-6 py-16 text-center animate-fade-in">
+            <p className="text-[17px] font-medium text-foreground">{t.strategy.emptyTitle}</p>
+            <p className="mt-2 max-w-[420px] text-[14px] leading-relaxed text-foreground/60">{t.strategy.emptyBody}</p>
+            <Button variant="secondary" size="sm" className="mt-5" onClick={() => setAddToStrategyOpen(true)}>
+              <Plus size={14} />
+              {t.strategy.addToStrategy}
+            </Button>
+          </div>
+        )}
       </main>
 
-      <AddProspectModal
-        open={addProspectOpen}
-        onClose={() => setAddProspectOpen(false)}
-        onCreated={(opportunityId) => setSelectedOpportunityId(opportunityId)}
+      <AddToStrategyModal
+        open={addToStrategyOpen}
+        onClose={() => setAddToStrategyOpen(false)}
+        onAdded={(opportunityId) => setSelectedOpportunityId(opportunityId)}
       />
 
       {selectedOpp && (
