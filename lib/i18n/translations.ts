@@ -269,6 +269,7 @@ const sv = {
     archiveEmpty: 'Arkivet är tomt',
     markComplete: (title: string) => `Markera som slutförd: ${title}`,
     markIncomplete: (title: string) => `Markera som aktiv: ${title}`,
+    reorder: (title: string) => `Dra för att ändra ordning: ${title}`,
     allColleagues: 'Alla',
   },
   crm: {
@@ -628,6 +629,7 @@ const en: Dictionary = {
     archiveLabel: 'Archive', restore: 'Restore', archiveEmpty: 'The archive is empty',
     markComplete: (title) => `Mark complete: ${title}`,
     markIncomplete: (title) => `Mark active: ${title}`,
+    reorder: (title) => `Drag to reorder: ${title}`,
     allColleagues: 'All',
   },
   crm: {

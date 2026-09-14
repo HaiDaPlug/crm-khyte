@@ -156,6 +156,13 @@ export interface CRMStore {
   addTask: (task: Task) => void
   toggleTaskComplete: (taskId: string) => void
   updateTask: (taskId: string, updates: Partial<Task>) => void
+  /**
+   * Reorders a task among the other open (or other completed) tasks, at
+   * `targetIndex` or at the end when omitted. `completed` moves it across
+   * the open/done line — the on-pace/overdue split within "open" stays
+   * automatic, driven by dueDate, so there is no column for this to name.
+   */
+  moveTask: (taskId: string, completed: boolean, targetIndex?: number) => void
   /** Files a task away without removing it. Pass `false` to restore. */
   archiveTask: (taskId: string, archived?: boolean) => void
   /** Permanent — for tasks created in error. Prefer archiveTask. */
@@ -851,17 +858,15 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         )
       },
 
+      // Routes through moveTask (filing the task at the end of its new
+      // bucket) rather than just flipping `completed` in place — the board
+      // now sorts each column by `order`, and leaving it unchanged here
+      // would let the task land on top of whichever task already holds that
+      // order in the bucket it just joined.
       toggleTaskComplete: (taskId) => {
         const task = get().tasks.find((t) => t.id === taskId)
         if (!task) return
-        const completed = !task.completed
-
-        set((state) => ({
-          tasks: state.tasks.map((t) => (t.id === taskId ? { ...t, completed } : t)),
-        }))
-        persist('Update task', { collection: 'tasks', id: taskId }, () =>
-          api.updateTask(taskId, { completed })
-        )
+        get().moveTask(taskId, !task.completed)
       },
 
       updateTask: (taskId, updates) => {
@@ -876,6 +881,40 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           () => api.updateTask(taskId, updates),
           'Task saved'
         )
+      },
+
+      moveTask: (taskId, completed, targetIndex) => {
+        const task = get().tasks.find((t) => t.id === taskId)
+        if (!task) return
+
+        // Rebuild the destination bucket (open vs. done, archived excluded)
+        // around the drop so `order` stays a dense 0..n-1 sequence — same
+        // reasoning as moveStrategyCard.
+        const bucket = get()
+          .tasks.filter(
+            (t) => t.completed === completed && !t.archivedAt && t.id !== taskId
+          )
+          .sort((a, b) => a.order - b.order)
+        bucket.splice(targetIndex ?? bucket.length, 0, { ...task, completed })
+
+        const moved = bucket
+          .map((t, order) =>
+            t.order === order && t.completed === completed && t.id !== taskId
+              ? null
+              : { ...t, completed, order }
+          )
+          .filter((t): t is Task => t !== null)
+        const byId = new Map(moved.map((t) => [t.id, t]))
+
+        set((state) => ({
+          tasks: state.tasks.map((t) => byId.get(t.id) ?? t),
+        }))
+
+        for (const t of moved) {
+          persist('Move task', { collection: 'tasks', id: t.id }, () =>
+            api.updateTask(t.id, { completed: t.completed, order: t.order })
+          )
+        }
       },
 
       archiveTask: (taskId, archived = true) => {

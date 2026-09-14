@@ -12,6 +12,7 @@ export const mockTasks: Task[] = [
     priority: 'high',
     assignee: 'hai',
     createdAt: '2026-03-24T10:00:00Z',
+    order: 0,
   },
   {
     id: 't2',
@@ -24,6 +25,7 @@ export const mockTasks: Task[] = [
     priority: 'high',
     assignee: 'erik',
     createdAt: '2026-03-22T15:00:00Z',
+    order: 1,
   },
   {
     id: 't3',
@@ -36,6 +38,7 @@ export const mockTasks: Task[] = [
     priority: 'medium',
     assignee: 'abdi',
     createdAt: '2026-03-18T09:00:00Z',
+    order: 2,
   },
   {
     id: 't4',
@@ -47,6 +50,7 @@ export const mockTasks: Task[] = [
     completed: false,
     priority: 'critical',
     createdAt: '2026-03-20T14:00:00Z',
+    order: 3,
   },
   {
     id: 't5',
@@ -58,6 +62,7 @@ export const mockTasks: Task[] = [
     completed: false,
     priority: 'low',
     createdAt: '2026-03-25T11:00:00Z',
+    order: 4,
   },
   {
     id: 't6',
@@ -69,6 +74,7 @@ export const mockTasks: Task[] = [
     completed: false,
     priority: 'high',
     createdAt: '2026-03-23T16:00:00Z',
+    order: 5,
   },
   {
     id: 't7',
@@ -80,6 +86,7 @@ export const mockTasks: Task[] = [
     completed: true,
     priority: 'high',
     createdAt: '2026-03-24T10:32:00Z',
+    order: 6,
   },
   {
     id: 't8',
@@ -89,5 +96,6 @@ export const mockTasks: Task[] = [
     completed: false,
     priority: 'medium',
     createdAt: '2026-03-25T09:00:00Z',
+    order: 7,
   },
 ]

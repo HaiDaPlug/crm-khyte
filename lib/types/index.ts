@@ -157,6 +157,8 @@ export interface Task {
   priority: Priority
   /** Who it's assigned to, from the fixed colleague roster. Unset = unassigned. */
   assignee?: ColleagueId
+  /** Position within its board column (on pace / overdue / completed). */
+  order: number
   createdAt: string
   /**
    * Set when the task is filed away. Archived tasks are still loaded and

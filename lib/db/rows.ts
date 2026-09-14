@@ -183,6 +183,7 @@ export interface TaskRow {
   priority: Priority
   assignee: ColleagueId | null
   archived_at: string | null
+  sort_order: number
   created_at: string
   updated_at: string
 }
