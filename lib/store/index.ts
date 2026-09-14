@@ -8,4 +8,4 @@
 
 export { CRMStoreProvider, useCRMStore } from './provider'
 export { createCRMStore } from './store'
-export type { CRMStore, CRMStoreApi } from './store'
+export type { CRMStore, CRMStoreApi, Toast } from './store'
