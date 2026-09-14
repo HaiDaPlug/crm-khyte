@@ -14,7 +14,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Task, Priority, ColleagueId } from '@/lib/types'
-import { priorityDot, priorityRamp } from '@/lib/stage-config'
+import { priorityDot, priorityRamp, priorityChip } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
 import { playCheckChime } from '@/lib/sound'
 import { useTranslations } from '@/lib/hooks/useTranslations'
@@ -182,16 +182,18 @@ function TaskItem({ task }: { task: Task }) {
         )}
 
         <div className="mt-2.5 flex flex-wrap items-center gap-x-3.5 gap-y-1.5">
-          {task.priority === 'critical' ? (
-            <span className="rounded-md bg-danger-muted px-1.5 py-0.5 text-[12px] font-mono font-semibold uppercase tracking-wide text-danger">
-              {t.priorities[task.priority]}
-            </span>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full" style={{ background: priorityDot[task.priority] }} />
-              <span className="text-[13.5px] text-foreground/65 font-mono">{t.priorities[task.priority]}</span>
-            </div>
-          )}
+          <span
+            className={cn(
+              'rounded-md px-1.5 py-0.5 text-[12px] font-mono tracking-wide',
+              task.priority === 'critical' && 'font-semibold uppercase'
+            )}
+            style={{
+              background: priorityChip[task.priority].background,
+              color: priorityChip[task.priority].text,
+            }}
+          >
+            {t.priorities[task.priority]}
+          </span>
           <div className={cn(
             'flex items-center gap-1.5 text-[13.5px] font-mono',
             isOverdue ? 'text-danger font-medium' : isToday ? 'text-accent' : 'text-foreground/65'

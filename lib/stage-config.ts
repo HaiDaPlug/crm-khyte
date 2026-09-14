@@ -73,3 +73,16 @@ export const priorityRamp: Record<Priority, { from: string; to: string }> = {
   high:     { from: '#D97430', to: '#F0954A' },
   critical: { from: '#C63F3F', to: '#E86767' },
 }
+
+/**
+ * The priority label as a tinted chip, one step up from `priorityDot`'s bare
+ * dot — every level gets its own color rather than only `critical` standing
+ * out against three identical gray ones. Fixed hex for the same reason as
+ * `priorityDot`/`stageDot`: has to read the same regardless of theme.
+ */
+export const priorityChip: Record<Priority, { background: string; text: string }> = {
+  low:      { background: 'rgba(76, 175, 114, 0.12)', text: '#3D9464' },
+  medium:   { background: 'rgba(212, 148, 60, 0.14)', text: '#B87B2E' },
+  high:     { background: 'rgba(224, 144, 64, 0.16)', text: '#C6702A' },
+  critical: { background: 'rgba(224, 82, 82, 0.14)',  text: '#D14545' },
+}
