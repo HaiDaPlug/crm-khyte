@@ -385,6 +385,7 @@ export function fromTaskRow(row: TaskRow): Task {
     priority: row.priority,
     ...(row.assignee ? { assignee: row.assignee } : {}),
     ...(row.archived_at ? { archivedAt: isoOrEmpty(row.archived_at) } : {}),
+    order: row.sort_order,
     createdAt: isoOrEmpty(row.created_at),
   }
 }
@@ -401,6 +402,7 @@ export function toTaskInsert(task: Task) {
     completed: task.completed,
     priority: task.priority,
     assignee: task.assignee ?? null,
+    sort_order: task.order,
     created_at: task.createdAt,
   }
 }
@@ -425,6 +427,7 @@ export function toTaskUpdate(updates: Partial<Task>) {
     // Same `in` treatment as assignee: un-archiving passes
     // `{ archivedAt: undefined }`, which must still reach the DB as null.
     ['archived_at', 'archivedAt' in updates ? (updates.archivedAt ?? null) : undefined],
+    ['sort_order', updates.order],
   ])
 }
 

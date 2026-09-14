@@ -2,6 +2,27 @@
 
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, LayoutGroup, useReducedMotion } from 'motion/react'
+import {
+  DndContext,
+  DragEndEvent,
+  DragOverlay,
+  DragOverEvent,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  pointerWithin,
+  DragStartEvent,
+  useSensor,
+  useSensors,
+  useDroppable,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 import { Button } from '@/components/crm/Button'
 import { AssigneePicker, ColorSlider, DateStepper } from '@/components/crm/FormFields'
 import { ConfirmDialog } from '@/components/crm/ConfirmDialog'
@@ -9,7 +30,7 @@ import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import {
   Check, Circle, AlertCircle, Calendar, Building2, Pencil,
-  Archive, Trash2, RotateCcw, ChevronDown,
+  Archive, Trash2, RotateCcw, ChevronDown, GripVertical,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -24,6 +45,13 @@ const STRIKE_MS = 320
 /** How long the row takes to fly to the completed column, in seconds. */
 const FLIGHT_S = 0.7
 const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'critical']
+
+// Hoisted so useSensor's identity is stable across renders — see the same
+// constants in PipelineBoard.tsx/StrategyBoard.tsx for why an inline object
+// here breaks a drag after its first dragOver.
+const MOUSE_ACTIVATION_CONSTRAINT = { distance: 6 }
+const TOUCH_ACTIVATION_CONSTRAINT = { delay: 250, tolerance: 8 }
+const KEYBOARD_SENSOR_OPTIONS = { coordinateGetter: sortableKeyboardCoordinates }
 
 function TaskItem({ task }: { task: Task }) {
   const { t } = useTranslations()
@@ -44,6 +72,16 @@ function TaskItem({ task }: { task: Task }) {
   const strikeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reduceMotion = useReducedMotion()
   const struck = task.completed || striking
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition: dndTransition,
+    isDragging,
+  } = useSortable({ id: task.id, disabled: editing })
+  const dragStyle = { transform: CSS.Transform.toString(transform), transition: dndTransition }
 
   useEffect(() => () => {
     if (strikeTimer.current) clearTimeout(strikeTimer.current)
@@ -82,17 +120,22 @@ function TaskItem({ task }: { task: Task }) {
 
   return (
     <motion.div
-      layout
+      ref={setNodeRef}
+      // A drag in flight is fully driven by dnd-kit's own transform — mixing
+      // it with the shared layoutId flight (used for the checkbox-triggered
+      // move into Completed) would fight it for the same transform property.
+      layout={!isDragging}
       layoutId={`task-${task.id}`}
       transition={{
         layout: { duration: FLIGHT_S, ease: [0.22, 1, 0.36, 1] },
       }}
       // Lifted only while in flight, so it passes over the column edges
       // instead of under them.
-      style={{ position: 'relative', zIndex: striking ? 30 : 0 }}
+      style={{ position: 'relative', zIndex: striking || isDragging ? 30 : 0, ...dragStyle }}
       className={cn(
         'relative flex items-start gap-3 bg-surface px-3 py-3.5 group transition-opacity duration-500 sm:px-4 sm:py-4',
-        task.completed && 'opacity-40'
+        task.completed && 'opacity-40',
+        isDragging && 'opacity-30 shadow-md'
       )}
     >
       {/* Critical tasks get a quiet edge marker — read in peripheral vision,
@@ -104,6 +147,24 @@ function TaskItem({ task }: { task: Task }) {
           style={{ background: priorityDot.critical }}
         />
       )}
+
+      {/* Handle-only drag: isolated with its own listeners rather than the
+          whole row, since the row already owns a click-to-edit affordance
+          and a checkbox — a press-and-hold anywhere would fight both. */}
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        aria-label={t.tasks.reorder(task.title)}
+        className={cn(
+          'mt-0.5 flex size-7 shrink-0 touch-manipulation cursor-grab items-center justify-center self-stretch rounded-lg text-foreground/30 active:cursor-grabbing',
+          'transition-opacity duration-150 hover:bg-surface-raised hover:text-foreground/60',
+          'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100',
+          '-ml-1'
+        )}
+      >
+        <GripVertical size={14} />
+      </button>
 
       <motion.button
         type="button"
@@ -418,22 +479,32 @@ const columnTone: Record<ColumnTone, { label: string; chip: string; border: stri
   },
 }
 
+/** Droppable id for each column — distinct from task ids so dnd-kit's
+ *  collision detection can tell "dropped on the column itself" (file at the
+ *  end) apart from "dropped on a specific card" (take that card's place). */
+type ColumnId = 'pace' | 'late' | 'done'
+
 function TaskColumn({
+  id,
   icon: Icon,
   label,
   tone,
   tasks,
+  isOver,
   onClear,
 }: {
+  id: ColumnId
   icon: LucideIcon
   label: string
   tone: ColumnTone
   tasks: Task[]
+  isOver: boolean
   /** Header action for filing the whole column away at once. */
   onClear?: () => void
 }) {
   const { t } = useTranslations()
   const c = columnTone[tone]
+  const { setNodeRef } = useDroppable({ id })
 
   return (
     <section className="min-w-0">
@@ -461,17 +532,26 @@ function TaskColumn({
       </div>
 
       <motion.div
+        ref={setNodeRef}
         layout
         transition={{ layout: { duration: FLIGHT_S, ease: [0.22, 1, 0.36, 1] } }}
-        className={cn('bg-surface border rounded-xl divide-y divide-border-subtle', c.border)}
-      >
-        {tasks.length === 0 ? (
-          <div className="h-[104px] flex items-center justify-center">
-            <p className="text-[13.5px] text-foreground/60">{t.tasks.noTasks}</p>
-          </div>
-        ) : (
-          tasks.map((task) => <TaskItem key={task.id} task={task} />)
+        className={cn(
+          'bg-surface border rounded-xl divide-y divide-border-subtle transition-colors duration-150',
+          c.border,
+          isOver && 'ring-1 ring-accent/30 border-accent/40'
         )}
+      >
+        <SortableContext items={tasks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+          {tasks.length === 0 ? (
+            <div className={cn('h-[104px] flex items-center justify-center', isOver && 'text-accent')}>
+              <p className="text-[13.5px] text-foreground/60">
+                {isOver ? t.crm.board.dropHere : t.tasks.noTasks}
+              </p>
+            </div>
+          ) : (
+            tasks.map((task) => <TaskItem key={task.id} task={task} />)
+          )}
+        </SortableContext>
       </motion.div>
     </section>
   )
@@ -487,7 +567,17 @@ function TaskColumn({
 export function TaskBoard({ tasks }: { tasks: Task[] }) {
   const { t } = useTranslations()
   const archiveTask = useCRMStore((s) => s.archiveTask)
+  const moveTask = useCRMStore((s) => s.moveTask)
+  const pauseRemoteSync = useCRMStore((s) => s.pauseRemoteSync)
+  const resumeRemoteSync = useCRMStore((s) => s.resumeRemoteSync)
   const [archiveOpen, setArchiveOpen] = useState(false)
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [overColumn, setOverColumn] = useState<ColumnId | null>(null)
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: MOUSE_ACTIVATION_CONSTRAINT }),
+    useSensor(TouchSensor, { activationConstraint: TOUCH_ACTIVATION_CONSTRAINT }),
+    useSensor(KeyboardSensor, KEYBOARD_SENSOR_OPTIONS)
+  )
 
   // Three buckets, matching the three columns. "On pace" is everything still
   // open and not yet past due — today's work and what's ahead of it — so the
@@ -495,7 +585,7 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
   const { onPace, late, completed, archived } = useMemo(() => {
     const now = new Date()
     const todayStr = now.toDateString()
-    const byDue = (a: Task, b: Task) => +new Date(a.dueDate) - +new Date(b.dueDate)
+    const byOrder = (a: Task, b: Task) => a.order - b.order
 
     const onPace: Task[] = []
     const late: Task[] = []
@@ -519,29 +609,143 @@ export function TaskBoard({ tasks }: { tasks: Task[] }) {
       else onPace.push(task)
     })
 
+    // `order` is shared across the whole "open" bucket (on-pace + overdue
+    // together — see moveTask), so both columns sort by it directly; a drag
+    // that crosses the on-pace/overdue line still lands in a sensible spot
+    // relative to its new neighbours.
     return {
-      onPace: onPace.sort(byDue),
-      late: late.sort(byDue),
-      completed,
+      onPace: onPace.sort(byOrder),
+      late: late.sort(byOrder),
+      completed: completed.sort(byOrder),
       archived: archived.sort((a, b) => (b.archivedAt ?? '').localeCompare(a.archivedAt ?? '')),
     }
   }, [tasks])
 
+  const columnTasks: Record<ColumnId, Task[]> = { pace: onPace, late, done: completed }
+  const columnOf = (taskId: string): ColumnId | null => {
+    if (onPace.some((t) => t.id === taskId)) return 'pace'
+    if (late.some((t) => t.id === taskId)) return 'late'
+    if (completed.some((t) => t.id === taskId)) return 'done'
+    return null
+  }
+
+  // A remote snapshot merged mid-drag would rebuild the columns around the
+  // task being held — dnd-kit is tracking a row the merge would replace.
+  // Held off for the length of the drag; both endings below resume it. Same
+  // pattern as PipelineBoard.tsx.
+  const handleDragStart = (event: DragStartEvent) => {
+    pauseRemoteSync()
+    setActiveId(event.active.id as string)
+  }
+
+  const handleDragOver = (event: DragOverEvent) => {
+    const { over } = event
+    if (!over) { setOverColumn(null); return }
+    const overId = over.id as string
+    if (overId === 'pace' || overId === 'late' || overId === 'done') {
+      setOverColumn(overId)
+    } else {
+      setOverColumn(columnOf(overId))
+    }
+  }
+
+  const handleDragCancel = () => {
+    resumeRemoteSync()
+    setActiveId(null)
+    setOverColumn(null)
+  }
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event
+    resumeRemoteSync()
+    setActiveId(null)
+    setOverColumn(null)
+    if (!over) return
+
+    const draggedId = active.id as string
+    const overId = over.id as string
+    const completedTarget = (col: ColumnId) => col === 'done'
+
+    // Dropped on a column itself — file it at the end of that column.
+    if (overId === 'pace' || overId === 'late' || overId === 'done') {
+      moveTask(draggedId, completedTarget(overId))
+      return
+    }
+
+    // Dropped on another task — take that task's place within its column.
+    const targetColumn = columnOf(overId)
+    if (!targetColumn || overId === draggedId) return
+    const lane = columnTasks[targetColumn].filter((t) => t.id !== draggedId)
+    const targetTask = lane.find((t) => t.id === overId)
+    moveTask(
+      draggedId,
+      completedTarget(targetColumn),
+      targetTask ? Math.max(lane.indexOf(targetTask), 0) : undefined
+    )
+  }
+
+  const activeTask = activeId ? tasks.find((t) => t.id === activeId) ?? null : null
+
   return (
     <>
+      <DndContext
+        sensors={sensors}
+        // See the same switch in PipelineBoard.tsx/StrategyBoard.tsx:
+        // closestCorners scores every card in a column as its own collision
+        // candidate, so a long column out-scores every other column for the
+        // whole drag regardless of where the pointer actually is.
+        // pointerWithin hit-tests the pointer's real position instead.
+        collisionDetection={pointerWithin}
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragEnd={handleDragEnd}
+        onDragCancel={handleDragCancel}
+      >
       <LayoutGroup>
         <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3 lg:gap-5">
-          <TaskColumn icon={Circle} label={t.tasks.onPace} tone="pace" tasks={onPace} />
-          <TaskColumn icon={AlertCircle} label={t.tasks.overdue} tone="late" tasks={late} />
           <TaskColumn
+            id="pace"
+            icon={Circle}
+            label={t.tasks.onPace}
+            tone="pace"
+            tasks={onPace}
+            isOver={overColumn === 'pace' && activeId !== null}
+          />
+          <TaskColumn
+            id="late"
+            icon={AlertCircle}
+            label={t.tasks.overdue}
+            tone="late"
+            tasks={late}
+            isOver={overColumn === 'late' && activeId !== null}
+          />
+          <TaskColumn
+            id="done"
             icon={Check}
             label={t.tasks.completed}
             tone="done"
             tasks={completed}
+            isOver={overColumn === 'done' && activeId !== null}
             onClear={() => completed.forEach((task) => archiveTask(task.id))}
           />
         </div>
       </LayoutGroup>
+
+      <DragOverlay>
+        {activeTask ? (
+          <div
+            className={cn(
+              'flex items-start gap-3 rounded-xl border border-accent/30 bg-surface px-3 py-3.5 shadow-lg sm:px-4 sm:py-4',
+            )}
+          >
+            <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border-2 border-border" />
+            <p className="text-[15px] font-medium leading-snug text-foreground">
+              {activeTask.title}
+            </p>
+          </div>
+        ) : null}
+      </DragOverlay>
+      </DndContext>
 
       {/* The archive: a drawer rather than a fourth column, because it is a
           place you visit to undo something, not part of the daily read. */}
