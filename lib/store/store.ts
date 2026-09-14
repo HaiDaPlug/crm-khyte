@@ -15,8 +15,15 @@ import {
   AppLanguage,
 } from '@/lib/types'
 import { DEFAULT_SETTINGS } from '@/lib/settings'
+import { newId } from '@/lib/utils'
 import * as api from '@/app/actions/crm'
 import type { ActionResult } from '@/app/actions/crm'
+
+export interface Toast {
+  id: string
+  kind: 'success' | 'error'
+  message: string
+}
 
 /**
  * Client-side working set.
@@ -38,9 +45,9 @@ import type { ActionResult } from '@/app/actions/crm'
  *
  * Failures are not rolled back: yanking a card back across the board a second
  * after the user dropped it is worse than leaving it and reporting the problem.
- * A failed write lands in `syncError` instead; the value is set but nothing
- * renders it yet, so a failed save is currently visible only in the console.
- * Wiring it to a toast is the natural next step.
+ * A failed write pushes an error toast instead — see `toasts` — so the
+ * optimistic row stays in place, but the user gets a chance to notice and
+ * retry before the next snapshot merge quietly corrects it.
  */
 
 export interface CRMStore {
@@ -66,9 +73,16 @@ export interface CRMStore {
   tasks: Task[]
 
   // Sync state
-  /** Message from the most recent failed write, if any. */
-  syncError: string | null
-  clearSyncError: () => void
+  /**
+   * Feedback for writes with no other visible confirmation — a create, a
+   * delete, a form save. An error toast is added for every failed write, no
+   * matter what caused it; a success toast only for the writes that pass
+   * `successMessage` to `persist`, which excludes anything that already has
+   * its own optimistic feedback (a drag's motion, a checkbox's chime and
+   * strike) — stacking a toast on top of that would be noise, not signal.
+   */
+  toasts: Toast[]
+  dismissToast: (id: string) => void
   /**
    * Swaps the eight data collections for a freshly read snapshot, leaving
    * every piece of UI state (settings, sidebar, search) alone.
@@ -254,25 +268,121 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
   /** Depth, not a boolean: nested pauses must not resume early. */
   let syncPauseDepth = 0
 
+  /**
+   * Records that stayed the local answer the moment a merge last checked them.
+   *
+   * `pendingWrites` only protects a write that is still in flight. It cannot
+   * protect one that has already settled: a snapshot read can start before our
+   * write commits and still arrive back after `pendingWrites` has dropped to
+   * zero, carrying the pre-write row. Keying this by record rather than
+   * refusing the whole merge means one recently-touched task does not also
+   * freeze every unrelated row out of a legitimate update from someone else.
+   *
+   * Key is `${collection}:${id}`. Value is when the protection expires, set
+   * once a write settles successfully — 15s is comfortably past the 12s poll
+   * interval, so any poll that could have raced the write falls inside it and
+   * loses to the local row; the one after that reflects the write and agrees
+   * with it anyway.
+   */
+  const recentlyWonLocally = new Map<string, number>()
+  const LOCAL_WRITE_GRACE_MS = 15_000
+
+  function markRecent(collection: string, id: string): void {
+    recentlyWonLocally.set(`${collection}:${id}`, Date.now() + LOCAL_WRITE_GRACE_MS)
+  }
+
+  /**
+   * Keeps the local row for anything still inside its grace window instead of
+   * accepting whatever the incoming snapshot says — including a row the
+   * snapshot omits entirely, which is what an insert not yet visible to the
+   * poll's read looks like. Sweeps expired entries as it goes so the map
+   * cannot grow without bound.
+   */
+  function mergeCollection<T extends { id: string }>(
+    collection: string,
+    local: T[],
+    incoming: T[]
+  ): T[] {
+    const now = Date.now()
+    const localById = new Map(local.map((row) => [row.id, row]))
+    const incomingIds = new Set(incoming.map((row) => row.id))
+    const merged: T[] = []
+
+    for (const row of incoming) {
+      const key = `${collection}:${row.id}`
+      const expiry = recentlyWonLocally.get(key)
+      if (expiry !== undefined) {
+        if (expiry <= now) {
+          recentlyWonLocally.delete(key)
+        } else {
+          const localRow = localById.get(row.id)
+          merged.push(localRow ?? row)
+          continue
+        }
+      }
+      merged.push(row)
+    }
+
+    // A local row the incoming snapshot doesn't have at all: only kept while
+    // its own grace window holds, so a row genuinely deleted elsewhere still
+    // disappears once that window lapses rather than lingering forever.
+    for (const row of local) {
+      if (incomingIds.has(row.id)) continue
+      const key = `${collection}:${row.id}`
+      const expiry = recentlyWonLocally.get(key)
+      if (expiry !== undefined && expiry > now) merged.push(row)
+    }
+
+    return merged
+  }
+
   return createStore<CRMStore>()((set, get) => {
+    function pushToast(kind: Toast['kind'], message: string): void {
+      set((state) => ({ toasts: [...state.toasts, { id: newId(), kind, message }] }))
+    }
+
     /**
      * Fire a write without blocking the caller, recording any failure.
      * Deliberately not awaited — the optimistic update has already landed.
+     *
+     * `recordId` is the collection name and row id this write touches, when it
+     * touches exactly one row — pass `null` for anything else (a positional
+     * reorder that persists several rows one call each already passes each
+     * row's own id; a join-table link/unlink degrades gracefully to the coarse
+     * `pendingWrites` guard since it has no single `id`).
+     *
+     * `successMessage` is opt-in: most callers pass `undefined` because the
+     * action already shows its own feedback (a drag's motion, a checkbox's
+     * chime and strike) and a toast on top would just be noise. Pass a
+     * message only for a write with nothing else confirming it landed — a
+     * create, a delete, a form save.
      */
-    function persist(label: string, run: () => Promise<ActionResult>): void {
+    function persist(
+      label: string,
+      recordId: { collection: string; id: string } | null,
+      run: () => Promise<ActionResult>,
+      successMessage?: string
+    ): void {
       pendingWrites += 1
       writeQueue = writeQueue
         .then(run)
         .then((result) => {
           if (!result.ok) {
-            set({ syncError: `${label} — ${result.error}` })
+            pushToast('error', `${label} — ${result.error}`)
+            return
           }
+          // Only a successful write earns protection — a failed one has
+          // nothing on the server to defend, and holding the optimistic row
+          // in place would hide the failure instead of letting the next
+          // merge quietly correct it.
+          if (recordId) markRecent(recordId.collection, recordId.id)
+          if (successMessage) pushToast('success', successMessage)
         })
         // Swallow here so one failed write does not poison every write after it.
         .catch((cause: unknown) => {
           const message = cause instanceof Error ? cause.message : String(cause)
           console.error(`[khyte] ${label} failed:`, message)
-          set({ syncError: `${label} — ${message}` })
+          pushToast('error', `${label} — ${message}`)
         })
         .finally(() => {
           pendingWrites -= 1
@@ -342,9 +452,10 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       tasks: snapshot.tasks,
 
       // Sync state
-      syncError: null,
+      toasts: [],
 
-      clearSyncError: () => set({ syncError: null }),
+      dismissToast: (id) =>
+        set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
       applyRemoteSnapshot: (snapshot) => {
         // A write of our own is still in the air. The snapshot on the wire was
@@ -358,20 +469,29 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         if (syncPauseDepth > 0) return false
 
         // Only the data collections. Settings, sidebar, search query and
-        // syncError belong to this browser, not to the database, and a merge
+        // toasts belong to this browser, not to the database, and a merge
         // that reset the user's filters every time a colleague saved something
         // would be worse than no sync at all.
+        //
+        // Per-record, not a wholesale swap: `pendingWrites` above only catches
+        // a write still in flight. One that already settled can still lose to
+        // a poll whose read started before it committed, and a blind overwrite
+        // here would silently revert that write on screen with nothing to
+        // explain why — see markRecent/mergeCollection.
+        const state = get()
         set({
-          companies: snapshot.companies,
-          contacts: snapshot.contacts,
-          opportunities: snapshot.opportunities,
-          leads: snapshot.leads,
-          notes: snapshot.notes,
-          strategyBoards: snapshot.strategyBoards,
+          companies: mergeCollection('companies', state.companies, snapshot.companies),
+          contacts: mergeCollection('contacts', state.contacts, snapshot.contacts),
+          opportunities: mergeCollection('opportunities', state.opportunities, snapshot.opportunities),
+          leads: mergeCollection('leads', state.leads, snapshot.leads),
+          notes: mergeCollection('notes', state.notes, snapshot.notes),
+          strategyBoards: mergeCollection('strategyBoards', state.strategyBoards, snapshot.strategyBoards),
+          // No single `id` to key protection on — falls back to whatever
+          // pendingWrites already caught, same as before this change.
           strategyBoardOpportunities: snapshot.strategyBoardOpportunities,
-          strategyColumns: snapshot.strategyColumns,
-          strategyCards: snapshot.strategyCards,
-          tasks: snapshot.tasks,
+          strategyColumns: mergeCollection('strategyColumns', state.strategyColumns, snapshot.strategyColumns),
+          strategyCards: mergeCollection('strategyCards', state.strategyCards, snapshot.strategyCards),
+          tasks: mergeCollection('tasks', state.tasks, snapshot.tasks),
         })
 
         return true
@@ -398,7 +518,12 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         const stageSiblings = get().opportunities.filter((o) => o.stage === opportunity.stage)
         const placed = { ...opportunity, order: stageSiblings.length }
         set((state) => ({ opportunities: [placed, ...state.opportunities] }))
-        persist('Save lead', () => api.createOpportunity(placed))
+        persist(
+          'Save lead',
+          { collection: 'opportunities', id: placed.id },
+          () => api.createOpportunity(placed),
+          'Prospect created'
+        )
       },
 
       // Leads enter the board at 'New' by default — or straight into a given
@@ -412,7 +537,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             o.id === opportunityId ? { ...o, inPipeline: true, stage, order } : o
           ),
         }))
-        persist('Add to pipeline', () =>
+        persist('Add to pipeline', { collection: 'opportunities', id: opportunityId }, () =>
           api.updateOpportunity(opportunityId, { inPipeline: true, stage, order })
         )
       },
@@ -443,7 +568,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         }))
 
         for (const o of moved) {
-          persist('Move stage', () =>
+          persist('Move stage', { collection: 'opportunities', id: o.id }, () =>
             api.updateOpportunity(o.id, { stage: o.stage, order: o.order })
           )
         }
@@ -455,7 +580,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             o.id === opportunityId ? { ...o, ...updates } : o
           ),
         }))
-        persist('Update lead', () => api.updateOpportunity(opportunityId, updates))
+        persist('Update lead', { collection: 'opportunities', id: opportunityId }, () =>
+          api.updateOpportunity(opportunityId, updates)
+        )
       },
 
       // The database cascades notes; the local set has to be pruned by hand or
@@ -499,13 +626,13 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             ),
           }
         })
-        persist('Delete prospect', () => api.deleteOpportunity(opportunityId))
+        persist('Delete prospect', null, () => api.deleteOpportunity(opportunityId), 'Prospect deleted')
       },
 
       // Notes
       addNote: (note) => {
         set((state) => ({ notes: [note, ...state.notes] }))
-        persist('Save note', () => api.createNote(note))
+        persist('Save note', { collection: 'notes', id: note.id }, () => api.createNote(note))
       },
 
       dismissNote: (noteId) => {
@@ -514,7 +641,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             n.id === noteId ? { ...n, dismissed: true } : n
           ),
         }))
-        persist('Dismiss note', () => api.updateNote(noteId, { dismissed: true }))
+        persist('Dismiss note', { collection: 'notes', id: noteId }, () =>
+          api.updateNote(noteId, { dismissed: true })
+        )
       },
 
       applyNote: (noteId) => {
@@ -557,9 +686,11 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
 
-        persist('Apply note', () => api.updateNote(noteId, { applied: true }))
+        persist('Apply note', { collection: 'notes', id: noteId }, () =>
+          api.updateNote(noteId, { applied: true })
+        )
         if (targetId && Object.keys(changes).length > 0) {
-          persist('Apply note to lead', () =>
+          persist('Apply note to lead', { collection: 'opportunities', id: targetId }, () =>
             api.updateOpportunity(targetId!, changes)
           )
         }
@@ -567,13 +698,15 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
       deleteNote: (noteId) => {
         set((state) => ({ notes: state.notes.filter((n) => n.id !== noteId) }))
-        persist('Delete note', () => api.deleteNote(noteId))
+        persist('Delete note', null, () => api.deleteNote(noteId))
       },
 
       // Strategy
       createStrategyBoard: (board) => {
         set((state) => ({ strategyBoards: [...state.strategyBoards, board] }))
-        persist('Create board', () => api.createStrategyBoard(board))
+        persist('Create board', { collection: 'strategyBoards', id: board.id }, () =>
+          api.createStrategyBoard(board)
+        )
       },
 
       linkOpportunityToBoard: (boardId, opportunityId) => {
@@ -589,7 +722,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
                 ],
               }
         )
-        persist('Link prospect', () => api.linkOpportunityToBoard(boardId, opportunityId))
+        persist('Link prospect', null, () => api.linkOpportunityToBoard(boardId, opportunityId))
       },
 
       unlinkOpportunityFromBoard: (boardId, opportunityId) => {
@@ -598,12 +731,16 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             (l) => !(l.boardId === boardId && l.opportunityId === opportunityId)
           ),
         }))
-        persist('Unlink prospect', () => api.unlinkOpportunityFromBoard(boardId, opportunityId))
+        persist('Unlink prospect', null, () =>
+          api.unlinkOpportunityFromBoard(boardId, opportunityId)
+        )
       },
 
       addStrategyColumn: (column) => {
         set((state) => ({ strategyColumns: [...state.strategyColumns, column] }))
-        persist('Save headline', () => api.createStrategyColumn(column))
+        persist('Save headline', { collection: 'strategyColumns', id: column.id }, () =>
+          api.createStrategyColumn(column)
+        )
       },
 
       renameStrategyColumn: (columnId, title) => {
@@ -612,7 +749,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             k.id === columnId ? { ...k, title } : k
           ),
         }))
-        persist('Rename headline', () =>
+        persist('Rename headline', { collection: 'strategyColumns', id: columnId }, () =>
           api.updateStrategyColumn(columnId, { title })
         )
       },
@@ -624,7 +761,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           strategyColumns: state.strategyColumns.filter((k) => k.id !== columnId),
           strategyCards: state.strategyCards.filter((c) => c.columnId !== columnId),
         }))
-        persist('Delete headline', () => api.deleteStrategyColumn(columnId))
+        persist('Delete headline', null, () => api.deleteStrategyColumn(columnId))
       },
 
       moveStrategyCard: (cardId, newColumnId, targetIndex) => {
@@ -652,7 +789,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         }))
 
         for (const c of moved) {
-          persist('Move strategy card', () =>
+          persist('Move strategy card', { collection: 'strategyCards', id: c.id }, () =>
             api.updateStrategyCard(c.id, { columnId: c.columnId, order: c.order })
           )
         }
@@ -660,7 +797,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
       addStrategyCard: (card) => {
         set((state) => ({ strategyCards: [...state.strategyCards, card] }))
-        persist('Save strategy card', () => api.createStrategyCard(card))
+        persist('Save strategy card', { collection: 'strategyCards', id: card.id }, () =>
+          api.createStrategyCard(card)
+        )
       },
 
       editStrategyCard: (cardId, content) => {
@@ -669,7 +808,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             c.id === cardId ? { ...c, content } : c
           ),
         }))
-        persist('Edit strategy card', () => api.updateStrategyCard(cardId, { content }))
+        persist('Edit strategy card', { collection: 'strategyCards', id: cardId }, () =>
+          api.updateStrategyCard(cardId, { content })
+        )
       },
 
       removeStrategyCard: (cardId) => {
@@ -691,9 +832,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             .map((c) => byId.get(c.id) ?? c),
         }))
 
-        persist('Delete strategy card', () => api.deleteStrategyCard(cardId))
+        persist('Delete strategy card', null, () => api.deleteStrategyCard(cardId))
         for (const c of remainingInLane) {
-          persist('Reorder strategy card', () =>
+          persist('Reorder strategy card', { collection: 'strategyCards', id: c.id }, () =>
             api.updateStrategyCard(c.id, { order: c.order })
           )
         }
@@ -702,7 +843,12 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       // Tasks
       addTask: (task) => {
         set((state) => ({ tasks: [task, ...state.tasks] }))
-        persist('Save task', () => api.createTask(task))
+        persist(
+          'Save task',
+          { collection: 'tasks', id: task.id },
+          () => api.createTask(task),
+          'Task created'
+        )
       },
 
       toggleTaskComplete: (taskId) => {
@@ -713,7 +859,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         set((state) => ({
           tasks: state.tasks.map((t) => (t.id === taskId ? { ...t, completed } : t)),
         }))
-        persist('Update task', () => api.updateTask(taskId, { completed }))
+        persist('Update task', { collection: 'tasks', id: taskId }, () =>
+          api.updateTask(taskId, { completed })
+        )
       },
 
       updateTask: (taskId, updates) => {
@@ -722,7 +870,12 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             t.id === taskId ? { ...t, ...updates } : t
           ),
         }))
-        persist('Update task', () => api.updateTask(taskId, updates))
+        persist(
+          'Update task',
+          { collection: 'tasks', id: taskId },
+          () => api.updateTask(taskId, updates),
+          'Task saved'
+        )
       },
 
       archiveTask: (taskId, archived = true) => {
@@ -730,18 +883,25 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         set((state) => ({
           tasks: state.tasks.map((t) => (t.id === taskId ? { ...t, archivedAt } : t)),
         }))
-        persist('Archive task', () => api.updateTask(taskId, { archivedAt }))
+        persist('Archive task', { collection: 'tasks', id: taskId }, () =>
+          api.updateTask(taskId, { archivedAt })
+        )
       },
 
       deleteTask: (taskId) => {
         set((state) => ({ tasks: state.tasks.filter((t) => t.id !== taskId) }))
-        persist('Delete task', () => api.deleteTask(taskId))
+        persist('Delete task', null, () => api.deleteTask(taskId), 'Task deleted')
       },
 
       // Companies & Contacts
       addCompany: (company) => {
         set((state) => ({ companies: [...state.companies, company] }))
-        persist('Save company', () => api.createCompany(company))
+        persist(
+          'Save company',
+          { collection: 'companies', id: company.id },
+          () => api.createCompany(company),
+          'Company created'
+        )
       },
 
       updateCompany: (companyId, updates) => {
@@ -750,12 +910,19 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             c.id === companyId ? { ...c, ...updates } : c
           ),
         }))
-        persist('Update company', () => api.updateCompany(companyId, updates))
+        persist('Update company', { collection: 'companies', id: companyId }, () =>
+          api.updateCompany(companyId, updates)
+        )
       },
 
       addContact: (contact) => {
         set((state) => ({ contacts: [...state.contacts, contact] }))
-        persist('Save contact', () => api.createContact(contact))
+        persist(
+          'Save contact',
+          { collection: 'contacts', id: contact.id },
+          () => api.createContact(contact),
+          'Contact created'
+        )
       },
 
       updateContact: (contactId, updates) => {
@@ -764,13 +931,20 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             c.id === contactId ? { ...c, ...updates } : c
           ),
         }))
-        persist('Update contact', () => api.updateContact(contactId, updates))
+        persist('Update contact', { collection: 'contacts', id: contactId }, () =>
+          api.updateContact(contactId, updates)
+        )
       },
 
       // Leads
       addLead: (lead) => {
         set((state) => ({ leads: [lead, ...state.leads] }))
-        persist('Save lead', () => api.createLead(lead))
+        persist(
+          'Save lead',
+          { collection: 'leads', id: lead.id },
+          () => api.createLead(lead),
+          'Lead created'
+        )
       },
 
       updateLead: (leadId, updates) => {
@@ -779,12 +953,14 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             l.id === leadId ? { ...l, ...updates } : l
           ),
         }))
-        persist('Update lead', () => api.updateLead(leadId, updates))
+        persist('Update lead', { collection: 'leads', id: leadId }, () =>
+          api.updateLead(leadId, updates)
+        )
       },
 
       removeLead: (leadId) => {
         set((state) => ({ leads: state.leads.filter((l) => l.id !== leadId) }))
-        persist('Remove lead', () => api.deleteLead(leadId))
+        persist('Remove lead', null, () => api.deleteLead(leadId), 'Lead removed')
       },
 
       // UI

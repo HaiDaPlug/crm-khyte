@@ -20,6 +20,10 @@ const sv = {
     search: 'Sök...',
     clearFilters: 'Rensa filter',
     clearSearch: 'Rensa sökningen',
+    saveFailed: 'Det gick inte att spara',
+    saved: 'Sparat',
+    created: 'Skapat',
+    deleted: 'Borttaget',
   },
   weeklyProgress: {
     of: 'av',
@@ -481,6 +485,10 @@ const en: Dictionary = {
     keepEditing: 'Keep editing', required: '(required)', autofilled: 'Autofilled',
     willBeCreated: 'Will be created', search: 'Search...', clearFilters: 'Clear filters',
     clearSearch: 'Clear search',
+    saveFailed: 'Failed to save',
+    saved: 'Saved',
+    created: 'Created',
+    deleted: 'Deleted',
   },
   weeklyProgress: {
     of: 'of',

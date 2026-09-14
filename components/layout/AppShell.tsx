@@ -9,6 +9,7 @@ import { AppSidebar } from './AppSidebar'
 import { MobileChrome } from './MobileChrome'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 import { SnapshotSync } from './SnapshotSync'
+import { Toasts } from './Toasts'
 
 /**
  * Root of the client tree.
@@ -30,6 +31,7 @@ export function AppShell({
   return (
     <CRMStoreProvider snapshot={snapshot}>
       <SnapshotSync version={version} />
+      <Toasts />
       <AppShellChrome>{children}</AppShellChrome>
     </CRMStoreProvider>
   )
