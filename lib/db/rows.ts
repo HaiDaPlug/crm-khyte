@@ -135,9 +135,11 @@ export interface GoalRow {
   title: string
   detail: string
   status: GoalStatus
+  /** Retired — see the Goal type and 20260915120000_goal_metric_current.sql. */
   progress: number | null
   target_date: string | null
   metric_kind: CrmEventKind | null
+  metric_current: number | null
   metric_target: number | null
   sort_order: number
   created_at: string

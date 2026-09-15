@@ -5,6 +5,7 @@ import { Topbar } from '@/components/layout/Topbar'
 import { requireSession } from '@/lib/auth/guard'
 import { loadGoals } from '@/lib/db/queries'
 import { goalPeriodFor, NO_DEADLINE_SORT_KEY } from '@/lib/goal-period'
+import { measureGoal } from '@/lib/goal-measure'
 import type { Goal, GoalStatus } from '@/lib/types'
 
 /**
@@ -100,7 +101,12 @@ export default async function GoalsTimelinePage() {
               >
                 <h3 className="label-mono mb-3">{group.label}</h3>
                 <ul className="flex flex-col gap-3">
-                  {group.goals.map((goal) => (
+                  {group.goals.map((goal) => {
+                    // No counts to pass: a `goal`-section row is never bound
+                    // to an event kind, so its number is always the typed one.
+                    const { current, target } = measureGoal(goal, {})
+
+                    return (
                     <li
                       key={goal.id}
                       className="flex items-start justify-between gap-4 rounded-lg border border-border-subtle bg-background-raised px-3.5 py-3"
@@ -117,9 +123,9 @@ export default async function GoalsTimelinePage() {
                       </div>
 
                       <div className="flex shrink-0 items-center gap-3">
-                        {goal.progress !== undefined && (
+                        {target !== undefined && (
                           <span className="font-mono text-[13px] tabular-nums text-foreground/60">
-                            {goal.progress}%
+                            {current}/{target}
                           </span>
                         )}
                         <span className="flex items-center gap-1.5 text-[13px] text-foreground/70">
@@ -131,7 +137,8 @@ export default async function GoalsTimelinePage() {
                         </span>
                       </div>
                     </li>
-                  ))}
+                    )
+                  })}
                 </ul>
               </section>
             ))}

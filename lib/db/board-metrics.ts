@@ -7,24 +7,32 @@ import { getDb } from './pg'
  *
  * Two kinds, and the distinction is the whole design:
  *
- *   CURRENT STATE — intäkt, kunder, pipeline, and (despite living under the
- *   'meeting_booked' metric key) möten bokade. Recomputed from `opportunities`
- *   on every read. Moving a deal out of Won lowers revenue again, exactly as
- *   moving a card out of Meeting Booked lowers that count again — the number
+ *   CURRENT STATE — intäkt, kunder, pipeline. Recomputed from `opportunities`
+ *   on every read. Moving a deal out of Won lowers revenue again — the number
  *   describes how things stand, not what once happened. No log involved.
  *
- *   EVENTS — prospects reached out, leads added. Counted from `crm_events`
- *   within the current week. "We contacted twelve prospects" stays true even
- *   after some of them go to Lost, because it describes something that
- *   happened, not where things stand now.
+ *   EVENTS — prospects reached out, leads added, meetings booked. Counted from
+ *   `crm_events` within the current week. "We contacted twelve prospects" stays
+ *   true even after some of them go to Lost, because it describes something
+ *   that happened, not where things stand now.
  *
- * meeting_booked used to be an EVENT — see loadMeetingsBookedNow for why it
- * moved. The `crm_events` rows for it are still written (lib/db/events.ts)
- * and still feed the export's dated history; they are simply no longer what
- * the live weekly card reads. Getting the two kinds the wrong way round is
- * the easy mistake elsewhere: a revenue figure counted from events would
- * never fall, and prospects-contacted read from current stages would drop
- * every time one progressed past Contacted.
+ * Getting the two kinds the wrong way round is the easy mistake: a revenue
+ * figure counted from events would never fall, and prospects-contacted read
+ * from current stages would drop every time one progressed past Contacted.
+ *
+ * meeting_booked spent a while as CURRENT STATE — a count of opportunities
+ * sitting in that stage — and moved back here on 2026-09-15. Two reasons. It
+ * is a weekly non-negotiable, and a stage occupancy count has no week in it:
+ * it never reset on Monday, so the target beside it was measuring nothing in
+ * particular. And `archiveFinishedWeeks` below always froze it from the event
+ * log, so a week on screen and the same week in `weekly_snapshots` were two
+ * different numbers. Both now read the log.
+ *
+ * The cost, accepted deliberately: a meeting booked on Monday and walked back
+ * on Wednesday still counts for that week. That is the same contract every
+ * other event kind here has — the work of booking it happened — and whether
+ * the booking held is what the pipeline and the export's
+ * `meeting_booked_status` column answer.
  */
 
 /** Monday 00:00 local, the start of the week a moment belongs to. */
@@ -80,60 +88,6 @@ export async function loadDerivedTotals(): Promise<DerivedTotals> {
     customers: Number(r.customers),
     pipeline: Number(r.pipeline),
   }
-}
-
-/**
- * How many opportunities are sitting at 'Meeting Booked' right now.
- *
- * Deliberately current state, not an event tally: the operator reading the
- * "Möten bokade" card wants it to agree with what the pipeline board shows in
- * that column at the same moment, not a running total of bookings made this
- * week regardless of what happened to them since. A card booked and then
- * walked back to Kontaktad should stop counting immediately, the same way a
- * deal leaving Won immediately lowers revenue in loadDerivedTotals above.
- *
- * `meeting_booked` events are still recorded (lib/db/events.ts) for the
- * export's dated history, but nothing here reads them — this is a straight
- * count of `opportunities.stage`.
- */
-export async function loadMeetingsBookedNow(): Promise<number> {
-  const sql = getDb()
-
-  const [row] = await sql`
-    select count(*) as total from opportunities where stage = 'Meeting Booked'
-  `
-  return Number((row as unknown as { total: string | number }).total)
-}
-
-/**
- * The same count, split by who currently owns each card.
- *
- * Attributed by `opportunities.followed_up_by` — the current owner — rather
- * than by colleague on a past event, because there is no "who booked it"
- * event this reads at all. A card with no owner falls under `unassigned`,
- * matching how `countEventsByColleagueSince` treats an event with none.
- */
-export async function loadMeetingsBookedNowByColleague(): Promise<Record<string, number>> {
-  const sql = getDb()
-
-  // followed_up_by is the crm_colleague enum, not text — coalescing it
-  // straight against the 'unassigned' literal fails with "invalid input value
-  // for enum crm_colleague" because Postgres tries to read the literal as
-  // that enum first. Casting to text before the coalesce is what
-  // countEventsByColleagueSince gets for free, since crm_events.colleague is
-  // already plain text.
-  const rows = await sql`
-    select coalesce(followed_up_by::text, 'unassigned') as who, count(*) as total
-    from opportunities
-    where stage = 'Meeting Booked'
-    group by followed_up_by
-  `
-
-  const byWho: Record<string, number> = {}
-  for (const row of rows as unknown as Array<{ who: string; total: string | number }>) {
-    byWho[row.who] = Number(row.total)
-  }
-  return byWho
 }
 
 /**

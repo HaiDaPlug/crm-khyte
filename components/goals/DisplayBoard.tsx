@@ -1,5 +1,6 @@
 import type { ColleagueId, PersonalGoal, Goal, GoalMetric, GoalStatus } from '@/lib/types'
 import { colleagues } from '@/lib/colleagues'
+import { measureGoal } from '@/lib/goal-measure'
 
 /**
  * The wallpaper. Fills the screen, no chrome, no controls, no interactivity.
@@ -426,7 +427,18 @@ export function DisplayBoard({
           <section className="flex min-h-0 min-w-0 flex-col">
             <Label>{period}</Label>
             <ul className="flex flex-col">
-              {quarter.map((goal, i) => (
+              {quarter.map((goal, i) => {
+                // "X of Y", resolved by the same helper the editor and the
+                // timeline use. These rows are typed rather than counted —
+                // nothing in the CRM knows what "three external companies"
+                // means — but they are counts all the same, and they render
+                // identically to the counted ones a column over.
+                const { current, target, measured, percent } = measureGoal(
+                  goal,
+                  weeklyCounts
+                )
+
+                return (
                 <li
                   key={goal.id}
                   style={
@@ -465,22 +477,23 @@ export function DisplayBoard({
                     >
                       {goal.title}
                     </span>
-                    {goal.progress !== undefined && (
+                    {target !== undefined && (
                       <span
                         className="shrink-0 font-mono tabular-nums text-white/30"
                         style={{ fontSize: 'calc(0.8 * var(--u))' }}
                       >
-                        {goal.progress}%
+                        {current}/{target}
                       </span>
                     )}
                   </div>
-                  {goal.progress !== undefined && (
+                  {measured && (
                     <div style={{ marginTop: 'calc(0.9 * var(--u))' }}>
-                      <Bar value={goal.progress} />
+                      <Bar value={percent} />
                     </div>
                   )}
                 </li>
-              ))}
+                )
+              })}
             </ul>
           </section>
 
@@ -493,11 +506,10 @@ export function DisplayBoard({
               <Label>Denna vecka</Label>
               <ul className="flex flex-col">
                 {weekly.map((goal, i) => {
-                  const actual = goal.metricKind
-                    ? (weeklyCounts[goal.metricKind] ?? 0)
-                    : (goal.progress ?? 0)
-                  const target = goal.metricTarget
-                  const hit = target !== undefined && actual >= target
+                  const { current, target, measured, hit, percent } = measureGoal(
+                    goal,
+                    weeklyCounts
+                  )
 
                   return (
                     <li
@@ -536,15 +548,15 @@ export function DisplayBoard({
                             color: hit ? statusColor.on_track : '#FFFFFF',
                           }}
                         >
-                          {actual}
+                          {current}
                           {target !== undefined && (
                             <span className="text-[color:var(--dim)]">/{target}</span>
                           )}
                         </span>
                       </div>
-                      {target !== undefined && target > 0 && (
+                      {measured && (
                         <div style={{ marginTop: 'calc(0.9 * var(--u))' }}>
-                          <Bar value={(actual / target) * 100} />
+                          <Bar value={percent} />
                         </div>
                       )}
                     </li>

@@ -464,11 +464,12 @@ export function buildExportRows(
       /**
        * Whether a booked meeting is still true, read from where the deal is now.
        *
-       * Not from the log: meeting_booked's weekly card was changed to read
-       * current stage rather than an event tally (see loadMeetingsBookedNow in
-       * lib/db/board-metrics.ts), and this column answers the same underlying
-       * question — is the booking still standing — the same way, so the two
-       * cannot disagree. 'Won' and 'Lost' both count as 'standing': a meeting
+       * Not from the log, and deliberately unaffected by the weekly card going
+       * back to an event tally on 2026-09-15 (see the header on
+       * lib/db/board-metrics.ts). The two answer different questions and always
+       * did: the card counts bookings made this week, this column asks whether
+       * a particular booking still stands. 'Won' and 'Lost' both count as
+       * 'standing': a meeting
        * that led to a close, either way, is not one that got un-booked: it ran
        * its course. Anywhere else the deal has moved is a genuine reversal.
        */

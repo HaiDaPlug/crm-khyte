@@ -23,11 +23,11 @@ import { STAGES } from '@/lib/stage-config'
  * Moving backward records nothing, and moving forward again from below the
  * threshold counts once more, because that genuinely is a second booking.
  *
- * This event still gets recorded even though the "Möten bokade" weekly card no
- * longer reads it — see loadMeetingsBookedNow in ./board-metrics, which counts
- * opportunities currently at 'Meeting Booked' instead. The log stays useful
- * for the export's dated history (lib/export-prospects.ts) even where the
- * live dashboard number now comes from current state.
+ * The "Möten bokade" weekly card reads these rows again as of 2026-09-15,
+ * after a spell counting opportunities currently at 'Meeting Booked' instead —
+ * see the header on ./board-metrics for why that did not survive contact with
+ * a weekly target. The log also still feeds the export's dated history
+ * (lib/export-prospects.ts), as it did throughout.
  */
 
 export type CrmEventKind =

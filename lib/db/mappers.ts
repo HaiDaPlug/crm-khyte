@@ -445,6 +445,7 @@ export function fromGoalRow(row: GoalRow): Goal {
     ...(row.progress === null ? {} : { progress: row.progress }),
     ...(row.target_date ? { targetDate: dateOrEmpty(row.target_date) } : {}),
     ...(row.metric_kind === null ? {} : { metricKind: row.metric_kind }),
+    ...(row.metric_current === null ? {} : { metricCurrent: row.metric_current }),
     ...(row.metric_target === null ? {} : { metricTarget: row.metric_target }),
     order: row.sort_order,
   }
@@ -460,6 +461,7 @@ export function toGoalInsert(goal: Goal) {
     progress: goal.progress ?? null,
     target_date: nullIfBlank(goal.targetDate),
     metric_kind: goal.metricKind ?? null,
+    metric_current: goal.metricCurrent ?? null,
     metric_target: goal.metricTarget ?? null,
     sort_order: goal.order,
   }
@@ -483,6 +485,12 @@ export function toGoalUpdate(updates: Partial<Goal>) {
     // Same `in` treatment: clearing a counted metric passes the key undefined
     // and must reach the DB as null, turning the goal back into a manual one.
     ['metric_kind', 'metricKind' in updates ? (updates.metricKind ?? null) : undefined],
+    // Same `in` treatment again: emptying the "Nu" field passes the key with
+    // undefined and must reach the DB as null, not be skipped as "unchanged".
+    [
+      'metric_current',
+      'metricCurrent' in updates ? (updates.metricCurrent ?? null) : undefined,
+    ],
     [
       'metric_target',
       'metricTarget' in updates ? (updates.metricTarget ?? null) : undefined,

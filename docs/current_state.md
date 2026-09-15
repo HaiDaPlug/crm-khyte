@@ -166,6 +166,11 @@ the direction board: `20260828120000_personal_goals` (renames `focus_items`,
 adds `target_date` and `progress`), `20260828140000_crm_events` (the activity
 log and the weekly archive) and `20260828140100_weekly_goal_section` (the
 `weekly` goal section plus `metric_kind`/`metric_target`) — all applied.
+`20260915120000_goal_metric_current` adds `goals.metric_current`, the X in
+"X of Y" for a goal nothing counts automatically, and retires `progress`
+**without dropping it** — the column is still mapped and still read for the
+editor's "tidigare uppskattning" hint, and a migration landing ahead of the
+code that reads its column is how this CRM went down once already.
 
 **The board's numbers are now computed, not typed.** Revenue, customers and
 pipeline are recomputed from `opportunities` on every read, and the weekly
@@ -224,7 +229,7 @@ every prospect carried a follow-up nobody had chosen; it now opens empty and
 blank dates render as `—` wherever they appear. |
 | `/pipeline` | Functional | Nine-stage dnd-kit kanban with mouse, delayed long-press touch and keyboard sensors. Mobile columns snap horizontally, expose a next-column peek/edge cue, and use natural page height instead of a locked viewport. Active value, drop feedback, off-board picker, background panning and drag-edge auto-scroll remain intact. Source data is Opportunities (Prospects), not the new Leads. |
 | `/strategy` | Functional | Opportunity selector + per-deal strategy board with add/rename/delete. The selector, summary and empty state reflow on phones; board columns snap/peek horizontally, touch actions stay visible, and drag supports mouse, long-press touch and keyboard input. |
-| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, one merged **`goal`** family (former `annual`+`quarter`, each with an optional `targetDate` — see Goals timeline below), weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. **Weekly non-negotiables now show their live count** beside the target, resolved exactly as `DisplayBoard` resolves it — the page had been handed `weeklyCounts` all along and rendered none of it, so a week of recorded outreach was invisible here no matter how often you reloaded. The page also keeps itself current now rather than freezing at first render; see Direction editor live updates below. Top of the page carries the copyable wallpaper links, one per colleague, plus a link to `/goals/timeline`. |
+| `/goals` | Functional | **Khyte-internal**, not a CRM feature — the company direction board. Structured editor (no canvas): optional north star, one merged **`goal`** family (former `annual`+`quarter`, each with an optional `targetDate` — see Goals timeline below), weekly non-negotiables, scoreboard, per-colleague personal goals, principles, "not now". Fields commit on blur and persist through `app/actions/goals.ts`; state is local to the component rather than in the CRM store, because goals are loaded by `loadGoals()` not `loadSnapshot()`. The scoreboard is **read-only for actuals** — it shows the figure the CRM computes and only the target is editable, because the board stopped reading `currentValue` when the figures became derived. Its three rows are fixed (Intäkt / Pipeline / Kunder), matched to `DisplayBoard` by label. A row is created on the **first keystroke** into its target field, not on blur — the other way round made the field impossible to type into on any database where `goal_metrics` was still empty (every fresh one), because the controlled input was pinned to `''` with an onChange that did nothing, so no target could ever be set and the board drew bare numbers with no bar. **Every goal is now "X of Y"** (2026-09-15): `Mål` rows carry a hand-entered `Nu`/`Mål` pair, weekly rows count their `Nu` from `crm_events`, and both resolve through `measureGoal()` in `lib/goal-measure.ts`. The hand-typed `progress` percentage is retired — a bare percentage has no denominator, so it could never be wrong and drifted from the day it was entered; "1 av 3" is a count a human typed but anyone can check. A goal still carrying an old estimate and no target shows it as a "tidigare uppskattning" hint until someone replaces it. The page also keeps itself current now rather than freezing at first render; see Direction editor live updates below. Top of the page carries the copyable wallpaper links, one per colleague, plus a link to `/goals/timeline`. |
 | `/goals/timeline` | Functional | New. Read view of every `goal`-family row, grouped by a period derived from its `targetDate` (see Goals timeline below) rather than by the `sort_order` the editor lists them in — the thing this page exists to answer is "what's coming up soonest", which the editor cannot show at all. No editing here; `GoalsEditor` already owns writes to these rows, and duplicating that would just be a second place the same field could go stale. |
 | `/goals/display/[colleague]` | Functional | The wallpaper. Fills the screen edge to edge (no letterboxing) with zero chrome, rendered outside `AppShell` and sized off a single `--u` unit blending `vw` and `vh`, so the composition scales whole to any monitor. Bento header: the wordmark left (scaled up, swapped from the bare K mark), three enlarged KPI tiles right with bolder eyebrow labels, a gradient divider beneath the header. The north star statement no longer renders here (see Goals timeline below — its section/editor/DB rows are untouched, it's just not drawn). Below the divider, three columns separated by hairline dividers between rows — the `goal` family's three soonest-by-date entries, this week's counted non-negotiables, and the viewer's own personal goals — every list hard-capped at three rows. Checks a version stamp every 5s and reloads only on change, with an unconditional 5-minute reload as backstop (`BoardRefresh.tsx`). Reachable with a session or a signed `?k=` display token. |
 | `/companies` | **Archived** | Not deleted — moved to `_archived/app/companies/page.tsx`, outside the `app/` tree so Next stops routing it. Not linked from the sidebar (`AppSidebar.tsx`'s `navItems`, shared with `MobileChrome.tsx`) either. `AddCompanyModal.tsx` and the companies mock data are untouched and now unused until the page is restored. Prior description, kept for when it comes back: responsive card grid with deal/contact counts and total value, search with localized no-result state, full-screen mobile detail dialog, three enrichment fields (revenue/employee count/about) — see Company enrichment fields below. |
@@ -1242,6 +1247,25 @@ easy mistake:
 Revenue counted from events would never fall; a meeting counter read from
 current stages would drop every time a deal progressed past Meeting Booked.
 
+**`meeting_booked` spent a while on the wrong side of that line and moved back
+on 2026-09-15.** It was briefly *current state* — a count of opportunities
+sitting in that stage, via a `loadMeetingsBookedNow()` that no longer exists.
+Two things broke. A stage-occupancy count has no week in it, so it never reset
+on Monday and the weekly target beside it was measuring nothing in particular;
+and `archiveFinishedWeeks` always froze the week from `crm_events` regardless,
+so the number on screen and the same week in `weekly_snapshots` were computed
+two different ways and could disagree badly. Both read the log now. The
+accepted cost: a meeting booked Monday and walked back Wednesday still counts
+for that week — the same contract every other event kind here has. Whether a
+given booking still stands is what the export's `meeting_booked_status` column
+answers, and that is still derived from current stage.
+
+One consequence worth knowing: `WeeklyProgress.today` for this kind is now a
+real day count rather than the same live number printed beside the week's. No
+CRM page shows it today — `/leads` and `/prospects` mount their cards on
+`lead_added` and `prospect_contacted` — so the change is visible only on
+`/goals` and the wallpaper.
+
 **Events are recorded server-side, inside the Server Action, after the write
 succeeds.** Never from the client store — every CRM mutation there is
 optimistic, so emitting from it would log activity that never reached the
@@ -1429,9 +1453,10 @@ had been returning `weeklyCounts` all along and `GoalsEditor` dropped it on the
 floor — the weekly rows rendered a title, an event kind and a target, with no
 actual. "3 av 15 möten" existed only on the wallpaper, so no amount of
 refreshing would have helped. Each weekly row now shows its live count beside
-the target, resolved exactly as `DisplayBoard` does (including the `progress`
-fallback for a row bound to no kind, rather than silently reading 0), and turns
-green on the same single signal.
+the target, and turns green on the same single signal. Resolution moved into
+`lib/goal-measure.ts` on 2026-09-15 — `measureGoal(goal, counts)` is now the
+one place the editor, the wallpaper and the timeline all resolve a goal's
+"X of Y", so no two surfaces can disagree about the same row.
 
 **`router.refresh()` here, unlike either loop above.** The wallpaper can afford
 `location.reload()` because it keeps no client state; the editor keeps a great
@@ -1491,7 +1516,7 @@ last regardless of how its key would otherwise sort.
 **`/goals/timeline` is a new read view**, grouping every `goal`-family row by
 that derived period, most-imminent group first. Deliberately not editable —
 `GoalsEditor` already owns writes to these rows in its one merged `Mål`
-section (title/status/progress/date, replacing the old two-column
+section (title/status/Nu/Mål/date, replacing the old two-column
 annual/quarter grid), and a second place to edit the same field would just be
 a second place it could go stale. The page exists for the one thing the editor
 cannot show: what's coming up soonest, since the editor lists rows in manual
@@ -1721,7 +1746,7 @@ on the `sounds` setting; the module itself does not read settings.
 - `ColleagueId` — `'erik' | 'abdi' | 'hai'`, the fixed assignment roster (see Tasks); metadata (name, avatar color) lives in `lib/colleagues.ts`, not this file
 - `Company` (with three new optional enrichment fields: `revenue?: number` — base-currency, same convention as `Opportunity.dealValue`; `employeeCount?: number`; `about?: string` — see Company enrichment fields above), `Contact`, `Opportunity` (with `inPipeline` — prospects only appear on the pipeline board once explicitly added, `followedUpBy?: ColleagueId` — who on the team is following this prospect up, `order: number` — position within its stage's column on the pipeline board, see Pipeline board interaction — and `lastInteraction` is now editable after creation, not just set once at capture time), `Lead` (new: `{ id, companyName (required), contactName?, connection?, source?, followedUpBy?: ColleagueId, priority, notes, createdAt }` — raw, unqualified interest with no company/contact/opportunity records until promoted to a Prospect, at which point the Lead row is deleted; `Lead.followedUpBy` means who *added* the lead, a different scope from `Opportunity.followedUpBy`'s "who's following it up"), `Note` (with `dismissed`/`applied` fields), `StrategyColumn`, `StrategyCard` (filed under `columnId`), `Task` (with optional `assignee?: ColleagueId`)
 - `PipelineStage`
-- **Direction board (Khyte-internal):** `GoalSection` — `'north_star' | 'goal' | 'weekly' | 'principle' | 'not_now'` (the former `'annual' | 'quarter'` pair is merged into one dated `'goal'` family — see Goals timeline above), a closed set because the wallpaper has fixed regions and a goal in an unknown section has nowhere to be drawn; `GoalStatus` — `'on_track' | 'at_risk' | 'off_track' | 'done'`; `MetricUnit` — `'currency' | 'number' | 'percent'`, a rendering hint rather than a stored format. `Goal` (`progress?` undefined means "no bar" — distinct from `0`, which draws an empty one; `targetDate?: string`, same convention as `PersonalGoal.targetDate`, only meaningful on the `goal` family), `GoalMetric` (`targetValue?` undefined means "just show the number"), `PersonalGoal` (keyed to a `ColleagueId`; carries an optional `targetDate` and `progress`, and is deliberately **not** linked to a company `Goal` — it is the operator's own life shown on their own wallpaper, not a contribution rolling up into a Khyte objective). `Goal` also carries `metricKind`/`metricTarget` for counted weekly rows. `CrmEventKind` names the four countable CRM actions. `GoalsSnapshot` bundles the rows plus `weeklyCounts` and `totals` for `loadGoals()` — deliberately **not** part of `CRMSnapshot`
+- **Direction board (Khyte-internal):** `GoalSection` — `'north_star' | 'goal' | 'weekly' | 'principle' | 'not_now'` (the former `'annual' | 'quarter'` pair is merged into one dated `'goal'` family — see Goals timeline above), a closed set because the wallpaper has fixed regions and a goal in an unknown section has nowhere to be drawn; `GoalStatus` — `'on_track' | 'at_risk' | 'off_track' | 'done'`; `MetricUnit` — `'currency' | 'number' | 'percent'`, a rendering hint rather than a stored format. `Goal` (`metricCurrent?`/`metricTarget?` are the "X of Y" every goal is measured as — no target means no bar, distinct from a target of `0`, which has no scale to draw against; `metricKind?` set means the X is counted from `crm_events` for the current week instead of read from `metricCurrent`; `progress?` is **retired** — a hand-typed 0–100 with no denominator, kept mapped only so the old estimate can be shown as a hint until a goal is given a real target; `targetDate?: string`, same convention as `PersonalGoal.targetDate`, only meaningful on the `goal` family), `GoalMetric` (`targetValue?` undefined means "just show the number"), `PersonalGoal` (keyed to a `ColleagueId`; carries an optional `targetDate` and an unused `progress`, and is deliberately **not** linked to a company `Goal` — it is the operator's own life shown on their own wallpaper, not a contribution rolling up into a Khyte objective). `CrmEventKind` names the four countable CRM actions. `GoalsSnapshot` bundles the rows plus `weeklyCounts` and `totals` for `loadGoals()` — deliberately **not** part of `CRMSnapshot`
 - `Settings` — display preferences (`theme`, `currency`, `locale`, `dateFormat`, `compactNumbers`), plus `CurrencyCode`, `LocaleCode`, `DateFormat`
 
 ### Design System — "Darkroom Operator"

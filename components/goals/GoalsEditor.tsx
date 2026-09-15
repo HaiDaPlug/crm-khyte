@@ -6,6 +6,7 @@ import { Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/crm/Button'
 import { inputClass } from '@/components/crm/FormFields'
 import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
+import { measureGoal } from '@/lib/goal-measure'
 import { cn } from '@/lib/utils'
 import type {
   ColleagueId,
@@ -53,7 +54,7 @@ const SECTION_HINTS: Record<GoalSection, string> = {
   north_star:
     'Valfri. Står under loggan på tavlan, max tre rader — längre text kapas.',
   goal:
-    'Årsmål och kvartalsmål i ett — sätt ett datum så hamnar målet rätt på /goals/timeline. De tre närmast i tid ritas på tavlan, resten sparas men syns bara i tidslinjen.',
+    'Årsmål och kvartalsmål i ett — sätt ett datum så hamnar målet rätt på /goals/timeline. Nu och Mål ger målet en stapel ("1 av 3"); utan mål ritas ingen. De tre närmast i tid ritas på tavlan, resten sparas men syns bara i tidslinjen.',
   weekly:
     'Räknas från aktivitet i Leads och Prospekt — kan inte skrivas in för hand. Veckan börjar om på måndagen och den gamla arkiveras.',
   principle: 'Hur ni arbetar. Sparas här — ritas inte på tavlan.',
@@ -73,12 +74,6 @@ const METRIC_KIND_LABELS: Record<CrmEventKind, string> = {
   prospect_contacted: 'Prospekt kontaktade',
   lead_added: 'Leads tillagda',
   deal_won: 'Affärer vunna',
-}
-
-const UNIT_LABELS: Record<MetricUnit, string> = {
-  currency: 'Valuta',
-  number: 'Antal',
-  percent: 'Procent',
 }
 
 /**
@@ -124,8 +119,11 @@ function formatDerived(value: number, unit: MetricUnit): string {
   return unit === 'currency' ? `${formatted} kr` : formatted
 }
 
-/** Sections that take a progress bar. A principle has no percentage. */
-const PROGRESS_SECTIONS: GoalSection[] = ['goal']
+/**
+ * Sections whose rows carry a number. A principle is not something you are
+ * 40% of the way through, so it gets a title and nothing else.
+ */
+const MEASURED_SECTIONS: GoalSection[] = ['goal']
 
 function SectionShell({
   title,
@@ -176,6 +174,53 @@ function RemoveButton({ onClick, label }: { onClick: () => void; label: string }
   )
 }
 
+/**
+ * A labelled whole-number field for one half of an "X of Y" pair.
+ *
+ * Empty is not zero, and keeping them apart is the whole job: an empty field
+ * means "no number here", which draws no bar, while a typed 0 means "measured,
+ * nothing yet", which draws an empty one. Both reach the DB differently — see
+ * the `in` treatment in toGoalUpdate.
+ *
+ * Draft on change, commit on blur, exactly like every other field on this page:
+ * one write per edit rather than one per keystroke.
+ */
+function NumberField({
+  label,
+  value,
+  placeholder,
+  onDraft,
+  onCommit,
+}: {
+  label: string
+  value: number | undefined
+  placeholder?: string
+  onDraft: (value: number | undefined) => void
+  onCommit: (value: number | undefined) => void
+}) {
+  const read = (raw: string) => (raw === '' ? undefined : Number(raw))
+
+  return (
+    <label className="flex items-center gap-2">
+      <span className="label-mono">{label}</span>
+      <input
+        type="number"
+        min={0}
+        className={cn(inputClass, 'h-9 w-24 text-[14px] tabular-nums')}
+        value={value ?? ''}
+        placeholder={placeholder}
+        onChange={(e) => onDraft(read(e.target.value))}
+        // Floored on commit rather than trusting the input's `min`, which
+        // browsers do not enforce on a typed value.
+        onBlur={(e) => {
+          const next = read(e.target.value)
+          onCommit(next === undefined ? undefined : Math.max(0, next || 0))
+        }}
+      />
+    </label>
+  )
+}
+
 export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
   // The live figures, so the editor shows the same numbers as the wallpaper
   // rather than a stale stored value the board no longer reads.
@@ -213,7 +258,10 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
       title: '',
       detail: '',
       status: 'on_track',
-      ...(PROGRESS_SECTIONS.includes(section) ? { progress: 0 } : {}),
+      // No measurement to begin with, deliberately: a goal nobody has put a
+      // number on draws no bar, and an empty "Mål" field is the prompt to put
+      // one there. Seeding 0 would have drawn a full-width empty bar instead,
+      // which reads as "measured, at zero".
       // A weekly row is counted, never typed, so it is born bound to an event
       // kind — an unbound one would show a number that never moves.
       ...(section === 'weekly'
@@ -237,26 +285,12 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
 
   // --- metrics -------------------------------------------------------------
 
-  const addMetric = () => {
-    const metric: GoalMetric = {
-      id: crypto.randomUUID(),
-      label: '',
-      currentValue: 0,
-      unit: 'number',
-      order: metrics.length,
-    }
-    setMetrics((prev) => [...prev, metric])
-    persist(() => api.createGoalMetric(metric))
-  }
-
+  // No add/remove here. The scoreboard's rows are fixed (SCOREBOARD_ROWS) —
+  // a row is created lazily the first time someone types a target into it, and
+  // there is nothing to delete because the row is the target.
   const editMetric = (id: string, updates: Partial<GoalMetric>) => {
     setMetrics((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m)))
     persist(() => api.updateGoalMetric(id, updates))
-  }
-
-  const removeMetric = (id: string) => {
-    setMetrics((prev) => prev.filter((m) => m.id !== id))
-    persist(() => api.deleteGoalMetric(id))
   }
 
   // --- focus ---------------------------------------------------------------
@@ -291,7 +325,7 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
 
   const renderGoalRows = (section: GoalSection) => {
     const rows = inSection(section)
-    const withProgress = PROGRESS_SECTIONS.includes(section)
+    const isMeasuredSection = MEASURED_SECTIONS.includes(section)
 
     if (rows.length === 0) {
       return (
@@ -320,7 +354,7 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                 onBlur={(e) => editGoal(goal.id, { title: e.target.value })}
               />
 
-              {withProgress && (
+              {isMeasuredSection && (
                 <div className="flex flex-wrap items-center gap-3">
                   <label className="flex items-center gap-2">
                     <span className="label-mono">Status</span>
@@ -339,33 +373,38 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                     </select>
                   </label>
 
-                  <label className="flex items-center gap-2">
-                    <span className="label-mono">Framsteg</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      className={cn(inputClass, 'h-9 w-20 text-[14px] tabular-nums')}
-                      value={goal.progress ?? 0}
-                      onChange={(e) =>
-                        setGoals((prev) =>
-                          prev.map((g) =>
-                            g.id === goal.id
-                              ? { ...g, progress: Number(e.target.value) }
-                              : g
-                          )
+                  {/* "X av Y", the same pair the weekly rows show — the only
+                      difference is that nothing counts these for you, so the
+                      left-hand number is typed. It is still a count rather
+                      than an estimate: "1 av 3 bolag" is checkable in a way
+                      "33 %" never was. */}
+                  <NumberField
+                    label="Nu"
+                    value={goal.metricCurrent}
+                    placeholder="—"
+                    onDraft={(next) =>
+                      setGoals((prev) =>
+                        prev.map((g) =>
+                          g.id === goal.id ? { ...g, metricCurrent: next } : g
                         )
-                      }
-                      onBlur={(e) =>
-                        editGoal(goal.id, {
-                          // Clamped here rather than trusting the input's min/max,
-                          // which browsers do not enforce on typed values.
-                          progress: Math.min(100, Math.max(0, Number(e.target.value) || 0)),
-                        })
-                      }
-                    />
-                    <span className="text-[13.5px] text-foreground/50">%</span>
-                  </label>
+                      )
+                    }
+                    onCommit={(next) => editGoal(goal.id, { metricCurrent: next })}
+                  />
+
+                  <NumberField
+                    label="Mål"
+                    value={goal.metricTarget}
+                    placeholder="—"
+                    onDraft={(next) =>
+                      setGoals((prev) =>
+                        prev.map((g) =>
+                          g.id === goal.id ? { ...g, metricTarget: next } : g
+                        )
+                      )
+                    }
+                    onCommit={(next) => editGoal(goal.id, { metricTarget: next })}
+                  />
 
                   {/* Deadline, not a picked cadence — the timeline derives
                       "Q3 2026" / "Vecka 35" / etc. from this rather than the
@@ -386,6 +425,22 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                   </label>
                 </div>
               )}
+
+              {/* The retired percentage, shown only while this goal has no
+                  target yet. It is the one record of what anyone thought at
+                  the time and it would otherwise vanish silently the moment
+                  the bar stopped being drawn from it — so it stays visible
+                  exactly where someone can translate it into a real Nu/Mål,
+                  and disappears as soon as they do. The column is kept, not
+                  dropped: see 20260915120000_goal_metric_current.sql. */}
+              {isMeasuredSection &&
+                goal.progress !== undefined &&
+                goal.metricTarget === undefined && (
+                  <p className="text-[12.5px] text-foreground/40">
+                    Tidigare uppskattning: {goal.progress} %. Sätt ett mål för att
+                    mäta på riktigt.
+                  </p>
+                )}
             </div>
             <RemoveButton onClick={() => removeGoal(goal.id)} label="Ta bort" />
           </li>
@@ -438,14 +493,10 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
         ) : (
           <ul className="flex flex-col gap-3">
             {inSection('weekly').map((goal) => {
-              // Counted, not typed — the same resolution DisplayBoard uses, so
-              // the editor and the wallpaper cannot disagree about the week.
-              // An unbound row falls back to `progress` exactly as the board
-              // does, rather than silently reading 0.
-              const actual = goal.metricKind
-                ? (counts[goal.metricKind] ?? 0)
-                : (goal.progress ?? 0)
-              const hit = goal.metricTarget !== undefined && actual >= goal.metricTarget
+              // Counted, not typed — resolved by the one helper the wallpaper
+              // and the timeline also use, so no two surfaces can disagree
+              // about the same goal. See lib/goal-measure.ts.
+              const { current, hit } = measureGoal(goal, counts)
 
               return (
                 <li key={goal.id} className="flex items-start gap-2">
@@ -489,7 +540,7 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                           hit ? 'text-success' : 'text-foreground'
                         )}
                       >
-                        {actual}
+                        {current}
                       </span>
                     </div>
                     <input
@@ -569,29 +620,36 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                     className={cn(inputClass, 'h-9 w-32 text-[14px] tabular-nums')}
                     value={metric?.targetValue ?? ''}
                     placeholder="—"
+                    // The row is created on the FIRST keystroke, not on blur.
+                    // It was the other way round, which made this field
+                    // impossible to type into on any database where
+                    // `goal_metrics` was still empty — every fresh one, since
+                    // nothing else creates these rows. `value` is bound to
+                    // `metric?.targetValue`, so with no row this is a
+                    // controlled input pinned to '' whose onChange did
+                    // nothing; React restored '' after each keypress and the
+                    // blur handler that would have created the row only ever
+                    // saw an empty string. No target could be set at all, so
+                    // the board drew bare numbers with no bar.
                     onChange={(e) => {
-                      if (!metric) return
                       const next =
                         e.target.value === '' ? undefined : Number(e.target.value)
-                      setMetrics((prev) =>
-                        prev.map((m) =>
-                          m.id === metric.id ? { ...m, targetValue: next } : m
-                        )
-                      )
-                    }}
-                    onBlur={(e) => {
-                      const next =
-                        e.target.value === '' ? undefined : Number(e.target.value)
+
                       if (metric) {
-                        // Empty means "no target", which must reach the DB as
-                        // null — 0 would draw an empty bar instead of none.
-                        editMetric(metric.id, { targetValue: next })
+                        setMetrics((prev) =>
+                          prev.map((m) =>
+                            m.id === metric.id ? { ...m, targetValue: next } : m
+                          )
+                        )
                         return
                       }
-                      // No row for this metric yet: create one so the target
-                      // has somewhere to live. The label is what DisplayBoard
-                      // matches on, so it has to be exactly this string.
+
+                      // Nothing to hold the value yet. Clearing an already
+                      // empty field is not worth a row.
                       if (next === undefined) return
+
+                      // The label is what DisplayBoard matches on, so it has
+                      // to be exactly this string.
                       const created: GoalMetric = {
                         id: crypto.randomUUID(),
                         label: row.label,
@@ -602,6 +660,17 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                       }
                       setMetrics((prev) => [...prev, created])
                       persist(() => api.createGoalMetric(created))
+                    }}
+                    onBlur={(e) => {
+                      // `metric` is resolved fresh on the render that follows
+                      // the create above, so by the time focus leaves there is
+                      // always a row to update.
+                      if (!metric) return
+                      const next =
+                        e.target.value === '' ? undefined : Number(e.target.value)
+                      // Empty means "no target", which must reach the DB as
+                      // null — 0 would draw an empty bar instead of none.
+                      editMetric(metric.id, { targetValue: next })
                     }}
                   />
                 </div>
