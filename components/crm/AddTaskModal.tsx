@@ -68,11 +68,6 @@ export function AddTaskModal({ open, onClose }: AddTaskModalProps) {
       completed: false,
       priority,
       assignee,
-      // Negative and falling, so a freshly added task always sorts to the
-      // front of its column without needing to know how many siblings it
-      // has — the first drag in that column re-densifies orders to 0..n-1
-      // anyway, same as moveTask does for every drag after it.
-      order: -Date.now(),
       createdAt: new Date().toISOString(),
     })
     onClose()
