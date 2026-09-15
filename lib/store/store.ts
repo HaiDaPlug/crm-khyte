@@ -153,7 +153,8 @@ export interface CRMStore {
   removeStrategyCard: (cardId: string) => void
 
   // Actions — Tasks
-  addTask: (task: Task) => void
+  /** `order` is assigned by the store — the task lands at the front of its bucket. */
+  addTask: (task: Omit<Task, 'order'>) => void
   toggleTaskComplete: (taskId: string) => void
   updateTask: (taskId: string, updates: Partial<Task>) => void
   /**
@@ -849,11 +850,23 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
       // Tasks
       addTask: (task) => {
-        set((state) => ({ tasks: [task, ...state.tasks] }))
+        // `order` belongs to the store, not the caller: a new task goes to the
+        // front of its bucket, so one below the lowest order already in it (0
+        // when the bucket is empty, giving -1). Siblings are left alone — the
+        // board only reads the relative order, and moveTask re-densifies the
+        // bucket to 0..n-1 on the first drag, same as it does for every drag.
+        const lowest = get().tasks.reduce(
+          (min, t) =>
+            t.completed === task.completed && !t.archivedAt ? Math.min(min, t.order) : min,
+          0
+        )
+        const created: Task = { ...task, order: lowest - 1 }
+
+        set((state) => ({ tasks: [created, ...state.tasks] }))
         persist(
           'Save task',
-          { collection: 'tasks', id: task.id },
-          () => api.createTask(task),
+          { collection: 'tasks', id: created.id },
+          () => api.createTask(created),
           'Task created'
         )
       },

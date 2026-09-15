@@ -26,6 +26,14 @@
   --danger-muted: rgba(224, 82, 82, 0.1);
   --success: #4CAF72;
   --success-muted: rgba(76, 175, 114, 0.1);
+
+  /* Toasts float above every other surface, so they get their own ground —
+     near-black here, white in the light theme — instead of a tinted wash. The
+     status colour rides the edge and the icon, where it reads as a signal
+     rather than as the whole card being alarming. */
+  --toast-surface: rgba(16, 14, 13, 0.92);
+  --toast-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.72), 0 2px 8px -3px rgba(0, 0, 0, 0.5),
+                  inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
   --noise-opacity: 0.025;
   color-scheme: dark;
 
@@ -82,6 +90,10 @@
   --danger-muted: rgba(224, 82, 82, 0.1);
   --success: #4CAF72;
   --success-muted: rgba(76, 175, 114, 0.1);
+
+  --toast-surface: rgba(16, 14, 13, 0.92);
+  --toast-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.72), 0 2px 8px -3px rgba(0, 0, 0, 0.5),
+                  inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
   --noise-opacity: 0.025;
   color-scheme: dark;
 
@@ -136,6 +148,9 @@
   --success:           #3A8F5A;
   --success-muted:     rgba(58, 143, 90, 0.1);
 
+  --toast-surface:     rgba(255, 255, 255, 0.94);
+  --toast-shadow:      0 16px 40px -12px rgba(28, 27, 25, 0.22), 0 2px 8px -3px rgba(28, 27, 25, 0.1);
+
   --noise-opacity:     0.018;
   color-scheme: light;
 
@@ -185,6 +200,7 @@
   --color-danger-muted: var(--danger-muted);
   --color-success: var(--success);
   --color-success-muted: var(--success-muted);
+  --color-toast-surface: var(--toast-surface);
   --color-stage-ongoing-text: var(--stage-ongoing-text);
   --color-stage-ongoing-fill: var(--stage-ongoing-fill);
   --color-stage-ongoing-edge: var(--stage-ongoing-edge);
@@ -391,6 +407,36 @@ body::before {
   animation: modalIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ———— Toasts ———— */
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.animate-toast-in {
+  animation: toastIn 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Elevation only — the ground and the status edge are tokens on the element.
+   Two layers rather than one wide blur, which on the light theme leaves a grey
+   halo instead of a lift. */
+.toast-shell {
+  box-shadow: var(--toast-shadow);
+}
+
+/* Drains over the life of a self-dismissing toast, so "this will leave on its
+   own" is something you can see rather than something you have to wait out.
+   Driven by --toast-duration, set from the same constant as the JS timer. */
+@keyframes toastTimer {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+.toast-timer {
+  transform-origin: left;
+  animation: toastTimer var(--toast-duration) linear forwards;
+}
+
 /* Placeholder bar for content that is still loading — a slow sheen across the
    raised surface rather than a spinner, so a card can hold its own shape while
    its number arrives instead of popping into existence. Reuses the `shimmer`
@@ -422,9 +468,16 @@ body::before {
   .animate-slide-in-down,
   .animate-scale-in,
   .animate-popover-in,
+  .animate-toast-in,
   .animate-glow-pulse,
   .stagger-children > * {
     animation: none !important;
+  }
+
+  /* A bar that cannot drain says nothing about time left — and frozen at full
+     width it would read as a permanent rule under the text. */
+  .toast-timer {
+    display: none;
   }
 
   *,
