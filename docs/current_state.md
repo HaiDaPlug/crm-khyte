@@ -1,6 +1,6 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-09-10
+**Date:** 2026-09-16
 **Phase:** MVP + persistence + password gate + derived direction board +
 cross-browser live sync
 (Supabase live; shared-password auth, no accounts)
@@ -146,7 +146,11 @@ against the live API.
 
 **Migrations, current state.** `20260829120000_opportunity_sort_order` is
 applied (`opportunities.sort_order`, backfilled per-stage from the existing
-visual order — see Pipeline board interaction). `20260830120000_goal_target_date`
+visual order — see Pipeline board interaction).
+`20260914120000_task_sort_order` is applied (`tasks.sort_order`, backfilled
+from the due-date order the board already drew so no task visibly moved) — see
+Tasks below, including the `integer` range that the first version of its
+client-side code walked straight out of. `20260830120000_goal_target_date`
 and `20260830130000_company_enrichment` are now **applied** — all 15 files in
 `supabase/migrations/` were, verified against
 `supabase_migrations.schema_migrations` on 2026-08-31.
@@ -234,7 +238,7 @@ blank dates render as `—` wherever they appear. |
 | `/goals/display/[colleague]` | Functional | The wallpaper. Fills the screen edge to edge (no letterboxing) with zero chrome, rendered outside `AppShell` and sized off a single `--u` unit blending `vw` and `vh`, so the composition scales whole to any monitor. Bento header: the wordmark left (scaled up, swapped from the bare K mark), three enlarged KPI tiles right with bolder eyebrow labels, a gradient divider beneath the header. The north star statement no longer renders here (see Goals timeline below — its section/editor/DB rows are untouched, it's just not drawn). Below the divider, three columns separated by hairline dividers between rows — the `goal` family's three soonest-by-date entries, this week's counted non-negotiables, and the viewer's own personal goals — every list hard-capped at three rows. Checks a version stamp every 5s and reloads only on change, with an unconditional 5-minute reload as backstop (`BoardRefresh.tsx`). Reachable with a session or a signed `?k=` display token. |
 | `/companies` | **Archived** | Not deleted — moved to `_archived/app/companies/page.tsx`, outside the `app/` tree so Next stops routing it. Not linked from the sidebar (`AppSidebar.tsx`'s `navItems`, shared with `MobileChrome.tsx`) either. `AddCompanyModal.tsx` and the companies mock data are untouched and now unused until the page is restored. Prior description, kept for when it comes back: responsive card grid with deal/contact counts and total value, search with localized no-result state, full-screen mobile detail dialog, three enrichment fields (revenue/employee count/about) — see Company enrichment fields below. |
 | `/contacts` | **Archived** | Same treatment as `/companies` — moved to `_archived/app/contacts/page.tsx`, delinked from the sidebar. `AddContactModal.tsx` and the contacts mock data are untouched. Prior description: responsive list with search/localized no-result recovery, full-screen mobile detail dialog, single-column "New Contact" modal. |
-| `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. The board itself now lives in `components/crm/TaskBoard.tsx` (extracted so `/tasks/[colleagueId]` can reuse it — see Tasks below), and the header carries a `ColleaguePicker` dropdown next to "Add Task" for jumping to a colleague's filtered view. |
+| `/tasks` | Functional | Three derived groups — **On pace / Late / Completed** — stack vertically below `lg`. Completion controls have accessible names/states and 44px hit areas; the inline editor no longer hijacks Enter from nested buttons. `AddTaskModal` is single-column on phones with labelled fields, readable date control and stacked actions. Archive/delete behavior is unchanged. The board itself now lives in `components/crm/TaskBoard.tsx` (extracted so `/tasks/[colleagueId]` can reuse it — see Tasks below), and the header carries a `ColleaguePicker` dropdown next to "Add Task" for jumping to a colleague's filtered view. **Cards are draggable (2026-09-14)**: reorder within a column, or drag across the open/Completed line to complete or reopen — see Tasks below. Every priority level is colour-coded, not just `critical`. |
 | `/tasks/[colleagueId]` | Functional | New. Same three-column board, filtered to one colleague's tasks (`erik`/`abdi`/`hai`) via `task.assignee`. Server component validates the segment against `COLLEAGUE_IDS` and 404s on an unknown one, same convention as `/goals/display/[colleague]`; the actual filtering/rendering happens in the client `ColleagueTasksView.tsx`, since tasks live in the client-side store, not a server read. Header shows the colleague's avatar/name instead of "Tasks". |
 | `/settings` | Functional | Display preferences remain app-wide and `localStorage`-backed. The page now uses responsive cards, stacked controls and mobile-safe spacing while preserving dark/light, language, locale, currency, date, compact-number and sound settings. |
 
@@ -246,6 +250,7 @@ components/
     AppSidebar.tsx     — desktop-only (`lg+`) 232px → 64px collapsible sidebar; grain-nav burnt-orange treatment, theme toggle and shared exported nav definition used by the mobile chrome. The footer's "Arbetsyta"/khyte.io workspace-identity block is gone from this desktop sidebar (unused chrome); `MobileChrome.tsx`'s own copy of the same block is untouched — that is a separate mobile nav drawer, not this component. `navItems` no longer lists Companies/Contacts — see Routes above
     MobileChrome.tsx   — fixed mobile header + five-item bottom navigation (Dashboard, Prospects, Pipeline, Tasks, More). `primaryHrefs` lists `/prospects`, not the new lightweight `/leads` — Leads is reachable only via the `More` drawer. `More` opens an inert-while-closed, focus-trapped, Escape-dismissible navigation drawer with theme control; all chrome handles top/bottom/left/right safe-area insets
     Topbar.tsx         — optional sticky action bar; returns `null` when a route supplies no actions
+    Toasts.tsx         — the write-feedback stack, bottom-right on desktop and bottom-centre on phones. See Toasts below
   crm/
     CaptureBox.tsx     — textarea input, Cmd+Enter submit, simulated AI extraction (800ms delay) — orphaned since /inbox was removed
     SuggestionPreviewCard.tsx — AI extraction card with Apply (updates matching opportunity) / Dismiss — orphaned since /inbox was removed
@@ -889,14 +894,54 @@ a named chip (avatar + name) at the top of the card, not a small initial
 buried in the metadata row — the thing a glance needs first. The description
 used to be `line-clamp`-truncated (1–2 lines) and is now shown in full
 (`whitespace-pre-line`, no clamp) since cutting it off was hiding the point of
-the task. `critical`-priority tasks get a 3px accent-colored edge marker down
-the left of the card plus a solid `bg-danger-muted` badge in place of the flat
-6px priority dot other priorities still use — enough to read as urgent at a
-glance without adding a second checkbox-competing element.
+the task. **Every priority level is colour-coded**, not only `critical`.
+low/medium/high all rendered as the same neutral dot beside the same grey
+label, so three of the four levels were indistinguishable and the field may as
+well not have been on the card. `priorityChip` (`lib/stage-config.ts`,
+alongside the existing `priorityDot`/`priorityRamp`) gives each level its own
+tinted chip — fixed hex pairs rather than theme tokens, same reasoning as
+`priorityDot`: the chip has to read as the same colour in both themes.
+`critical` keeps the loudest treatment on top of its chip — uppercase,
+semibold, and a 3px accent-coloured edge marker down the left of the card — so
+it still reads as urgent at a glance without adding a second
+checkbox-competing element.
 
 **Columns are derived, not stored.** `onPace` is everything open and not past
 due — today's work and what is ahead of it — so the middle column only ever
 holds what actually slipped. Editing a due date re-buckets the task for free.
+
+**Dragging reorders, and crossing the line completes (2026-09-14).** `Task.order`
+(`tasks.sort_order` in Postgres, added by `20260914120000_task_sort_order.sql`)
+is what a drag writes; before it there was nothing to persist, so a reordered
+card always snapped back. Two buckets own an `order` sequence, not three
+columns: **open** (on-pace + overdue together) and **completed**. The
+on-pace/overdue split is derived from `dueDate`, so there is no column for a
+drag to name — dragging across *that* line does nothing but move the card among
+its neighbours, while dragging across the open/Completed line completes or
+reopens the task. `moveTask` in the store is the single path for both, and
+`toggleTaskComplete` routes through it rather than flipping `completed` in
+place: the board sorts each column by `order` now, so a checkbox that left
+`order` alone would drop the task on top of whichever card already held that
+number in the bucket it just joined. Each move rebuilds its destination bucket
+and rewrites it dense 0..n-1, same as `moveStrategyCard`. `pauseRemoteSync()`
+holds the snapshot merge for the length of a drag, same as `PipelineBoard`.
+
+**`sort_order` is an `integer`, and the first version of this did not respect
+that.** `AddTaskModal` set `order: -Date.now()` on every new task — negative and
+falling, so a new card sorted to the front without having to count its siblings.
+An epoch in milliseconds is ~1.79 × 10¹², three orders of magnitude past int4's
+±2,147,483,647, so **every task created between 2026-09-14 and 2026-09-15 failed
+its insert** with `value "-1789458176572" is out of range for type integer`. The
+optimistic row appeared on the board and the failure showed only as the
+save-failed toast, which is exactly the gap the toasts exist to close (see
+Toasts). Fixed by giving the store the job it already had: `addTask` assigns
+`order` itself — one below the lowest in the task's own bucket, `-1` when that
+bucket is empty — and takes `Omit<Task, 'order'>` so a caller cannot invent one.
+No migration was needed and no data was wrong: the failed inserts never landed,
+and `moveTask` had always written dense values. The rule the rest of the app
+follows is `order: siblings.length` (see `StrategyBoard`, `GoalsEditor`); a
+client-side value that is not derived from its siblings is the thing to be
+suspicious of.
 
 **Check-off** runs in three beats: a 1.5px line sweeps the title via `scaleX`
 on a `transform-origin: left` overlay (320ms), the chime plays, and only then
@@ -950,6 +995,50 @@ shows a small initial-avatar next to the due date when a task has an assignee.
 Persisted via `supabase/migrations/20260824120000_task_assignee.sql` (new
 `crm_colleague` enum, nullable `tasks.assignee` column) — applied to
 `wmnobqhypkocirfybqsj`, verified directly against `information_schema.columns`.
+
+### Toasts (components/layout/Toasts.tsx)
+
+**Why they exist.** `syncError` used to be set and never read. A write that
+never reached the server left its optimistic row on screen looking saved until
+the next snapshot poll quietly removed it, with nothing to explain why — the
+failure was visible only in the console. Success toasts close the other half of
+the gap: a create or a delete has no animation of its own (unlike check-off, see
+Tasks), so there was no way to tell "saved" from "still saving" from "silently
+lost". `persist()` in the store raises both, one per queued write.
+
+**One neutral ground, status on the edge (2026-09-15).** Both kinds used to tint
+the whole card with their status colour — `bg-danger-muted`/`bg-success-muted`
+with the text in the matching hue — which made a routine "saved" read as
+alarming and a real failure read as decoration. The card now sits on `--toast-surface`:
+near-black on the dark theme, white on the light one, defined per theme block
+like every other colour here. The status colour moves to a 3px left rail, the
+border and the icon chip, where it signals without costing legibility.
+`--toast-shadow` carries elevation as two layers plus an inner top highlight on
+dark — a toast that is darker than the page it floats over reads as a hole
+punched in it, not as something lifted off it. Type matches the modal system:
+Jakarta semibold title (`font-jakarta`, as `Modal.tsx` uses), the body sans for
+the explanation, `font-mono` for anything the server said.
+
+**An error says what it means and keeps the receipt.** The toast leads with the
+translated `saveFailed` line and a plain-language `saveFailedHint` — *the change
+is still on screen but did not reach the database, try again* — which is the
+whole answer most of the time. The server's own words sit behind a
+`showDetails` disclosure, verbatim and selectable for a bug report, rather than
+one truncated line of Postgres in someone's face. All four strings live in
+`lib/i18n/translations.ts` under `common`. **Success messages do not**: they
+reach the store as English literals from each `persist()` call site
+(`'Task created'`, `'Lead removed'`) and render untranslated in both languages —
+the store is not i18n-aware, and fixing it means dictionary keys plus plumbing
+`t` into `createCRMStore`. Known, not done.
+
+**Loud, not obstructive.** The stack is `pointer-events-none` and only the cards
+themselves take the pointer, so a toast can never eat a click meant for the
+board underneath it. Success toasts auto-dismiss after 3.5s and draw a draining
+hairline (`.toast-timer`, fed `--toast-duration` from the same constant as the
+JS timer) so "this will leave on its own" is visible rather than something to
+wait out; the bar is hidden under `prefers-reduced-motion`, where a frozen
+full-width rule would just read as a border. **Errors persist until dismissed** — a
+save failure is worth making someone deal with.
 
 ### Error handling (lib/db/retry.ts + app/global-error.tsx)
 
@@ -1607,6 +1696,7 @@ Full detail in `docs/database.md`. Shape of it:
 | `supabase/migrations/20260826120000_opportunity_followed_up_by.sql` | adds `followed_up_by crm_colleague` to `public.opportunities`. Applied |
 | `supabase/migrations/20260826140000_goals.sql`, `20260828120000_personal_goals.sql`, `20260828140000_crm_events.sql`, `20260828140100_weekly_goal_section.sql` | the direction-board schema — see Derived board metrics. Applied |
 | `supabase/migrations/20260829120000_opportunity_sort_order.sql` | adds `opportunities.sort_order`, backfilled per-stage from `created_at desc` so no card visibly moved. Applied |
+| `supabase/migrations/20260914120000_task_sort_order.sql` | adds `tasks.sort_order` (`integer not null default 0`), backfilled per bucket from `due_date asc, created_at desc` — the order the board already rendered — so no task visibly moved. Applied |
 | `supabase/seed.sql` | the former mock data as real rows, fixed UUIDs, re-runnable |
 | `supabase/config.toml` | local CLI config from `supabase init`; not a project link |
 | `scripts/supabase.mjs` | `npm run supabase -- <cmd>` — runs any CLI command with `SUPABASE_ACCESS_TOKEN` taken from `.env.local`, which overrides the machine-global `~/.supabase/access-token` |
@@ -1699,7 +1789,8 @@ and only corrects once a subscriber notices — which is not guaranteed to happe
 promptly. See the fixed entry under Known issues.
 
 Every data mutation below also persists via the matching Server Action; failures
-land in `syncError` and are logged, without rolling back the optimistic change.
+land in `syncError`, are logged, and raise an error toast (see Toasts), without
+rolling back the optimistic change.
 Actions:
 - `addOpportunity` — new prospect from `AddProspectModal`; files it at the end of its stage's column rather than trusting the caller's placeholder `order`
 - `addToPipeline` — sets `inPipeline: true`, resets stage to `'New'` (or a given stage), and appends to that stage's column
@@ -1713,7 +1804,7 @@ Actions:
 - `addLead`, `updateLead`, `removeLead` — the new lightweight Lead entity; `updateLead` backs `LeadDrawer`'s click-to-edit contact name/source/notes fields; `removeLead` is permanent, used both when a lead is promoted into a Prospect and when removed outright
 - `applyRemoteSnapshot` — swaps the eight data collections for a freshly polled snapshot, leaving settings/sidebar/search alone; returns `false` and applies nothing while a local write is in flight or a drag is active. See CRM live updates
 - `pauseRemoteSync` / `resumeRemoteSync` — depth-counted hold on remote merges, bracketed around a pipeline drag
-- `syncError` / `clearSyncError` — last failed write (set and logged, not yet rendered). Now more visible a gap than it was: a write that fails leaves a local row the database never got, and the next remote merge erases it
+- `syncError` / `clearSyncError` — last failed write, set and logged. No longer the silent gap it was: `persist()` also pushes an error toast (see Toasts), which is what makes "a write failed, and the next remote merge will erase the row still on your screen" visible without the console. `toasts` / `dismissToast` hold that queue
 - `toggleSidebar`, `setSearchQuery` — UI state
 - `toggleTheme`, `setSetting`, `resetSettings`, `hydrateSettings` — display preferences and interface language, persisted to `localStorage` key `khyte-settings` (`khyte-theme` is still read as a legacy fallback for pre-settings builds)
 
@@ -1915,7 +2006,6 @@ prospects board's cards separate from the page.
   `deleteGoal`/`deleteGoalMetric`/`deletePersonalGoal` (the per-row `Trash2` in
   `GoalsEditor`, immediate and unconfirmed — a goal row is cheap to retype) all
   exist end to end (store or local state → Server Action → `delete().eq('id', …)`)
-- Surfacing failed writes in the UI (`syncError` is set and logged, nothing renders it)
 - Real AI extraction (mocked — picks random extraction for notes > 30 chars)
 - Email / calendar sync
 - Notifications
@@ -1974,18 +2064,17 @@ prospects board's cards separate from the page.
    `app/actions/auth.ts` but nothing calls it** — there is no way to end a
    session from the UI short of clearing cookies — and the rate limiter should
    move off per-process memory if this ever runs on more than one instance
-2. **Surface `syncError`** — a toast, so a failed save is visible without the console
-3. **AI extraction** — hook CaptureBox submit to Claude API via server action
-4. **Edit flows** — edit drawers for companies, contacts, opportunities (add modals done)
-5. **Real-time** — Supabase realtime subscriptions for pipeline updates
-6. **Motion library integration** — `motion` v12 is now used for the task
+2. **AI extraction** — hook CaptureBox submit to Claude API via server action
+3. **Edit flows** — edit drawers for companies, contacts, opportunities (add modals done)
+4. **Real-time** — Supabase realtime subscriptions for pipeline updates
+5. **Motion library integration** — `motion` v12 is now used for the task
    check-off (shared-layout flight between columns). The rest of the app is
    still CSS keyframes; migrate the drawers and modals next if the richer
    interactions are wanted
-7. **Physical mobile acceptance pass** — validate long-press board drag/drop,
+6. **Physical mobile acceptance pass** — validate long-press board drag/drop,
    notch/home-indicator insets and virtual-keyboard resizing on real iOS and
    Android hardware. Browser viewport QA is complete; this is feel/hardware QA
-8. **Tasks ↔ weekly momentum view.** Not the wallpaper — the operator decided
+7. **Tasks ↔ weekly momentum view.** Not the wallpaper — the operator decided
    tasks connecting to the wallpaper would be redundant with the non-negotiables
    already there. Instead, `/tasks` (or a new view beside it) should show which
    tasks were *completed* within the same Monday-start week window
@@ -1996,7 +2085,7 @@ prospects board's cards separate from the page.
    and `dueDate` — a task finished today and one finished three weeks ago look
    identical, so this needs a `completed_at timestamptz` column before the
    window filter means anything. Small, additive migration; not started
-9. **Weekly AI summary.** A scheduled (cron-driven, weekly) job that reads the
+8. **Weekly AI summary.** A scheduled (cron-driven, weekly) job that reads the
    past week's `crm_events`, completed tasks (see #8) and notes, and writes a
    short digest: strongest team result, strongest individual contribution, and
    suggested next steps. Explicitly a step *after* #8 — a summary of "who did
@@ -2004,7 +2093,7 @@ prospects board's cards separate from the page.
    see the **AI Assistant design** section below for the shared reasoning layer
    this and the assistant in #10 should both be built on, rather than each
    rolling its own prompt-and-fetch logic
-10. **Context-aware assistant ("Donna").** The highest-leverage and
+9. **Context-aware assistant ("Donna").** The highest-leverage and
     highest-risk item on this list — worth its own design pass rather than a
     one-line bullet. See **AI Assistant design (Donna)** immediately below.
 
@@ -2218,9 +2307,10 @@ for a few weeks and found to actually track "things a person would flag."
   `db:push` validates this and rejects a leftover `[YOUR-PASSWORD]` placeholder,
   because both failure modes otherwise surface as an opaque auth error
 - Optimistic writes are never rolled back. A failed save leaves the change on
-  screen and only records it in `syncError` — deliberate (snapping a dropped
-  kanban card back is worse), but it means the UI can drift from the database
-  until reload
+  screen, records it in `syncError` and raises a toast — deliberate (snapping a
+  dropped kanban card back is worse), but it means the UI can drift from the
+  database until reload. The toast is now the only thing that says so; the drift
+  itself is unchanged
 - The store is built once per provider mount and a *later* snapshot is ignored,
   so there is no way to re-read the database short of a full page load. Adding a
   `router.refresh()` would silently do nothing. Same behaviour as the
