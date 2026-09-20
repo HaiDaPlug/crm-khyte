@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, RotateCcw } from 'lucide-react'
 import { Topbar } from '@/components/layout/Topbar'
 import { Button } from '@/components/crm/Button'
+import { OrganizationSection } from '@/components/settings/OrganizationSection'
 import { useCRMStore } from '@/lib/store'
 import {
   CURRENCIES,
@@ -284,6 +285,10 @@ export default function SettingsPage() {
             {t.settings.reset}
           </Button>
         </div>
+
+        {/* Who you are and who you work with comes first; everything below
+            it is this browser's own, which is what the reset above covers. */}
+        <OrganizationSection />
 
         <Section title={t.settings.appearance}>
           <Row label={t.settings.theme} description={t.settings.themeDescription}>

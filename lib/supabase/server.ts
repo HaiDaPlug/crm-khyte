@@ -9,12 +9,16 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
  * into a Client Component the build fails rather than shipping the secret key
  * to the browser.
  *
- * We use a secret key (`sb_secret_…`) because there is no auth yet. Like the
- * legacy service_role key it replaces, it holds Postgres BYPASSRLS — which is
- * what lets the single-user app read and write rows whose `owner_id` is still
- * null. When auth lands, swap this for a request-scoped client built from the
- * user's session and the publishable key, and the RLS policies in
- * 20260819120000_init.sql start doing the work they were written for.
+ * A secret key (`sb_secret_…`), which like the legacy service_role key it
+ * replaces holds Postgres BYPASSRLS. That is deliberate even now that people
+ * have accounts: the app scopes every write to the caller's organization
+ * itself (app/actions/*.ts, from the AuthContext in lib/auth/context.ts) and
+ * the membership policies in 20260920120000_organizations.sql are a dormant
+ * second line, not the enforcement. Individual identity lives in Supabase
+ * Auth (lib/auth/identity.ts), which is the one place the publishable key is
+ * used. A request-scoped client under the user's own JWT would let RLS do the
+ * work — a later change, once a publishable-key path (Realtime, a browser
+ * client) is actually wanted.
  */
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL

@@ -293,9 +293,10 @@ export function ColorSlider<T extends string>({
 }
 
 /**
- * Who a task is assigned to — a fixed colleague roster (no real accounts
- * yet, see lib/colleagues) plus an explicit "unassigned" pill rather than
- * requiring a pick.
+ * Who a task is assigned to — the fixed roster of labels in lib/colleagues
+ * plus an explicit "unassigned" pill rather than requiring a pick. Accounts
+ * exist, but attribution still uses the roster label a member is mapped to,
+ * so this stays a label picker rather than an account picker.
  */
 export function AssigneePicker({
   value,

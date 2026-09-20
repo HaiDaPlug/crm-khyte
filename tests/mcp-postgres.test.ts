@@ -14,11 +14,16 @@ test('postgres.js preserves JSON objects through writes, updates, events and rec
   const { getDb } = await import('../lib/db/pg')
   const db = crmDatabase()
   const rollback = new Error('Intentional regression-test rollback')
-  const actor = { connectionId: randomUUID() }
+  // Every write is attributed to an account and an organization now. The
+  // account is created inside the rolled-back transaction, so nothing is left
+  // behind in auth.users; the organization is Khyte, which the organizations
+  // migration guarantees exists.
+  const actor = { connectionId: randomUUID(), userId: randomUUID(), organizationId: '7b1e3d2a-8f4c-4a6e-9b21-0c5d3e7f9a10' }
   const requestId = randomUUID()
   try {
     await assert.rejects(db.transaction(async tx => {
       const scoped: Database = { ...tx, transaction: run => run(tx) }
+      await tx.query('insert into auth.users (id, email) values ($1, $2)', [actor.userId, `${actor.userId}@example.test`])
       const input = { requestId, target: { kind: 'new', company: { name: `MCP regression ${requestId}` },
         contact: { name: 'Regression contact', email: `${requestId}@example.test` } },
         occurredOn: '2026-09-09', channel: 'email', summary: 'Rollback-only regression test.', followedUpBy: null }

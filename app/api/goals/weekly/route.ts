@@ -1,4 +1,4 @@
-import { isAuthenticated } from '@/lib/auth/guard'
+import { getAuthContext } from '@/lib/auth/context'
 import { loadWeeklyProgress } from '@/lib/db/queries'
 
 /**
@@ -15,14 +15,17 @@ import { loadWeeklyProgress } from '@/lib/db/queries'
  * no session cookie and this repeats the check, because a Route Handler is
  * reachable by direct fetch. The response carries the team's weekly targets and
  * progress, so it stays behind the session rather than the display token — the
- * wallpaper's anonymous surface has no business with it.
+ * wallpaper's anonymous surface has no business with it. The context that
+ * passes the check is also the organization the goals and counts are read
+ * for; nothing on the request can name a different one.
  */
 export async function GET() {
-  if (!(await isAuthenticated())) {
+  const context = await getAuthContext()
+  if (!context) {
     return new Response('Unauthorized', { status: 401 })
   }
 
-  const progress = await loadWeeklyProgress()
+  const progress = await loadWeeklyProgress(context.organizationId)
 
   return Response.json(progress, {
     // A cached count is a card that stops moving as the week fills up, which is

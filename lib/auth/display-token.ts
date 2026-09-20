@@ -5,21 +5,31 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
  *
  * Lively Wallpaper renders a URL in a bare Chromium embed. It has its own
  * cookie jar, no way to show a login form, and no reliable persistence across
- * reboots — so the shared-password session in ./session cannot reach it. The
- * link itself has to carry the credential.
+ * reboots — so the session in ./session cannot reach it. The link itself has
+ * to carry the credential.
  *
- * `?k=<token>` on a display route is checked here. The token is not a random
- * string compared against an env var: it is an HMAC of the route's colleague
- * signed with DISPLAY_SECRET, so one leaked link opens exactly one person's
- * board and nothing else. Rotating DISPLAY_SECRET invalidates every link at
- * once, which is the right blunt instrument for a wallpaper.
+ * `?k=<token>` on a display route is checked here. The token is
+ * `<organization id>.<member id>.<hmac>`: the organization and the membership
+ * that minted the link in the clear (both are identifiers, not secrets) and
+ * an HMAC over `<organization>:<member>:<colleague>` signed with
+ * DISPLAY_SECRET. One leaked link therefore opens exactly one person's board
+ * in exactly one organization and nothing else.
+ *
+ * WHY THE MEMBER IS IN IT. A link is minted by a person and must stop working
+ * when that person is no longer a member. The HMAC alone cannot know that —
+ * it is the same for the rest of the link's life — so the display routes
+ * look the membership up (./display-access) and refuse a link whose minter
+ * has been revoked. Other members' links are untouched, which is the point:
+ * revoking one person must not blank the whole team's wallpapers. Rotating
+ * DISPLAY_SECRET still invalidates every link at once, which remains the
+ * right blunt instrument when a link's whereabouts are unknown.
  *
  * SCOPE. This is deliberately weaker than a session and must stay confined to
  * read-only display routes — proxy.ts is what enforces that, by only
  * consulting this for /goals/display/* and never for a Server Action. Anyone
  * holding the link sees that board's numbers; treat it as a secret URL, not as
  * an identity. There is no expiry, because a wallpaper that goes blank in a
- * month is worse than useless.
+ * month is worse than useless; revocation is what ends it.
  *
  * Note this file is NOT `server-only`, unlike ./session — proxy.ts imports it,
  * and Proxy is not a server component. It still only ever runs on the Node.js
@@ -34,20 +44,31 @@ export const DISPLAY_TOKEN_PARAM = 'k'
 /** Routes a display token is accepted on. Everything else needs a session. */
 export const DISPLAY_PATH_PREFIX = '/goals/display'
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function getSecret(): string | undefined {
   return process.env.DISPLAY_SECRET
 }
 
-/**
- * The token for one colleague's board.
- *
- * Truncated to 32 base64url characters — 192 bits, far past guessing, and
- * short enough that the whole URL still fits in Lively's input field.
- */
-export function displayToken(colleague: string): string | undefined {
+function signature(organizationId: string, memberId: string, colleague: string): string | undefined {
   const secret = getSecret()
   if (!secret) return undefined
-  return createHmac('sha256', secret).update(colleague).digest('base64url').slice(0, 32)
+  // Truncated to 32 base64url characters — 192 bits, far past guessing, and
+  // short enough that the whole URL still fits in Lively's input field.
+  return createHmac('sha256', secret)
+    .update(`${organizationId}:${memberId}:${colleague}`)
+    .digest('base64url')
+    .slice(0, 32)
+}
+
+/** The token one member mints for one colleague's board in one organization. */
+export function displayToken(
+  organizationId: string,
+  memberId: string,
+  colleague: string
+): string | undefined {
+  const sig = signature(organizationId, memberId, colleague)
+  return sig ? `${organizationId}.${memberId}.${sig}` : undefined
 }
 
 /** Constant-time compare; same reasoning and shape as ./session's. */
@@ -61,21 +82,37 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB)
 }
 
+/** What a verified token says: which organization's board, minted by whom. */
+export interface DisplayGrant {
+  organizationId: string
+  memberId: string
+}
+
 /**
- * True when `token` is the one issued for `colleague`.
+ * The organization and minting member a token opens `colleague`'s board for,
+ * or null. Signature only — whether the member is still active is
+ * ./display-access's question, because answering it needs the database.
  *
- * Returns false when DISPLAY_SECRET is unset rather than throwing: an
+ * Returns null when DISPLAY_SECRET is unset rather than throwing: an
  * unconfigured deployment should refuse wallpaper links and fall through to
  * the normal login redirect, not 500 on every request that carries a `?k=`.
  */
 export function verifyDisplayToken(
   colleague: string | undefined,
   token: string | undefined
-): boolean {
-  if (!colleague || !token) return false
-  const expected = displayToken(colleague)
-  if (!expected) return false
-  return safeEqual(token, expected)
+): DisplayGrant | null {
+  if (!colleague || !token || token.length > 160) return null
+
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  const [organizationId, memberId, provided] = parts
+  if (!UUID.test(organizationId) || !UUID.test(memberId) || !provided) return null
+
+  const expected = signature(organizationId, memberId, colleague)
+  if (!expected) return null
+  return safeEqual(provided, expected)
+    ? { organizationId: organizationId.toLowerCase(), memberId: memberId.toLowerCase() }
+    : null
 }
 
 /**

@@ -23,6 +23,12 @@ export default function DashboardPage() {
   const companies = useCRMStore((s) => s.companies)
   const tasks = useCRMStore((s) => s.tasks)
   const toggleTaskComplete = useCRMStore((s) => s.toggleTaskComplete)
+  const displayName = useCRMStore((s) => s.workspace.viewer.displayName)
+
+  // Greet by first name. The roster's display name is how the team knows the
+  // person ("Hai Pham Bui"); a 50px headline has room for how they are
+  // addressed. Falls back to the whole name when there is no space to split on.
+  const firstName = displayName.trim().split(/\s+/)[0] || displayName
 
   const openTasks = tasks.filter(t => !t.completed)
   const pipeline = opportunities
@@ -36,17 +42,17 @@ export default function DashboardPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // Time-aware greeting, set after mount so the static build doesn't bake in a stale hour
-  const [greeting, setGreeting] = useState(t.dashboard.welcome)
+  const [greeting, setGreeting] = useState(() => t.dashboard.welcome(firstName))
   useEffect(() => {
     const h = new Date().getHours()
     setGreeting(
-      h < 5 ? t.dashboard.lateNight
-      : h < 12 ? t.dashboard.goodMorning
-      : h < 17 ? t.dashboard.goodAfternoon
-      : h < 22 ? t.dashboard.goodEvening
-      : t.dashboard.lateNight
+      h < 5 ? t.dashboard.lateNight(firstName)
+      : h < 12 ? t.dashboard.goodMorning(firstName)
+      : h < 17 ? t.dashboard.goodAfternoon(firstName)
+      : h < 22 ? t.dashboard.goodEvening(firstName)
+      : t.dashboard.lateNight(firstName)
     )
-  }, [t])
+  }, [t, firstName])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

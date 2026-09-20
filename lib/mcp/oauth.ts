@@ -5,6 +5,17 @@ import type { Database } from '@/lib/crm/database'
 import { CrmError } from '@/lib/crm/errors'
 import { SCOPES, config, hashToken, pkceChallenge, randomToken, secureEqual } from './security'
 
+/**
+ * Who a bearer token acts as.
+ *
+ * A connection is approved by a logged-in person and carries that person and
+ * their organization for its whole life: the consent page binds them into the
+ * authorization code, the code hands them to the connection, and every tool
+ * call reads them back from here. Nothing the client sends — not a parameter,
+ * not a scope, not a header — can change which organization a token reaches.
+ */
+export type Principal = { connectionId: string; scopes: string[]; userId: string; organizationId: string }
+
 // Unknown parameters are stripped, not rejected: RFC 6749 3.1 requires the
 // authorization endpoint to ignore parameters it does not understand, and
 // ChatGPT sends several of its own. A strict object refused the whole request
@@ -38,12 +49,19 @@ export function validateAuthorization(raw: unknown): Authorization {
   return { ...a, scope: [...new Set(scopes)].sort().join(' ') }
 }
 
-export async function issueCode(db: Database, request: Authorization) {
+/**
+ * Mints the authorization code the consent page redirects back with.
+ *
+ * `identity` is the person who clicked Anslut, as the consent route resolved
+ * them from their session — the code is the only thing that carries that
+ * identity from the browser to the token exchange, which has no session.
+ */
+export async function issueCode(db: Database, request: Authorization, identity: { userId: string; organizationId: string }) {
   const a = validateAuthorization(request), code = randomToken()
   await db.query('delete from crm_oauth_codes where expires_at < now()')
-  await db.query(`insert into crm_oauth_codes (code_hash, client_id, redirect_uri, challenge, scopes, resource, expires_at)
-    values ($1,$2,$3,$4,$5::text[],$6,now() + interval '5 minutes')`,
-    [hashToken(code), a.client_id, a.redirect_uri, a.code_challenge, a.scope.split(' '), a.resource])
+  await db.query(`insert into crm_oauth_codes (code_hash, client_id, redirect_uri, challenge, scopes, resource, user_id, organization_id, expires_at)
+    values ($1,$2,$3,$4,$5::text[],$6,$7,$8,now() + interval '5 minutes')`,
+    [hashToken(code), a.client_id, a.redirect_uri, a.code_challenge, a.scope.split(' '), a.resource, identity.userId, identity.organizationId])
   const callback = new URL(a.redirect_uri)
   callback.searchParams.set('code', code); callback.searchParams.set('state', a.state); callback.searchParams.set('iss', config().origin)
   return callback.toString()
@@ -57,6 +75,13 @@ function authenticateClient(form: URLSearchParams) {
   return c
 }
 
+// The membership join every credential check below shares. An active
+// membership is a condition of the token, not only of its issue: revokeMember
+// revokes the connections it knows about, but a connection that outlives its
+// membership by any other path — the members script, a manual update — must
+// still be refused, and this is where that happens.
+const ACTIVE_MEMBER_JOIN = "join organization_members m on m.organization_id = c.organization_id and m.user_id = c.user_id and m.status = 'active'"
+
 export async function exchangeToken(db: Database, form: URLSearchParams) {
   const c = authenticateClient(form)
   // Same RFC 8707 latitude as the authorization request: absent means this
@@ -69,18 +94,36 @@ export async function exchangeToken(db: Database, form: URLSearchParams) {
     if (form.get('grant_type') === 'authorization_code') {
       const code = form.get('code') ?? '', verifier = form.get('code_verifier') ?? ''
       if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) throw new CrmError('invalid_grant', 'Invalid PKCE verifier.')
-      const [row] = await tx.query<{ client_id: string; redirect_uri: string; challenge: string; scopes: string[]; resource: string }>(
-        'select client_id, redirect_uri, challenge, scopes, resource from crm_oauth_codes where code_hash = $1 and expires_at > now() for update', [hashToken(code)])
+      // A left join rather than an inner one, so a code whose person is gone
+      // is told apart from a code that does not exist: the first is someone
+      // removed between consent and exchange, and the error should say so.
+      // The throw below rolls this transaction back, so such a code is not
+      // consumed — it cannot succeed on a retry either, and expires within
+      // five minutes like any other.
+      const [row] = await tx.query<{ client_id: string; redirect_uri: string; challenge: string; scopes: string[]; resource: string;
+        user_id: string | null; organization_id: string | null; member_id: string | null }>(
+        `select c.client_id, c.redirect_uri, c.challenge, c.scopes, c.resource, c.user_id, c.organization_id, m.id as member_id
+         from crm_oauth_codes c
+         left join organization_members m on m.organization_id = c.organization_id and m.user_id = c.user_id and m.status = 'active'
+         where c.code_hash = $1 and c.expires_at > now() for update of c`, [hashToken(code)])
       if (!row || row.client_id !== c.clientId || row.redirect_uri !== form.get('redirect_uri') || row.resource !== c.resource || !secureEqual(row.challenge, pkceChallenge(verifier))) {
         throw new CrmError('invalid_grant', 'Invalid or expired authorization code.')
       }
       await tx.query('delete from crm_oauth_codes where code_hash = $1', [hashToken(code)])
+      // The columns are nullable (they were added to a live table), so the
+      // check is here rather than trusted to the schema. A code with no person
+      // behind it, or whose membership was revoked in the five minutes since
+      // consent, would become a token acting as nobody.
+      if (!row.user_id || !row.organization_id || !row.member_id) {
+        throw new CrmError('invalid_grant', 'The authorization code has no active member behind it. Log in and connect again.')
+      }
       connectionId = randomUUID(); scopes = row.scopes
-      await tx.query(`insert into crm_oauth_connections (id, client_id, access_hash, refresh_hash, scopes, access_expires_at, refresh_expires_at)
-        values ($1,$2,$3,$4,$5::text[],now() + interval '1 hour',now() + interval '30 days')`, [connectionId, c.clientId, hashToken(access), hashToken(refresh), scopes])
+      await tx.query(`insert into crm_oauth_connections (id, client_id, user_id, organization_id, access_hash, refresh_hash, scopes, access_expires_at, refresh_expires_at)
+        values ($1,$2,$3,$4,$5,$6,$7::text[],now() + interval '1 hour',now() + interval '30 days')`,
+        [connectionId, c.clientId, row.user_id, row.organization_id, hashToken(access), hashToken(refresh), scopes])
     } else if (form.get('grant_type') === 'refresh_token') {
-      const [row] = await tx.query<{ id: string; scopes: string[] }>(`select id, scopes from crm_oauth_connections
-        where refresh_hash = $1 and client_id = $2 and revoked_at is null and refresh_expires_at > now() for update`, [hashToken(form.get('refresh_token') ?? ''), c.clientId])
+      const [row] = await tx.query<{ id: string; scopes: string[] }>(`select c.id, c.scopes from crm_oauth_connections c ${ACTIVE_MEMBER_JOIN}
+        where c.refresh_hash = $1 and c.client_id = $2 and c.revoked_at is null and c.refresh_expires_at > now() for update of c`, [hashToken(form.get('refresh_token') ?? ''), c.clientId])
       if (!row) throw new CrmError('invalid_grant', 'The connection expired or was revoked. Connect again.')
       connectionId = row.id; scopes = row.scopes
       if (form.has('scope') && form.get('scope') !== scopes.join(' ')) throw new CrmError('invalid_scope', 'Reconnect to change permissions.')
@@ -98,12 +141,13 @@ export function readBearerToken(header: string | null) {
   return token
 }
 
-export async function authenticateBearer(db: Database, header: string | null) {
+export async function authenticateBearer(db: Database, header: string | null): Promise<Principal> {
   const token = readBearerToken(header)
-  const [row] = await db.query<{ id: string; scopes: string[] }>(`select id, scopes from crm_oauth_connections
-    where access_hash = $1 and client_id = $2 and revoked_at is null and access_expires_at > now() and refresh_expires_at > now()`, [hashToken(token), config().clientId])
+  const [row] = await db.query<{ id: string; scopes: string[]; user_id: string; organization_id: string }>(
+    `select c.id, c.scopes, c.user_id, c.organization_id from crm_oauth_connections c ${ACTIVE_MEMBER_JOIN}
+    where c.access_hash = $1 and c.client_id = $2 and c.revoked_at is null and c.access_expires_at > now() and c.refresh_expires_at > now()`, [hashToken(token), config().clientId])
   if (!row) throw new CrmError('unauthorized', 'The CRM connection expired or was revoked. Connect again.')
-  return { connectionId: row.id, scopes: row.scopes }
+  return { connectionId: row.id, scopes: row.scopes, userId: row.user_id, organizationId: row.organization_id }
 }
 
 export async function revokeToken(db: Database, form: URLSearchParams) {

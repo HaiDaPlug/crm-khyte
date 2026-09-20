@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
 import { SESSION_COOKIE, verifySession } from '@/lib/auth/session'
-import { loginReturnTo } from '@/lib/auth/return-to'
 import {
   DISPLAY_TOKEN_PARAM,
   colleagueFromDisplayPath,
@@ -53,10 +52,13 @@ export default function proxy(request: NextRequest) {
   const authed = verifySession(request.cookies.get(SESSION_COOKIE)?.value)
 
   if (pathname === '/login') {
-    // Someone with a live session has no business on the gate.
-    if (authed) {
-      return NextResponse.redirect(new URL(loginReturnTo(request.nextUrl.searchParams.get('returnTo')), request.url))
-    }
+    // Always served, signed cookie or not. Proxy cannot tell a live session
+    // from a revoked one — that needs the database — and bouncing every
+    // signed cookie away from the gate was how a revoked person, whose cookie
+    // stays cryptographically valid for up to seven days, got locked out of
+    // logging back in (and how /oauth/authorize looped between the two). A
+    // live session that lands here simply sees the form; logging in again
+    // replaces it, and the previous session row is revoked as it does.
     return forward(request, pathname)
   }
 
@@ -76,7 +78,9 @@ export default function proxy(request: NextRequest) {
     const colleague = colleagueFromDisplayPath(pathname)
     if (colleague) {
       const token = request.nextUrl.searchParams.get(DISPLAY_TOKEN_PARAM)
-      if (verifyDisplayToken(colleague, token ?? undefined)) {
+      // A verified token names the organization it opens; the display page
+      // reads the same token again to know whose board to load.
+      if (verifyDisplayToken(colleague, token ?? undefined) !== null) {
         return forward(request, pathname)
       }
     }

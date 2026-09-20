@@ -15,10 +15,12 @@ import { useTranslations } from '@/lib/hooks/useTranslations'
  * panel and ticking several boxes.
  *
  * Filtering by person lives on the count cards instead, which show each
- * person's number as well as filtering by them. There is no "Mina" preset: the
- * app has one shared password and no accounts (see the auth gate), so nothing
- * knows who is looking, and a "mine" that silently meant one hardcoded person
- * would be worse than its absence.
+ * person's number as well as filtering by them. There is still no "Mina"
+ * preset. The app now knows who is looking (the viewer in the store), but a
+ * viewer is only attributable once an owner has mapped their account to a
+ * roster label — until then "mine" would be an empty chip, and a preset that
+ * silently means nobody is worse than its absence. Add it against
+ * `workspace.viewer.colleague` when the mapping is in use.
  */
 
 export type QuickFilter = 'thisWeek' | 'needsFollowUp' | 'hot'

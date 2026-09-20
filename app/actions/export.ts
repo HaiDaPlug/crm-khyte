@@ -26,7 +26,9 @@ import { loadEventsForSubjects, type CrmEventRecord } from '@/lib/db/events'
  * endpoint reachable by direct POST, so this checks the session itself rather
  * than trusting that proxy.ts ran. It is the pipeline's activity history, which
  * is exactly the sort of thing that should not be readable by an unauthenticated
- * request.
+ * request — nor by an authenticated one from a different organization. The
+ * read is scoped to the caller's organization, so the subject ids the client
+ * sends are only ever a filter within it: an id from elsewhere selects nothing.
  */
 
 export type ExportEventsResult =
@@ -41,7 +43,7 @@ export type ExportEventsResult =
 export async function loadExportEvents(
   subjectIds: string[]
 ): Promise<ExportEventsResult> {
-  await requireAuth()
+  const context = await requireAuth()
 
   // Without a database the app is running on demo data that has no event log at
   // all. An empty history is the honest answer, and it degrades the export to
@@ -56,7 +58,7 @@ export async function loadExportEvents(
   try {
     const bySubject = await withRetry(
       'export events read',
-      () => loadEventsForSubjects(subjectIds),
+      () => loadEventsForSubjects(context.organizationId, subjectIds),
       isTransientRead
     )
     return { ok: true, events: Object.fromEntries(bySubject) }

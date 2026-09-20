@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { useCRMStore } from '@/lib/store'
-import type { CRMSnapshot } from '@/lib/types'
+import type { CRMSnapshot, Workspace } from '@/lib/types'
 
 /** How often to ask whether anything changed. */
 const CHECK_SECONDS = 12
@@ -53,9 +53,10 @@ export function SnapshotSync({ version }: { version: string }) {
           cache: 'no-store',
         })
 
-        // Most likely a 401: the shared-password session expired. Reloading
-        // would replace a working CRM with a login form mid-edit, so leave the
-        // last good data up and let the next tick retry.
+        // Most likely a 401: the session expired, or this person's membership
+        // was revoked. Reloading would replace a working CRM with a login
+        // form mid-edit, so leave the last good data up and let the next tick
+        // retry — the next navigation meets the gate anyway.
         if (!stamp.ok) return
 
         const { version: next } = (await stamp.json()) as { version?: unknown }
@@ -107,15 +108,22 @@ export function SnapshotSync({ version }: { version: string }) {
   return null
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
 /**
  * Enough of a shape check to refuse a response that is not a working set.
  *
  * The snapshot goes straight into the store, so a login page's HTML or a
  * truncated body arriving here would empty every screen at once. Checking that
- * all eight collections are arrays costs nothing and makes that impossible.
+ * all eight collections are arrays, and that the workspace carries an
+ * organization, a viewer and a roster, costs nothing and makes that
+ * impossible — the chrome reads `workspace.viewer` on every render, so a
+ * snapshot without one would take the sidebar down with it.
  */
 function isSnapshot(value: unknown): value is CRMSnapshot {
-  if (typeof value !== 'object' || value === null) return false
+  if (!isRecord(value)) return false
   const keys: (keyof CRMSnapshot)[] = [
     'companies',
     'contacts',
@@ -126,5 +134,10 @@ function isSnapshot(value: unknown): value is CRMSnapshot {
     'strategyCards',
     'tasks',
   ]
-  return keys.every((key) => Array.isArray((value as Record<string, unknown>)[key]))
+  return keys.every((key) => Array.isArray(value[key])) && isWorkspace(value.workspace)
+}
+
+function isWorkspace(value: unknown): value is Workspace {
+  if (!isRecord(value)) return false
+  return isRecord(value.organization) && isRecord(value.viewer) && Array.isArray(value.members)
 }

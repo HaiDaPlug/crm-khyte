@@ -12,10 +12,20 @@ import type { CompanyRow, ContactRow, LeadRow, OpportunityRow, TaskRow } from '@
 
 const tables = { company: 'companies', contact: 'contacts', prospect: 'opportunities', lead: 'leads', task: 'tasks' } as const
 type Entity = keyof typeof tables
-type Statement = { sql: string; values: unknown[] }
+// `mustAffect` marks a statement that has to hit a row (an update). commitAction
+// checks it so a write that matched nothing surfaces as not_found instead of a
+// receipt claiming a save that never happened.
+type Statement = { sql: string; values: unknown[]; mustAffect?: boolean }
 type Change = { entity: string; id: string; operation: 'create' | 'update'; fields: Row }
-type Plan = { statements: Statement[]; changes: Change[]; entity: Entity; id: string }
-export type Actor = { connectionId: string }
+type Plan = { statements: Statement[]; changes: Change[]; entity: Entity; id: string; actor: Actor }
+/**
+ * Who a tool call acts as: the connection, the account that approved it and
+ * the organization it was approved for. It comes from the OAuth principal
+ * (lib/mcp/oauth.ts), never from a parameter the model supplied, and every
+ * query in this file is scoped by it. A record in another organization must
+ * look exactly like a record that does not exist.
+ */
+export type Actor = { connectionId: string; userId: string; organizationId: string }
 
 /** Stable across key ordering, previews and retries. */
 export function fingerprint(value: unknown): string {
@@ -40,38 +50,46 @@ function publicRecord(entity: Entity, data: Row) {
   }
 }
 
-async function load(db: Queryable, entity: Entity, id: string, lock = false) {
+async function load(db: Queryable, entity: Entity, id: string, actor: Actor, lock = false) {
+  // Scoped in the predicate, not checked after the read: an id from another
+  // organization is simply not found, and the row lock is never taken on it.
   const [row] = await db.query<{ data: Row; version: string }>(
-    `select to_jsonb(t) as data, updated_at::text as version from ${tables[entity]} t where id = $1 ${lock ? 'for update' : ''}`, [id])
+    `select to_jsonb(t) as data, updated_at::text as version from ${tables[entity]} t where id = $1 and organization_id = $2 ${lock ? 'for update' : ''}`, [id, actor.organizationId])
   if (!row) throw new CrmError('not_found', `The ${entity} no longer exists. Search again.`)
   return row
 }
 
-export async function getRecord(db: Queryable, input: unknown) {
+export async function getRecord(db: Queryable, input: unknown, actor: Actor) {
   const { entity, id } = recordSchema.parse(input)
-  const row = await load(db, entity, id)
+  const row = await load(db, entity, id, actor)
   const result: Row = { entity, record: publicRecord(entity, row.data), version: row.version }
   if (entity === 'prospect') {
-    result.company = publicRecord('company', (await load(db, 'company', String(row.data.company_id))).data)
-    result.contact = publicRecord('contact', (await load(db, 'contact', String(row.data.contact_id))).data)
+    // The composite foreign keys already keep a prospect's company and contact
+    // in its organization; the filter is repeated so the rule is visible here
+    // rather than relying on the reader knowing the schema.
+    result.company = publicRecord('company', (await load(db, 'company', String(row.data.company_id), actor)).data)
+    result.contact = publicRecord('contact', (await load(db, 'contact', String(row.data.contact_id), actor)).data)
     result.interactions = (await db.query(`select id, occurred_on, channel, summary, followed_up_by, source_system, source_message_id
-      from crm_interactions where opportunity_id = $1 order by occurred_on desc, created_at desc limit 20`, [id])).map(camel)
-    result.notes = (await db.query(`select id, raw, created_at from notes where opportunity_id = $1 and not dismissed order by created_at desc limit 20`, [id])).map(camel)
-    result.tasks = (await db.query<{ data: Row }>(`select to_jsonb(t) as data from tasks t where related_opportunity_id = $1 and archived_at is null order by created_at desc limit 20`, [id])).map(r => publicRecord('task', r.data))
+      from crm_interactions where opportunity_id = $1 and organization_id = $2 order by occurred_on desc, created_at desc limit 20`, [id, actor.organizationId])).map(camel)
+    result.notes = (await db.query(`select id, raw, created_at from notes where opportunity_id = $1 and organization_id = $2 and not dismissed order by created_at desc limit 20`, [id, actor.organizationId])).map(camel)
+    result.tasks = (await db.query<{ data: Row }>(`select to_jsonb(t) as data from tasks t where related_opportunity_id = $1 and organization_id = $2 and archived_at is null order by created_at desc limit 20`, [id, actor.organizationId])).map(r => publicRecord('task', r.data))
   }
   return result
 }
 
-export async function searchRecords(db: Queryable, input: unknown) {
+export async function searchRecords(db: Queryable, input: unknown, actor: Actor) {
   const args = searchSchema.parse(input)
   const like = `%${args.query.replace(/[\\%_]/g, '\\$&')}%`
   const results: Row[] = []
   // Table/column names are fixed code, never user input. Search terms remain parameters.
+  // Positions are fixed for every entity: $1 search term, $2 organization,
+  // $3 limit, $4 assignee. The prospect subqueries carry the organization too,
+  // so a company name in another organization cannot surface this one's deals.
   const filters: Record<Entity, string> = {
     company: '(name ilike $1 or domain ilike $1)',
     contact: '(name ilike $1 or email ilike $1)',
-    prospect: `(company_id in (select id from companies where name ilike $1 or domain ilike $1)
-      or contact_id in (select id from contacts where name ilike $1 or email ilike $1))`,
+    prospect: `(company_id in (select id from companies where organization_id = $2 and (name ilike $1 or domain ilike $1))
+      or contact_id in (select id from contacts where organization_id = $2 and (name ilike $1 or email ilike $1)))`,
     lead: '(company_name ilike $1 or contact_name ilike $1)',
     task: '(title ilike $1 or description ilike $1)',
   }
@@ -80,26 +98,37 @@ export async function searchRecords(db: Queryable, input: unknown) {
     if (args.assignee && entity !== 'task') continue
     const rows = await db.query<{ data: Row; version: string }>(
       `select to_jsonb(t) as data, updated_at::text as version from ${tables[entity]} t
-      where ${filters[entity]} ${args.assignee ? 'and assignee = $3' : ''} order by updated_at desc, id limit $2`,
-      [like, args.limit + 1, ...(args.assignee ? [args.assignee] : [])])
+      where organization_id = $2 and ${filters[entity]} ${args.assignee ? 'and assignee = $4' : ''} order by updated_at desc, id limit $3`,
+      [like, actor.organizationId, args.limit + 1, ...(args.assignee ? [args.assignee] : [])])
     results.push({ entity, matches: rows.slice(0, args.limit).map(r => ({ record: publicRecord(entity, r.data), version: r.version })), hasMore: rows.length > args.limit })
   }
   return { results, guidance: 'These are candidates. Inspect IDs before updating; do not assume the first matching company/deal is correct.' }
 }
 
 function insert(plan: Plan, table: string, entity: string, row: Row) {
-  const columns = Object.keys(row).map(k => `"${k}"`).join(', ')
+  // Stamped here, on every insert, rather than at each call site. The column
+  // has a rollout default (Khyte) so a forgotten path would not fail — it would
+  // silently file another organization's record under Khyte, which is exactly
+  // the mistake the default must not be allowed to hide.
+  const stamped: Row = { ...row, organization_id: plan.actor.organizationId }
+  const columns = Object.keys(stamped).map(k => `"${k}"`).join(', ')
   // Bind pre-serialized JSON as text. postgres.js otherwise infers jsonb and
   // JSON.stringify's the string again, turning the object into a JSON scalar.
-  plan.statements.push({ sql: `insert into ${table} (${columns}) select ${columns} from jsonb_populate_record(null::${table}, $1::text::jsonb)`, values: [JSON.stringify(row)] })
+  plan.statements.push({ sql: `insert into ${table} (${columns}) select ${columns} from jsonb_populate_record(null::${table}, $1::text::jsonb)`, values: [JSON.stringify(stamped)] })
+  // The organization is the connection's scope, not a field the caller chose,
+  // so it is not among the changes offered for review.
   plan.changes.push({ entity, id: String(row.id), operation: 'create', fields: camel(row) })
 }
 
 function update(plan: Plan, table: string, entity: string, id: string, patch: Row) {
   const columns = Object.keys(patch)
   if (!columns.length) return
+  // The row was loaded and locked in this organization already; the predicate
+  // is repeated so the statement is safe on its own, and `returning` is what
+  // lets commitAction confirm a row was actually written.
   plan.statements.push({ sql: `update ${table} t set ${columns.map(k => `"${k}" = x."${k}"`).join(', ')}
-    from jsonb_populate_record(null::${table}, $1::text::jsonb) x where t.id = $2`, values: [JSON.stringify(patch), id] })
+    from jsonb_populate_record(null::${table}, $1::text::jsonb) x where t.id = $2 and t.organization_id = $3 returning t.id`,
+    values: [JSON.stringify(patch), id, plan.actor.organizationId], mustAffect: true })
   plan.changes.push({ entity, id, operation: 'update', fields: camel(patch) })
 }
 
@@ -107,8 +136,11 @@ function checkVersion(actual: string, expected: string) {
   if (actual !== expected) throw new CrmError('conflict', 'The record changed. Read it again and prepare a new preview.')
 }
 
-async function matching(db: Queryable, entity: 'company' | 'contact' | 'lead', condition: string, values: unknown[]) {
-  const matches = await db.query(`select id from ${tables[entity]} where ${condition} limit 10`, values)
+async function matching(db: Queryable, entity: 'company' | 'contact' | 'lead', condition: string, values: unknown[], actor: Actor) {
+  // The organization is bound after the caller's own parameters, so the
+  // conditions at the call sites read as written ($1, $2, ...) and the
+  // parenthesised condition cannot escape the organization with an `or`.
+  const matches = await db.query(`select id from ${tables[entity]} where organization_id = $${values.length + 1} and (${condition}) limit 10`, [...values, actor.organizationId])
   if (matches.length) throw new CrmError('possible_duplicate', `Matching ${entity} records already exist. Inspect them before creating another.`, { entity, ids: matches.map(r => r.id) })
 }
 
@@ -119,13 +151,18 @@ function event(plan: Plan, requestId: string, kind: string, subjectId: string, c
   const start = new Date(year, month - 1, date).toISOString()
   const end = new Date(year, month - 1, date + 1).toISOString()
   // Keep existing per-prospect/day outreach counts, independent of message count.
+  // `colleague` stays the roster label credited with the work; `recorded_by` is
+  // the account behind the connection that logged it. They differ whenever
+  // someone logs for a teammate, and both are kept. The duplicate check is
+  // per organization so a subject id can never be "already contacted" by
+  // another organization's event.
   plan.statements.push({
-    sql: `insert into crm_events (id, kind, subject_id, colleague, detail, occurred_at)
-      select $1, $2::crm_event_kind, $3, $4, $5::text::jsonb, $6::timestamptz
+    sql: `insert into crm_events (id, organization_id, kind, subject_id, colleague, detail, occurred_at, recorded_by)
+      select $1, $8::uuid, $2::crm_event_kind, $3, $4, $5::text::jsonb, $6::timestamptz, $9::uuid
       where $2 <> 'prospect_contacted' or not exists (
-        select 1 from crm_events where kind = 'prospect_contacted' and subject_id = $3
+        select 1 from crm_events where organization_id = $8::uuid and kind = 'prospect_contacted' and subject_id = $3
         and occurred_at >= $6::timestamptz and occurred_at < $7::timestamptz)`,
-    values: [generatedId(requestId, `event:${kind}`), kind, subjectId, colleague, JSON.stringify(detail), start, end],
+    values: [generatedId(requestId, `event:${kind}`), kind, subjectId, colleague, JSON.stringify(detail), start, end, plan.actor.organizationId, plan.actor.userId],
   })
 }
 
@@ -135,11 +172,11 @@ export function stockholmToday() {
 
 async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: Actor, lock: boolean): Promise<Plan> {
   const input = actionSchemas[action].parse(raw)
-  const plan: Plan = { statements: [], changes: [], entity: 'lead', id: generatedId(input.requestId, action) }
+  const plan: Plan = { statements: [], changes: [], entity: 'lead', id: generatedId(input.requestId, action), actor }
   if (action === 'create_lead') {
     const a = actionSchemas.create_lead.parse(input)
-    await matching(db, 'lead', 'lower(trim(company_name)) = lower(trim($1))', [a.companyName])
-    const companies = await db.query('select id from companies where lower(trim(name)) = lower(trim($1)) limit 10', [a.companyName])
+    await matching(db, 'lead', 'lower(trim(company_name)) = lower(trim($1))', [a.companyName], actor)
+    const companies = await db.query('select id from companies where organization_id = $2 and lower(trim(name)) = lower(trim($1)) limit 10', [a.companyName, actor.organizationId])
     if (companies.length) throw new CrmError('possible_duplicate', 'This company already exists in the CRM. Inspect its prospects before adding a raw lead.', { companyIds: companies.map(c => c.id) })
     insert(plan, 'leads', 'lead', { id: plan.id, company_name: a.companyName, contact_name: a.contactName ?? null, connection: a.connection ?? null,
       source: a.source ?? null, followed_up_by: a.followedUpBy, priority: a.priority, notes: a.notes ?? '', tags: a.tags })
@@ -150,9 +187,9 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
     const a = actionSchemas.create_task.parse(input)
     plan.entity = 'task'
     let companyId = a.relatedCompanyId ?? null
-    if (companyId) await load(db, 'company', companyId, lock)
+    if (companyId) await load(db, 'company', companyId, actor, lock)
     if (a.relatedOpportunityId) {
-      const opportunity = await load(db, 'prospect', a.relatedOpportunityId, lock)
+      const opportunity = await load(db, 'prospect', a.relatedOpportunityId, actor, lock)
       if (companyId && companyId !== opportunity.data.company_id) throw new CrmError('invalid_link', 'The task company does not match the selected prospect.')
       companyId = String(opportunity.data.company_id)
     }
@@ -162,7 +199,7 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
   }
   if (action === 'assign_task') {
     const a = actionSchemas.assign_task.parse(input)
-    const task = await load(db, 'task', a.taskId, lock)
+    const task = await load(db, 'task', a.taskId, actor, lock)
     checkVersion(task.version, a.expectedVersion)
     if (task.data.archived_at) throw new CrmError('archived_task', 'This task is archived. Restore it in the CRM before assigning it.')
     plan.entity = 'task'; plan.id = a.taskId
@@ -175,7 +212,7 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
   plan.entity = 'prospect'
   let companyId: string, contactId: string, previousStage: Stage = 'New', opportunity: Row | undefined
   if (a.target.kind === 'existing') {
-    const current = await load(db, 'prospect', a.target.opportunityId, lock)
+    const current = await load(db, 'prospect', a.target.opportunityId, actor, lock)
     checkVersion(current.version, a.target.expectedVersion)
     opportunity = current.data
     plan.id = a.target.opportunityId
@@ -184,28 +221,32 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
   } else {
     const company = a.target.company
     if ('id' in company) {
-      await load(db, 'company', company.id, lock); companyId = company.id
+      await load(db, 'company', company.id, actor, lock); companyId = company.id
     } else {
-      await matching(db, 'company', 'lower(trim(name)) = lower(trim($1)) or ($2::text is not null and lower(domain) = lower($2))', [company.name, company.domain ?? null])
+      await matching(db, 'company', 'lower(trim(name)) = lower(trim($1)) or ($2::text is not null and lower(domain) = lower($2))', [company.name, company.domain ?? null], actor)
       companyId = generatedId(a.requestId, 'company')
       insert(plan, 'companies', 'company', { id: companyId, name: company.name, domain: company.domain?.toLowerCase() ?? '', industry: company.industry ?? '', location: company.location ?? '' })
     }
     const contact = a.target.contact
     if ('id' in contact) {
-      const existing = await load(db, 'contact', contact.id, lock)
+      const existing = await load(db, 'contact', contact.id, actor, lock)
       if (existing.data.company_id !== companyId) throw new CrmError('invalid_link', 'The selected contact belongs to a different company.')
       contactId = contact.id
     } else {
-      await matching(db, 'contact', '(company_id = $1 and lower(trim(name)) = lower(trim($2))) or ($3::text is not null and lower(email) = lower($3))', [companyId, contact.name, contact.email ?? null])
+      await matching(db, 'contact', '(company_id = $1 and lower(trim(name)) = lower(trim($2))) or ($3::text is not null and lower(email) = lower($3))', [companyId, contact.name, contact.email ?? null], actor)
       contactId = generatedId(a.requestId, 'contact')
       insert(plan, 'contacts', 'contact', { id: contactId, company_id: companyId, name: contact.name, email: contact.email ?? '', role: contact.role ?? '', phone: contact.phone ?? null })
     }
-    const existing = await db.query('select id from opportunities where company_id = $1 limit 10', [companyId])
+    const existing = await db.query('select id from opportunities where company_id = $1 and organization_id = $2 limit 10', [companyId, actor.organizationId])
     if (existing.length) throw new CrmError('possible_duplicate', 'This company already has prospects. Select the appropriate deal instead of creating another.', { opportunityIds: existing.map(r => r.id) })
   }
   if (a.source) {
+    // The unique source index is per (source, opportunity) across the whole
+    // table; the organization predicate keeps the answer — and the ids in
+    // it — inside this organization all the same.
     const [duplicate] = await db.query(`select id, opportunity_id from crm_interactions
-      where source_system = $1 and source_account = $2 and source_message_id = $3 and opportunity_id = $4`, [a.source.system, a.source.account, a.source.messageId, plan.id])
+      where source_system = $1 and source_account = $2 and source_message_id = $3 and opportunity_id = $4 and organization_id = $5`,
+      [a.source.system, a.source.account, a.source.messageId, plan.id, actor.organizationId])
     if (duplicate) throw new CrmError('already_logged', 'This source has already been logged for this prospect.', { interactionId: duplicate.id, opportunityId: duplicate.opportunity_id })
   }
   const stage = (a.stage ?? (opportunity ? previousStage : 'Contacted')) as Stage
@@ -218,14 +259,16 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
     ...(a.priority !== undefined ? { priority: a.priority } : {}),
     ...(a.dealValueSek !== undefined ? { deal_value: a.dealValueSek } : {}),
   }
+  // Sort order is a position within this organization's column; another
+  // organization's cards must not push a new one to the bottom of theirs.
   if (opportunity) {
     if (stage !== previousStage) {
-      const [position] = await db.query('select coalesce(max(sort_order), -1) + 1 as position from opportunities where stage = $1', [stage])
+      const [position] = await db.query('select coalesce(max(sort_order), -1) + 1 as position from opportunities where stage = $1 and organization_id = $2', [stage, actor.organizationId])
       patch.sort_order = position.position
     }
     update(plan, 'opportunities', 'prospect', plan.id, patch)
   } else {
-    const [position] = await db.query('select coalesce(max(sort_order), -1) + 1 as position from opportunities where stage = $1', [stage])
+    const [position] = await db.query('select coalesce(max(sort_order), -1) + 1 as position from opportunities where stage = $1 and organization_id = $2', [stage, actor.organizationId])
     insert(plan, 'opportunities', 'prospect', { id: plan.id, company_id: companyId, contact_id: contactId,
       stage, priority: a.priority ?? 'medium', in_pipeline: true, next_step: '', followed_up_by: a.followedUpBy, sort_order: position.position, ...patch })
   }
@@ -261,7 +304,7 @@ type Resolution =
  * for the single-record path, which is unchanged.
  */
 async function resolveRow(db: Queryable, row: BulkRow, defaults: Row, batchId: string, index: number,
-  source: { system: string; account: string; label?: string } | undefined): Promise<Resolution> {
+  source: { system: string; account: string; label?: string } | undefined, actor: Actor): Promise<Resolution> {
   const requestId = generatedId(batchId, 'row:' + index)
   const stated = Object.fromEntries(Object.entries(row).filter(([, v]) => v !== undefined))
   const merged = { ...defaults, ...stated } as Row
@@ -302,12 +345,14 @@ async function resolveRow(db: Queryable, row: BulkRow, defaults: Row, batchId: s
   if (!contactName && !row.contactId) return { kind: 'invalid', reason: 'No contactName, contactId or opportunityId.' }
 
   // Strongest signal first: an exact email already in the CRM identifies the
-  // contact, and through it the company and any live deal.
+  // contact, and through it the company and any live deal. The same person
+  // can be a contact of two organizations; only this organization's row is
+  // a match, and only its deals are candidates.
   if (!row.companyId && !row.contactId && email) {
     const byEmail = await db.query(`select c.id as contact_id, c.company_id,
-        (select o.id from opportunities o where o.contact_id = c.id order by o.updated_at desc limit 1) as opportunity_id,
-        (select o.updated_at::text from opportunities o where o.contact_id = c.id order by o.updated_at desc limit 1) as version
-      from contacts c where lower(c.email) = lower($1) limit 5`, [email])
+        (select o.id from opportunities o where o.contact_id = c.id and o.organization_id = $2 order by o.updated_at desc limit 1) as opportunity_id,
+        (select o.updated_at::text from opportunities o where o.contact_id = c.id and o.organization_id = $2 order by o.updated_at desc limit 1) as version
+      from contacts c where c.organization_id = $2 and lower(c.email) = lower($1) limit 5`, [email, actor.organizationId])
     if (byEmail.length > 1) {
       return { kind: 'ambiguous', reason: 'That email matches several contacts.', candidates: { contactIds: byEmail.map(r => r.contact_id) } }
     }
@@ -327,11 +372,11 @@ async function resolveRow(db: Queryable, row: BulkRow, defaults: Row, batchId: s
   if (!row.companyId && companyName) {
     const domain = (merged.companyDomain as string | undefined) ?? null
     const byCompany = await db.query(`select id from companies
-      where lower(trim(name)) = lower(trim($1)) or ($2::text is not null and lower(domain) = lower($2)) limit 5`,
-      [companyName, domain])
+      where organization_id = $3 and (lower(trim(name)) = lower(trim($1)) or ($2::text is not null and lower(domain) = lower($2))) limit 5`,
+      [companyName, domain, actor.organizationId])
     if (byCompany.length) {
       const ids = byCompany.map(r => r.id as string)
-      const deals = await db.query('select id, company_id, updated_at::text as version from opportunities where company_id = any($1::uuid[]) limit 10', [ids])
+      const deals = await db.query('select id, company_id, updated_at::text as version from opportunities where company_id = any($1::uuid[]) and organization_id = $2 limit 10', [ids, actor.organizationId])
       return {
         kind: 'ambiguous',
         reason: deals.length
@@ -351,12 +396,12 @@ async function resolveRow(db: Queryable, row: BulkRow, defaults: Row, batchId: s
   return { kind: 'ready', parameters: { ...common, target: { kind: 'new', company, contact } } }
 }
 
-export async function previewBulkOutreach(db: Database, raw: unknown) {
+export async function previewBulkOutreach(db: Database, raw: unknown, actor: Actor) {
   const input = bulkPreviewSchema.parse(raw)
   const ready: Row[] = [], ambiguous: Row[] = [], invalid: Row[] = []
   for (const [index, row] of input.records.entries()) {
     const ref = row.ref ?? String(index)
-    const resolution = await resolveRow(db, row, input.defaults as Row, input.batchId, index, input.source)
+    const resolution = await resolveRow(db, row, input.defaults as Row, input.batchId, index, input.source, actor)
     if (resolution.kind === 'ready') {
       // Validate against the real action schema here, so a row that would fail at
       // commit is reported now rather than surviving the preview.
@@ -403,10 +448,10 @@ export async function commitBulkOutreach(db: Database, raw: unknown, actor: Acto
   // rediscovering it as a conflict.
   const requestIds = input.records.map((_row, index) => generatedId(input.batchId, 'row:' + index))
   const receipts = new Map((await db.query<{ request_id: string; result: Row }>(
-    'select request_id, result from crm_tool_receipts where connection_id = $1 and request_id = any($2::uuid[])',
-    [actor.connectionId, requestIds])).map(r => [r.request_id, r.result]))
+    'select request_id, result from crm_tool_receipts where organization_id = $1 and connection_id = $2 and request_id = any($3::uuid[])',
+    [actor.organizationId, actor.connectionId, requestIds])).map(r => [r.request_id, r.result]))
 
-  const plan = await previewBulkOutreach(db, preview)
+  const plan = await previewBulkOutreach(db, preview, actor)
   const saved: Row[] = [], failed: Row[] = []
 
   // Rows already receipted under this batch, whatever the fresh preview thinks.
@@ -449,9 +494,12 @@ export async function commitBulkOutreach(db: Database, raw: unknown, actor: Acto
 /** What a batch actually persisted, by replaying its derived per-row request IDs. */
 export async function getBulkResult(db: Queryable, batchId: string, actor: Actor) {
   const requestIds = Array.from({ length: BULK_MAX_ROWS }, (_, i) => generatedId(batchId, 'row:' + i))
+  // A batch id is caller-chosen, so the derived request ids are guessable;
+  // the receipts are only visible to the organization and connection that
+  // wrote them.
   const rows = await db.query<{ request_id: string; result: Row }>(
-    'select request_id, result from crm_tool_receipts where connection_id = $1 and request_id = any($2::uuid[]) order by created_at',
-    [actor.connectionId, requestIds])
+    'select request_id, result from crm_tool_receipts where organization_id = $1 and connection_id = $2 and request_id = any($3::uuid[]) order by created_at',
+    [actor.organizationId, actor.connectionId, requestIds])
   return {
     status: rows.length ? ('found' as const) : ('not_found' as const),
     batchId, savedRows: rows.length,
@@ -473,17 +521,30 @@ export async function commitAction(db: Database, action: ActionName, raw: unknow
     // Serializes tool writes across processes: name matching and first-time creation cannot race.
     // Existing UI updates are protected by row locks and expectedVersion checks on the affected records.
     await tx.query("select pg_advisory_xact_lock(hashtext('khyte:crm-tools'))")
-    const [receipt] = await tx.query<{ payload_hash: string; connection_id: string; result: Row }>('select payload_hash, connection_id, result from crm_tool_receipts where request_id = $1', [input.requestId])
+    // Looked up by request id alone — it is the primary key, so a request id
+    // taken by another organization or connection is a real collision, not a
+    // miss. Answering not-found there would let the caller write a second
+    // record under an id the table already refuses; a conflict tells the truth
+    // without revealing whose receipt it is.
+    const [receipt] = await tx.query<{ payload_hash: string; connection_id: string; organization_id: string; result: Row }>(
+      'select payload_hash, connection_id, organization_id, result from crm_tool_receipts where request_id = $1', [input.requestId])
     if (receipt) {
-      if (receipt.payload_hash !== hash || receipt.connection_id !== actor.connectionId) throw new CrmError('request_id_conflict', 'This request ID already belongs to another operation. Do not reuse it with different parameters.')
+      if (receipt.payload_hash !== hash || receipt.connection_id !== actor.connectionId || receipt.organization_id !== actor.organizationId) {
+        throw new CrmError('request_id_conflict', 'This request ID already belongs to another operation. Do not reuse it with different parameters.')
+      }
       return { ...receipt.result, status: 'already_saved' }
     }
     const plan = await prepare(tx, action, input, actor, true)
-    for (const statement of plan.statements) await tx.query(statement.sql, statement.values)
-    const record = await getRecord(tx, { entity: plan.entity, id: plan.id })
+    for (const statement of plan.statements) {
+      const affected = await tx.query(statement.sql, statement.values)
+      // Cannot happen while the row lock from prepare() is held, but a write
+      // that matched nothing must never be receipted as a save.
+      if (statement.mustAffect && !affected.length) throw new CrmError('not_found', 'The record no longer exists. Search again.')
+    }
+    const record = await getRecord(tx, { entity: plan.entity, id: plan.id }, actor)
     const result = { status: 'saved', action, requestId: input.requestId, changes: plan.changes, ...record }
-    await tx.query(`insert into crm_tool_receipts (request_id, action, payload_hash, connection_id, result) values ($1,$2,$3,$4,$5::text::jsonb)`,
-      [input.requestId, action, hash, actor.connectionId, JSON.stringify(result)])
+    await tx.query(`insert into crm_tool_receipts (request_id, organization_id, action, payload_hash, connection_id, result) values ($1,$2,$3,$4,$5,$6::text::jsonb)`,
+      [input.requestId, actor.organizationId, action, hash, actor.connectionId, JSON.stringify(result)])
     return result
   })
 }

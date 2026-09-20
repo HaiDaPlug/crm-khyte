@@ -1,4 +1,4 @@
-import { isAuthenticated } from '@/lib/auth/guard'
+import { getAuthContext } from '@/lib/auth/context'
 import { loadGoalsVersion } from '@/lib/db/queries'
 
 /**
@@ -18,15 +18,18 @@ import { loadGoalsVersion } from '@/lib/db/queries'
  * AUTH. proxy.ts already turns away a request with no session cookie, and this
  * repeats the check for the reason lib/auth/guard.ts exists: a Route Handler
  * is reachable by direct fetch, so Proxy is the first line and this is the
- * last. The response carries no board content — a timestamp and a row count —
- * so even a leaked stamp reveals nothing beyond "something changed".
+ * last. The context that passes it also names the organization the stamp is
+ * computed for. The response carries no board content — a timestamp and a
+ * row count — so even a leaked stamp reveals nothing beyond "something
+ * changed".
  */
 export async function GET() {
-  if (!(await isAuthenticated())) {
+  const context = await getAuthContext()
+  if (!context) {
     return new Response('Unauthorized', { status: 401 })
   }
 
-  const version = await loadGoalsVersion()
+  const version = await loadGoalsVersion(context.organizationId)
 
   return Response.json(
     { version },

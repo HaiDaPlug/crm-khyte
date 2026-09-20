@@ -13,6 +13,8 @@ import {
   CRMSnapshot,
   Settings,
   AppLanguage,
+  OrganizationMember,
+  Workspace,
 } from '@/lib/types'
 import { DEFAULT_SETTINGS } from '@/lib/settings'
 import { newId } from '@/lib/utils'
@@ -60,6 +62,12 @@ export interface CRMStore {
   toggleTheme: () => void
 
   // Data
+  /**
+   * The organization this working set belongs to, who is looking, and the
+   * roster. Read by the chrome (avatar, sign-out) and by Settings; written by
+   * the snapshot and by the two roster actions below, nothing else.
+   */
+  workspace: Workspace
   opportunities: Opportunity[]
   companies: Company[]
   contacts: Contact[]
@@ -84,8 +92,8 @@ export interface CRMStore {
   toasts: Toast[]
   dismissToast: (id: string) => void
   /**
-   * Swaps the eight data collections for a freshly read snapshot, leaving
-   * every piece of UI state (settings, sidebar, search) alone.
+   * Swaps the data collections and the workspace for a freshly read snapshot,
+   * leaving every piece of UI state (settings, sidebar, search) alone.
    *
    * Returns false when the merge was refused rather than applied — a caller
    * that gets `false` must not mark the incoming version as seen, or the
@@ -180,6 +188,24 @@ export interface CRMStore {
   updateLead: (leadId: string, updates: Partial<Lead>) => void
   /** Permanent — used when a lead is promoted into a Prospect, or removed outright. */
   removeLead: (leadId: string) => void
+
+  // Actions — Workspace
+  /**
+   * Replaces the roster wholesale — for a caller holding a fresh read of
+   * every member. Leaves the organization and the viewer alone.
+   */
+  setWorkspaceMembers: (members: OrganizationMember[]) => void
+  /**
+   * Files one member into the roster: the row with the same id is replaced,
+   * an unknown one appended. Called by Settings with what a member action
+   * returned, which is the row as the database now holds it — so unlike the
+   * collections above this is not optimistic and needs no protection from
+   * the next merge.
+   *
+   * The viewer's own entry is mirrored too: renaming yourself, or being
+   * promoted, shows in the chrome at once instead of on the next poll.
+   */
+  upsertWorkspaceMember: (member: OrganizationMember) => void
 
   // Actions — UI
   toggleSidebar: () => void
@@ -297,6 +323,26 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
   function markRecent(collection: string, id: string): void {
     recentlyWonLocally.set(`${collection}:${id}`, Date.now() + LOCAL_WRITE_GRACE_MS)
+  }
+
+  /**
+   * The roster under the same protection as the collections.
+   *
+   * A member action is awaited and files the committed row, so the write can
+   * never be ahead of the server — but a poll's *read* can have started
+   * before that write committed and land afterwards, carrying the old roster.
+   * Without this, a member just added or renamed in Settings would vanish
+   * from the list (and the viewer's own rename from the sidebar) until the
+   * next poll. The viewer is re-derived from the merged roster so the two
+   * cannot disagree about the person looking.
+   */
+  function mergeWorkspace(local: Workspace, incoming: Workspace): Workspace {
+    const members = mergeCollection('members', local.members, incoming.members)
+    const own = members.find((m) => m.userId === incoming.viewer.userId)
+    const viewer = own
+      ? { ...incoming.viewer, displayName: own.displayName, role: own.role, colleague: own.colleague }
+      : incoming.viewer
+    return { organization: incoming.organization, viewer, members }
   }
 
   /**
@@ -448,6 +494,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         }),
 
       // The server snapshot, in place before the first render
+      workspace: snapshot.workspace,
       companies: snapshot.companies,
       contacts: snapshot.contacts,
       opportunities: snapshot.opportunities,
@@ -488,6 +535,11 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         // explain why — see markRecent/mergeCollection.
         const state = get()
         set({
+          // Merged per member, like the collections: a poll that started
+          // before a member action committed must not undo it. The viewer is
+          // re-derived from the merged roster, which is how a rename or a
+          // demotion by another owner reaches the chrome too.
+          workspace: mergeWorkspace(state.workspace, snapshot.workspace),
           companies: mergeCollection('companies', state.companies, snapshot.companies),
           contacts: mergeCollection('contacts', state.contacts, snapshot.contacts),
           opportunities: mergeCollection('opportunities', state.opportunities, snapshot.opportunities),
@@ -1014,6 +1066,37 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         set((state) => ({ leads: state.leads.filter((l) => l.id !== leadId) }))
         persist('Remove lead', null, () => api.deleteLead(leadId), 'Lead removed')
       },
+
+      // Workspace
+      setWorkspaceMembers: (members) =>
+        set((state) => ({ workspace: { ...state.workspace, members } })),
+
+      upsertWorkspaceMember: (member) =>
+        set((state) => {
+          // Same grace window as a settled write: a poll whose read predates
+          // this row must not take it back — see mergeWorkspace.
+          markRecent('members', member.id)
+          const { workspace } = state
+          const known = workspace.members.some((m) => m.id === member.id)
+          const members = known
+            ? workspace.members.map((m) => (m.id === member.id ? member : m))
+            : [...workspace.members, member]
+
+          // Same person as the one looking: keep the viewer in step. Matched
+          // on userId rather than memberId so a re-added membership (same id,
+          // see lib/org/members.addMember) and a fresh one behave alike.
+          const viewer =
+            member.userId === workspace.viewer.userId
+              ? {
+                  ...workspace.viewer,
+                  displayName: member.displayName,
+                  role: member.role,
+                  colleague: member.colleague,
+                }
+              : workspace.viewer
+
+          return { workspace: { ...workspace, members, viewer } }
+        }),
 
       // UI
       toggleSidebar: () =>
