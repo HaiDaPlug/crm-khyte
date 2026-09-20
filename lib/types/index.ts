@@ -194,6 +194,20 @@ export interface Viewer {
 }
 
 /**
+ * What a browser believes it is acting as when it submits a write.
+ *
+ * Sent with every Server Action call and compared, server-side, with the
+ * session that actually arrives. A tab whose account changed underneath it
+ * (another tab logged in as someone else) would otherwise submit its drafts
+ * under the new identity; with this, the server refuses and the tab reloads.
+ * It is an expectation to verify, never an authority — the session decides.
+ */
+export interface ActionScope {
+  organizationId: string
+  userId: string
+}
+
+/**
  * The organization the session is acting in, who is looking, and who else is
  * a member. Loaded with the snapshot so the chrome and Settings can render it
  * without a second read; changes to the roster are rare and arrive through

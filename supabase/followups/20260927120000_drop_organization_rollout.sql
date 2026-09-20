@@ -18,9 +18,11 @@
 -- code is deployed is the one thing this whole arrangement exists to prevent:
 -- the older code inserts without organization_id and would start failing.
 --
--- The test suite applies this file directly (tests/mcp.test.ts) before it
--- creates its second organization, which is how the guard and the contract
--- are both exercised without either being pushed to a live database.
+-- The test suites apply the migrations up to this file, assert the guard,
+-- then apply this file from wherever it lives (here, or migrations/ once it
+-- has been promoted), which is how the guard and the cleanup are both
+-- exercised without either being pushed to a live database — and why
+-- promoting the file needs no test change.
 -- ---------------------------------------------------------------------------
 
 alter table public.companies                    alter column organization_id drop default;

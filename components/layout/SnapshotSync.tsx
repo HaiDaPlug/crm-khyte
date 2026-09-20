@@ -33,6 +33,18 @@ const CHECK_SECONDS = 12
  */
 export function SnapshotSync({ version }: { version: string }) {
   const applyRemoteSnapshot = useCRMStore((s) => s.applyRemoteSnapshot)
+  const identityChanged = useCRMStore((s) => s.identityChanged)
+
+  // The store has decided it belongs to a session that no longer exists here
+  // — another tab logged in as someone else, or this one was revoked and
+  // replaced. Nothing in it may be merged with or written for the new
+  // identity, so the only honest move is a full reload: the layout rebuilds
+  // the store from whatever session the browser actually holds, or lands on
+  // the gate. Drafts in open forms are lost, which beats saving them as
+  // someone else.
+  useEffect(() => {
+    if (identityChanged) window.location.reload()
+  }, [identityChanged])
 
   /** The stamp whose data the store is currently showing. */
   const seen = useRef(version)

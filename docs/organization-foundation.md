@@ -98,6 +98,25 @@ login form ──▶ app/actions/auth.ts
   the root layout sends such a request to it, and logging in again revokes
   the old session row. This is why `proxy.ts` no longer bounces a signed
   cookie away from `/login`.
+- **Credential generation.** Every membership carries
+  `credential_generation`. Wallpaper links, OAuth authorization codes and MCP
+  connections record it when minted and are refused once it no longer
+  matches. Revoking, re-adding and resetting a password each rotate it, so a
+  credential copied before any of those cannot come back to life when the
+  same membership row is active again. Sessions are plain rows and are
+  simply revoked. Pending authorization codes are also deleted outright on
+  revoke and reset.
+- **Access already granted to a running request ends at the next write.**
+  An MCP request is authenticated once, but every commit re-verifies the
+  connection and its membership inside the write transaction, under the
+  same account lock revocation takes, so a bulk import stops at the first row
+  after the member or connection is revoked.
+- **A browser tab is bound to the identity it was built for.** Every
+  Server Action call carries the organization and user the tab believes it
+  is acting as; the server refuses a write whose expectation does not match
+  the session that arrived (`context_mismatch`), and the tab reloads. A
+  snapshot for a different organization or viewer is refused the same way.
+  Client-supplied ids are an expectation to verify, never an authority.
 - Supabase Auth is contacted only to verify a password or to manage an
   account (`lib/auth/identity.ts`). The GoTrue session it returns is discarded
   and revoked server-side; the app's own session is the credential.
@@ -169,6 +188,23 @@ their own roster. The rules that follow from that, enforced in
 Without these rules an owner of one organization could have taken over a
 shared account and logged in as that person into another organization.
 
+**Under locks, in one transaction.** Two invariants cannot be kept by a
+check followed by a write: an organization always has at least one active
+owner, and an account is administered by one organization at a time. Every
+roster write takes the organization's advisory lock and, when it touches an
+account, that account's lock (organization first, then account, everywhere);
+the check and the change happen inside one serialized step, and the acting
+owner is re-checked inside the lock as well. The MCP token exchange and the
+tool commit take the account lock too, so revocation and in-flight work have
+a defined order.
+
+**Supabase Auth cannot be rolled back by SQL.** Add and reset therefore
+write the membership first, call Supabase Auth second, and revoke old
+credentials last. A failed password call rolls the membership back and
+nothing has changed. A failure after a successful password call is reported
+as `membership_unsaved`: the password changed, the rest did not, and
+running the same action again completes it with a fresh password.
+
 **CLI**, for bootstrap and recovery:
 
 ```bash
@@ -214,24 +250,41 @@ window, in this order:
 2. `npm run org:members -- add …` for each team member (at least one owner).
    Needs `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` and
    `SUPABASE_DB_URL` in `.env.local`.
-3. Set `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` on the deployment. Remove
-   `AUTH_PASSWORD` (unused). Keep `AUTH_SECRET`; rotating it logs everyone
-   out, as before.
+3. Set `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` on the deployment. Keep
+   `AUTH_SECRET`; rotating it logs everyone out, as before. Leave
+   `AUTH_PASSWORD` in place for now: the new code ignores it, but the old
+   build still needs it, and the old build is the rollback target until
+   step 5. Remove it together with step 5.
 4. Deploy. Log in with an account. Reconnect ChatGPT (the old connection is
    revoked). Copy new wallpaper links from `/goals`.
 5. After the deployed build is verified, move
    `supabase/followups/20260927120000_drop_organization_rollout.sql` into
-   `supabase/migrations/` and push it. It drops the `organization_id`
+   `supabase/migrations/` (same timestamp or a newer one) and push it, then
+   remove `AUTH_PASSWORD` from the deployment. It drops the `organization_id`
    defaults, the old weekly index and the rollout guard. It is deliberately
    outside `migrations/` until then: the default is what makes step 1 safe
    to run ahead of step 4. Until it has run, the database refuses to create
    a second organization (`organizations_rollout_guard`), so the ordering is
-   enforced rather than remembered.
+   enforced rather than remembered. The test suites are written for both
+   layouts: they apply the migrations up to the cleanup file, assert the
+   guard, then apply the cleanup from wherever it lives, so promoting the
+   file needs no test change.
 
-**Rollback.** Rolling the code back after step 4 keeps working because of
-the default. Rolling the migration back is not supported; it is additive, and
+**Rollback, before step 5.** The old build is a valid rollback target
+between step 4 and step 5, and only then: the column defaults let it insert
+without an organization, the old weekly index lets its archive find its
+conflict target, and `AUTH_PASSWORD` (still set) lets it authenticate.
+Rolling the migration itself back is not supported; it is additive, and
 `owner_id` was never populated, so there is nothing the old code would miss.
-Sessions and memberships would simply sit unused.
+Sessions, memberships and MCP identity would sit unused until the new build
+returns. Rehearse this on disposable data before relying on it: log in with
+the shared password, create a prospect, and let a week archive.
+
+**After step 5, forward only.** Once the defaults and the old index are
+gone the old build's inserts and archive fail, and once a second organization
+exists the old build's unscoped queries would show every organization's data
+to everyone. From that point recovery means fixing forward on the new code,
+never redeploying the legacy build.
 
 ---
 
@@ -241,19 +294,30 @@ Sessions and memberships would simply sit unused.
 | --- | --- | --- |
 | Typecheck | `npx tsc --noEmit` | 0 errors |
 | Production build | `npm run build` | passes |
-| Service, OAuth, MCP, sessions, members, isolation, wallpaper links | `npm run test:mcp` | 31 / 31 |
-| Migration rehearsal, rollout guard and follow-up | `npm run test:org` | 7 / 7 |
+| Service, OAuth, MCP, sessions, members, isolation, wallpaper links, credential generation, revocation mid-request, account claims | `npm run test:mcp` | 36 pass, 1 skipped |
+| Migration rehearsal, rollout guard and follow-up (both layouts) | `npm run test:org` | 7 / 7 |
+| Structural scoping lint over actions and data modules | `npm run test:scoping` | 3 / 3 |
 | HTTP boundaries against the built server | `npm run test:mcp:http` | 3 / 3 |
+| Real multi-connection concurrency (opt-in, needs `MCP_TEST_DATABASE_URL`) | `tests/mcp-postgres.test.ts` | not run here |
 
-An adversarial review (four lenses, every finding verified twice) ran on the
-first cut and confirmed three real gaps, all closed and covered above: an
-owner could take over a shared account through add-member plus password
-reset; wallpaper links outlived membership revocation; a revoked person with
-a still-signed cookie was locked out of the login page. Smaller confirmed
-items (a global login throttle any client could trip, a 429 from Supabase
-Auth reading as a wrong password, the roster losing a just-added member to a
-stale poll, an orphaned account on a refused add, the deploy-window index
-mismatch) are fixed as well.
+The skipped test is the client identity boundary (`createCRMStore` cannot be
+loaded in plain Node because the store imports the Server Actions, which
+import `next/navigation`); the test is written and skips with that reason
+until the store takes its actions by injection.
+
+**Review history.** An adversarial review on the first cut confirmed three
+gaps (shared-account takeover via add plus reset; wallpaper links outliving
+revocation; a signed-but-dead cookie locking a person out of the gate) and
+five smaller ones, all fixed. Astra's audit of commit `977e05c` then found
+seven more, all addressed in the correction pass and covered by the tests
+named after its acceptance criteria: credentials reviving after a re-add
+(credential generation), writes continuing after revocation inside an
+authenticated request (per-commit revalidation under the account lock),
+client snapshots merging across identities (identity boundary and scope
+binding), unserialized account claims (locked claim protocol with an
+explicit recovery path), concurrent owner changes reaching zero owners
+(organization lock), the cleanup promotion breaking the test setup
+(layout-independent migration helper), and the rollback runbook.
 
 What the suites establish:
 
@@ -293,9 +357,18 @@ What the suites establish:
   substance; the HTTP suite shows unauthenticated and unknown-cookie requests
   going to the login page and protocol routes behaving as before.
 
-Not exercised here: a browser session against a live Supabase Auth project
-(no accounts exist yet), and the production migration push. Both are part of
-the deploy steps above.
+**Automated checks versus rehearsal.** The suites above run in PGlite, a
+single-connection engine: they prove the service, OAuth, membership and
+migration rules sequentially, and they cover the browser write path only
+structurally (`tests/scoping.test.ts` lints every PostgREST chain and SQL
+statement in the actions and data modules for an organization predicate; it
+is a lint, not proof). They do not exercise a real browser session against
+a live Supabase Auth project, the Server Actions end to end, the display
+routes over HTTP with a live database, or genuine multi-connection
+concurrency. The advisory-lock protocol is verified by reading and by the
+opt-in `tests/mcp-postgres.test.ts`, which needs a real PostgreSQL
+(`MCP_TEST_DATABASE_URL`) and was not run here. Those remain manual
+rehearsal items for the deploy, listed under *Deploy order*.
 
 Unresolved identity mappings: the table under *Members*.
 

@@ -71,6 +71,12 @@ export async function POST(request: Request) {
       return Response.redirect(callback, 303)
     }
     if (form.get('decision') !== 'allow') throw new CrmError('invalid_request', 'Choose whether to connect.')
-    return Response.redirect(await issueCode(crmDatabase(), authorization, { userId: who.context.userId, organizationId: who.context.organizationId }), 303)
+    // The code carries the membership and its generation as they stand right
+    // now; a revoke, re-add or password reset before the exchange rotates the
+    // generation and the code dies with it (lib/mcp/oauth.ts).
+    return Response.redirect(await issueCode(crmDatabase(), authorization, {
+      userId: who.context.userId, organizationId: who.context.organizationId,
+      memberId: who.context.viewer.memberId, credentialGeneration: who.context.credentialGeneration,
+    }), 303)
   } catch (error) { return oauthError(error) }
 }

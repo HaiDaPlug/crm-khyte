@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict'
 import { createHmac, randomUUID } from 'node:crypto'
-import { readdir, readFile } from 'node:fs/promises'
 import { after, before, test } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 import type { Database, Queryable, Row } from '../lib/crm/database'
-import type { ColleagueId, MemberRole } from '../lib/types'
+import type { ColleagueId, MemberRole, OrganizationMember, Workspace } from '../lib/types'
 import { actionSchemas, calendarDate } from '../lib/crm/contracts'
 import { commitAction, previewAction, getRecord, searchRecords, safeError,
   previewBulkOutreach, commitBulkOutreach, getBulkResult } from '../lib/crm/service'
 import { createCrmMcpServer } from '../lib/mcp/server'
+import type { CodeIdentity, Principal } from '../lib/mcp/oauth'
 import { authenticateBearer, exchangeToken, issueCode, revokeToken, validateAuthorization, authorizationMetadata } from '../lib/mcp/oauth'
 import { config, hashToken, pkceChallenge, previewToken, readEnvelope, signEnvelope, verifyPreview } from '../lib/mcp/security'
 import { checkOrigin, readBody } from '../lib/mcp/http'
@@ -23,8 +23,9 @@ import { displayToken, verifyDisplayToken } from '../lib/auth/display-token'
 // wrapper and reads the session through next/headers, the same reason
 // resolveAuthContext rather than getAuthContext is used above.
 import { resolveDisplayGrant } from '../lib/auth/display-access'
-import { addMember, assertCanAddMember, hasActiveMembershipElsewhere, revokeConnectionsForUser,
-  revokeMember, revokeSessionsForUser, updateMember } from '../lib/org/members'
+import { addMember, assertCanAddMember, claimAccount, hasActiveMembershipElsewhere, resetCredentials,
+  revokeConnectionsForUser, revokeMember, revokeSessionsForUser, updateMember } from '../lib/org/members'
+import { applyMigrations, finishRollout } from './support/migrations'
 import { register } from '../instrumentation'
 import { exportProspects, EXPORT_ROWS_BYTES } from '../lib/mcp/export'
 import { EXPORT_GROUPS } from '../lib/mcp/export-schema'
@@ -61,9 +62,16 @@ const OTHER_ORG = randomUUID()
 // contacted. An actor is a connection acting as a person in an organization —
 // exactly what authenticateBearer hands the tools. The Khyte actor is that
 // organization's owner and is mapped to the 'erik' roster label.
-const actor = { connectionId: randomUUID(), userId: randomUUID(), organizationId: KHYTE }
-const otherActor = { connectionId: randomUUID(), userId: randomUUID(), organizationId: OTHER_ORG }
-const identity = { userId: actor.userId, organizationId: actor.organizationId }
+//
+// REAL PRINCIPALS, NOT SHAPES. commitAction re-verifies the connection inside
+// its transaction — the row must exist, be unrevoked, and join to an active
+// membership on the same credential generation (lib/crm/service.ts) — so a
+// hand-built { connectionId, userId, organizationId } is refused as
+// 'unauthorized' before it writes anything. Every actor below is therefore
+// minted through the real consent path: membership → code → token → bearer.
+// They are assigned in before(), which is why they are `let`.
+let actor: Principal
+let otherActor: Principal
 const lead = () => ({ requestId: randomUUID(), companyName: `Lead ${randomUUID()}`, followedUpBy: 'abdi' as const, tags: ['referral', 'referral'] })
 const task = () => ({ requestId: randomUUID(), title: 'Send the agreed proposal', assignee: 'hai' as const, dueDate: null, tags: ['proposal'] })
 const outreach = () => ({ requestId: randomUUID(), target: { kind: 'new' as const, company: { name: `Company ${randomUUID()}` }, contact: { name: 'Anna', email: `${randomUUID()}@example.test` } },
@@ -90,6 +98,54 @@ async function login(userId: string, organizationId: string) {
   return minted
 }
 
+/**
+ * The membership a credential is minted against, as it stands right now: its
+ * id and its current credential generation. Every credential in this codebase
+ * — wallpaper link, authorization code, MCP connection — records both, and is
+ * refused once the generation has moved on.
+ */
+async function membership(userId: string, organizationId: string) {
+  const [row] = await db.query<{ id: string; credential_generation: string }>(
+    'select id, credential_generation from organization_members where user_id = $1 and organization_id = $2',
+    [userId, organizationId])
+  assert.ok(row, 'no membership to mint a credential against')
+  return { memberId: row.id, credentialGeneration: row.credential_generation }
+}
+
+/** What the consent route passes to issueCode: the session's person, their
+ *  organization, and the membership behind both. */
+async function codeIdentity(who: { userId: string; organizationId: string }): Promise<CodeIdentity> {
+  return { ...who, ...(await membership(who.userId, who.organizationId)) }
+}
+
+/** Approves an MCP connection as this person, the way the consent page does,
+ *  and returns the token pair. */
+async function approve(who: { userId: string; organizationId: string }, scope?: string) {
+  const code = new URL(await issueCode(db, authorization(scope), await codeIdentity(who))).searchParams.get('code')!
+  return exchangeToken(db, tokenForm(code))
+}
+
+/**
+ * A real principal for this person in this organization: an account, a
+ * membership, and a connection created through the whole OAuth path rather
+ * than assembled by hand. This is what every tool call in the suite acts as —
+ * see the note on `actor` for why nothing less will do.
+ *
+ * `scopes` is the space-separated scope string the connection is approved
+ * with, defaulting to what the consent page asks for.
+ */
+async function connect(userId: string, organizationId: string, scopes?: string): Promise<Principal> {
+  await db.query('insert into auth.users (id, email) values ($1, $2) on conflict (id) do nothing',
+    [userId, `${userId.slice(0, 8)}@example.test`])
+  const [existing] = await db.query<{ id: string }>(
+    `select id from organization_members where user_id = $1 and organization_id = $2 and status = 'active'`, [userId, organizationId])
+  if (!existing) {
+    await addMember(db, { organizationId, userId, email: `${userId.slice(0, 8)}@example.test`, displayName: 'Testperson', role: 'member', colleague: null })
+  }
+  const token = await approve({ userId, organizationId }, scopes)
+  return authenticateBearer(db, `Bearer ${token.access_token}`)
+}
+
 test('server initialization uses Stockholm day boundaries in winter, summer and DST transitions', () => {
   assert.equal(new Date(2026, 0, 15).toISOString(), '2026-01-14T23:00:00.000Z')
   assert.equal(new Date(2026, 6, 15).toISOString(), '2026-07-14T22:00:00.000Z')
@@ -100,29 +156,22 @@ test('server initialization uses Stockholm day boundaries in winter, summer and 
 before(async () => {
   await pg.exec(`create role anon; create role authenticated; create schema auth; create table auth.users (id uuid primary key, email text);
     create function auth.uid() returns uuid language sql as $$ select null::uuid $$;`)
-  const files = (await readdir('supabase/migrations')).filter(f => f.endsWith('.sql')).sort()
-  for (const file of files) {
-    // gen_random_uuid is built into modern Postgres; PGlite does not bundle pgcrypto.
-    const sql = (await readFile(`supabase/migrations/${file}`, 'utf8')).replace('create extension if not exists pgcrypto;', '')
-    await pg.exec(sql)
-  }
+  await applyMigrations(pg)
   // The organization migration leaves the rollout aids standing: the Khyte id
   // as a default on every organization_id column, and the old single-column
   // week index. Both are only safe while Khyte is the only organization, and
   // organizations_rollout_guard makes that a rule the database keeps rather
   // than a sentence in a document — a second organization is refused until
-  // the follow-up has dropped them.
-  await assert.rejects(db.query(`insert into organizations (id, name, slug) values ($1, 'Refused AB', 'refused')`, [OTHER_ORG]), /rollout finished/)
-  // The follow-up lives outside supabase/migrations/ so `db:push` cannot run
-  // it ahead of the code that writes organization_id explicitly — the one
-  // ordering this whole arrangement exists to prevent. Applying it here is
-  // how this suite reaches the finished state without it being pushed
-  // anywhere, and every assertion below therefore runs against a database
-  // with no defaults left to hide a forgotten organization_id.
-  await pg.exec(await readFile('supabase/followups/20260927120000_drop_organization_rollout.sql', 'utf8'))
+  // the follow-up has dropped them. finishRollout asserts exactly that and
+  // then applies the follow-up from wherever it lives, so every assertion
+  // below runs against a database with no defaults left to hide a forgotten
+  // organization_id (see tests/support/migrations.ts).
+  await finishRollout(pg, OTHER_ORG)
   await db.query(`insert into organizations (id, name, slug) values ($1, 'Other AB', 'other')`, [OTHER_ORG])
-  await member(KHYTE, { userId: actor.userId, role: 'owner', colleague: 'erik', displayName: 'Erik' })
-  await member(OTHER_ORG, { userId: otherActor.userId, role: 'owner', displayName: 'Other Owner' })
+  const erik = await member(KHYTE, { role: 'owner', colleague: 'erik', displayName: 'Erik' })
+  const theirOwner = await member(OTHER_ORG, { role: 'owner', displayName: 'Other Owner' })
+  actor = await connect(erik.userId, KHYTE)
+  otherActor = await connect(theirOwner.userId, OTHER_ORG)
 })
 after(async () => { await pg.close() })
 
@@ -258,8 +307,11 @@ test('preview is read-only; lead creation retains tags and credits the named col
   assert.equal((await commitAction(db, 'create_lead', a, actor)).status, 'already_saved')
   await assert.rejects(commitAction(db, 'create_lead', { ...a, companyName: 'Different' }, actor), /request ID/)
   // The same person, a different connection: a request id belongs to the
-  // connection that used it, not to the organization.
-  await assert.rejects(commitAction(db, 'create_lead', a, { ...actor, connectionId: randomUUID() }), /request ID/)
+  // connection that used it, not to the organization. A second *real*
+  // connection, because an invented connection id is now refused as
+  // unauthorized before the receipt is ever read — which would prove
+  // something else entirely.
+  await assert.rejects(commitAction(db, 'create_lead', a, await connect(actor.userId, KHYTE)), /request ID/)
   await assert.rejects(commitAction(db, 'create_lead', { ...a, requestId: randomUUID() }, actor), /already exist/)
 })
 
@@ -455,18 +507,13 @@ test('a stale version fails only its own row and leaves the rest of the batch sa
 })
 
 const verifier = 'a'.repeat(64)
-function authorization() {
+function authorization(scope = 'crm:read crm:tasks:write') {
   return validateAuthorization({ response_type: 'code', client_id: config().clientId, redirect_uri: config().redirects[0],
-    state: 'state-value', resource: config().resource, code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256', scope: 'crm:read crm:tasks:write' })
+    state: 'state-value', resource: config().resource, code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256', scope })
 }
 function tokenForm(code: string) {
   return new URLSearchParams({ grant_type: 'authorization_code', client_id: config().clientId, client_secret: config().clientSecret,
     redirect_uri: config().redirects[0], code, code_verifier: verifier, resource: config().resource })
-}
-/** Approves an MCP connection as this person, the way the consent page does. */
-async function connect(who: { userId: string; organizationId: string }) {
-  const code = new URL(await issueCode(db, authorization(), who)).searchParams.get('code')!
-  return exchangeToken(db, tokenForm(code))
 }
 
 test('authorization tolerates ChatGPT extras and an absent resource, and names bad fields', async () => {
@@ -483,7 +530,7 @@ test('authorization tolerates ChatGPT extras and an absent resource, and names b
   // A genuinely malformed request names the field instead of the old opaque fallback.
   assert.throws(() => validateAuthorization({ ...base, state: '' }), /missing or malformed: state/)
   // The token endpoint takes the same latitude on resource.
-  const code = new URL(await issueCode(db, validateAuthorization(base), identity)).searchParams.get('code')!
+  const code = new URL(await issueCode(db, validateAuthorization(base), await codeIdentity(actor))).searchParams.get('code')!
   const form = tokenForm(code); form.delete('resource')
   assert.equal((await exchangeToken(db, form)).token_type, 'Bearer')
 })
@@ -493,7 +540,7 @@ test('OAuth binds callback/resource/client/PKCE, consumes codes once, rotates to
   assert.throws(() => validateAuthorization({ ...authorization(), redirect_uri: 'https://evil.example/' }), /Unrecognized/)
   assert.throws(() => validateAuthorization({ ...authorization(), resource: 'https://evil.example/mcp' }), /Unrecognized/)
   assert.throws(() => validateAuthorization({ ...authorization(), scope: 'crm:read admin' }), /supported/)
-  const callback = new URL(await issueCode(db, authorization(), identity)), code = callback.searchParams.get('code')!
+  const callback = new URL(await issueCode(db, authorization(), await codeIdentity(actor))), code = callback.searchParams.get('code')!
   assert.equal(callback.searchParams.get('state'), 'state-value')
   assert.equal(callback.searchParams.get('iss'), config().origin)
   const wrong = tokenForm(code); wrong.set('code_verifier', 'b'.repeat(64))
@@ -645,7 +692,7 @@ test("revoking a membership cuts that person's sessions and MCP connections in t
   // test below; this one is about what revocation cuts.
   const leaving = await member(KHYTE, { role: 'owner', displayName: 'Leaving Owner' })
   const elsewhere = await addMember(db, { organizationId: OTHER_ORG, userId: leaving.userId, email: leaving.email, displayName: 'Leaving Owner', role: 'member', colleague: null })
-  const token = await connect({ userId: leaving.userId, organizationId: KHYTE })
+  const token = await approve({ userId: leaving.userId, organizationId: KHYTE })
   const here = await login(leaving.userId, KHYTE)
   const there = await login(leaving.userId, OTHER_ORG)
   assert.equal((await authenticateBearer(db, `Bearer ${token.access_token}`)).userId, leaving.userId)
@@ -757,16 +804,21 @@ test('membership rules: one membership per account for life, one active member p
   await assert.rejects(updateMember(db, OTHER_ORG, a.memberId, { displayName: 'x' }), failsWith('not_found'))
 })
 
-test('an MCP connection carries the person who approved it and their organization, and nothing less', async () => {
-  const callback = new URL(await issueCode(db, authorization(), identity)), code = callback.searchParams.get('code')!
-  const [stored] = await db.query<{ user_id: string; organization_id: string }>('select user_id, organization_id from crm_oauth_codes where code_hash = $1', [hashToken(code)])
-  assert.deepEqual(stored, { user_id: identity.userId, organization_id: KHYTE })
+test('an MCP connection carries the person who approved it, their organization and their membership, and nothing less', async () => {
+  const minted = await codeIdentity(actor)
+  const callback = new URL(await issueCode(db, authorization(), minted)), code = callback.searchParams.get('code')!
+  const [stored] = await db.query<{ user_id: string; organization_id: string; member_id: string; member_generation: string }>(
+    'select user_id, organization_id, member_id, member_generation from crm_oauth_codes where code_hash = $1', [hashToken(code)])
+  assert.deepEqual(stored, { user_id: actor.userId, organization_id: KHYTE, member_id: minted.memberId, member_generation: minted.credentialGeneration })
   const token = await exchangeToken(db, tokenForm(code))
   const principal = await authenticateBearer(db, `Bearer ${token.access_token}`)
-  assert.equal(principal.userId, identity.userId)
+  assert.equal(principal.userId, actor.userId)
   assert.equal(principal.organizationId, KHYTE)
-  const [connection] = await db.query<{ user_id: string; organization_id: string }>('select user_id, organization_id from crm_oauth_connections where id = $1', [principal.connectionId])
-  assert.deepEqual(connection, { user_id: identity.userId, organization_id: KHYTE })
+  // The connection carries the membership and the generation forward, which
+  // is what every later credential check joins on.
+  const [connection] = await db.query<{ user_id: string; organization_id: string; member_id: string; member_generation: string }>(
+    'select user_id, organization_id, member_id, member_generation from crm_oauth_connections where id = $1', [principal.connectionId])
+  assert.deepEqual(connection, { user_id: actor.userId, organization_id: KHYTE, member_id: minted.memberId, member_generation: minted.credentialGeneration })
 
   // A code with no person behind it — the legacy shape — is refused however
   // well-formed the rest of it is.
@@ -776,11 +828,13 @@ test('an MCP connection carries the person who approved it and their organizatio
     [hashToken(orphan), a.client_id, a.redirect_uri, a.code_challenge, a.scope.split(' '), a.resource, KHYTE])
   await assert.rejects(exchangeToken(db, tokenForm(orphan)), failsWith('invalid_grant'))
 
-  // And a person who is not an active member of the organization cannot
-  // finish connecting, even with a code issued in their name.
-  const outsider = randomUUID()
-  await db.query('insert into auth.users (id, email) values ($1, $2)', [outsider, `${outsider.slice(0, 8)}@example.test`])
-  const stranded = new URL(await issueCode(db, authorization(), { userId: outsider, organizationId: KHYTE })).searchParams.get('code')!
+  // And a code whose membership is not this organization's cannot finish
+  // connecting either. The exchange joins the membership id, the account, the
+  // organization and the generation together, so a real membership borrowed
+  // from somewhere else is worth no more than an invented one — which is also
+  // why the id here is a real row: member_id is a foreign key.
+  const theirs = await membership(otherActor.userId, OTHER_ORG)
+  const stranded = new URL(await issueCode(db, authorization(), { userId: otherActor.userId, organizationId: KHYTE, ...theirs })).searchParams.get('code')!
   await assert.rejects(exchangeToken(db, tokenForm(stranded)), failsWith('invalid_grant'))
 })
 
@@ -818,9 +872,10 @@ test('a wallpaper link opens one board in one organization, and dies with the me
   // here is the rule underneath them.
   const minter = await member(KHYTE, { displayName: 'Wallpaper Minter' })
   const bystander = await member(KHYTE, { displayName: 'Innocent Bystander' })
-  const token = displayToken(KHYTE, minter.memberId, 'erik')!
+  const minted = await membership(minter.userId, KHYTE)
+  const token = displayToken({ organizationId: KHYTE, ...minted }, 'erik')!
   assert.ok(token)
-  assert.deepEqual(verifyDisplayToken('erik', token), { organizationId: KHYTE, memberId: minter.memberId })
+  assert.deepEqual(verifyDisplayToken('erik', token), { organizationId: KHYTE, memberId: minted.memberId, credentialGeneration: minted.credentialGeneration })
   assert.equal(await resolveDisplayGrant(db, 'erik', token), KHYTE)
 
   // The colleague is inside the HMAC, so one link is one board — a wallpaper
@@ -828,27 +883,32 @@ test('a wallpaper link opens one board in one organization, and dies with the me
   assert.equal(verifyDisplayToken('abdi', token), null)
   assert.equal(await resolveDisplayGrant(db, 'abdi', token), null)
 
-  // So is the member id. Swapping it for another real membership's does not
-  // borrow that person's link; it produces a signature that does not verify.
-  const [, , sig] = token.split('.')
-  const tampered = `${KHYTE}.${bystander.memberId}.${sig}`
+  // So are the member id and the generation. Swapping either for another real
+  // value does not borrow that link; it produces a signature that does not
+  // verify.
+  const [, , , sig] = token.split('.')
+  const other = await membership(bystander.userId, KHYTE)
+  const tampered = `${KHYTE}.${other.memberId}.${minted.credentialGeneration}.${sig}`
   assert.equal(verifyDisplayToken('erik', tampered), null)
   assert.equal(await resolveDisplayGrant(db, 'erik', tampered), null)
-  assert.equal(await resolveDisplayGrant(db, 'erik', `${KHYTE}.${minter.memberId}.${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`), null)
+  assert.equal(verifyDisplayToken('erik', `${KHYTE}.${minted.memberId}.${other.credentialGeneration}.${sig}`), null)
+  assert.equal(await resolveDisplayGrant(db, 'erik', `${KHYTE}.${minted.memberId}.${minted.credentialGeneration}.${sig.slice(0, -1)}${sig.endsWith('A') ? 'B' : 'A'}`), null)
   assert.equal(await resolveDisplayGrant(db, 'erik', undefined), null)
   assert.equal(await resolveDisplayGrant(db, undefined, token), null)
+  // Three parts is the old shape; it verifies as nothing at all.
+  assert.equal(verifyDisplayToken('erik', `${KHYTE}.${minted.memberId}.${sig}`), null)
 
   // A link minted in the other organization opens that organization's board
   // and only ever that one …
-  const [theirs] = await db.query<{ id: string }>('select id from organization_members where organization_id = $1 and user_id = $2', [OTHER_ORG, otherActor.userId])
-  assert.equal(await resolveDisplayGrant(db, 'erik', displayToken(OTHER_ORG, theirs.id, 'erik')), OTHER_ORG)
+  const theirs = await membership(otherActor.userId, OTHER_ORG)
+  assert.equal(await resolveDisplayGrant(db, 'erik', displayToken({ organizationId: OTHER_ORG, ...theirs }, 'erik')), OTHER_ORG)
   // … and naming Khyte in the clear half of the token does not move it there:
   // the membership is looked up inside the organization the token claims, so
   // a member of somewhere else is simply not found.
-  assert.equal(await resolveDisplayGrant(db, 'erik', displayToken(KHYTE, theirs.id, 'erik')), null)
+  assert.equal(await resolveDisplayGrant(db, 'erik', displayToken({ organizationId: KHYTE, ...theirs }, 'erik')), null)
 
   // Revocation is what ends a link, and it ends exactly the revoked person's.
-  const survivor = displayToken(KHYTE, bystander.memberId, 'abdi')!
+  const survivor = displayToken({ organizationId: KHYTE, ...other }, 'abdi')!
   await revokeMember(db, KHYTE, minter.memberId)
   assert.equal(await resolveDisplayGrant(db, 'erik', token), null)
   assert.ok(verifyDisplayToken('erik', token), 'the signature is still good — revocation is a database fact, which is why the lookup exists')
@@ -906,9 +966,325 @@ test("a replaced password ends that account's sessions everywhere; a reset cuts 
   // Connections are the opposite shape: an owner resetting a password may cut
   // only what their own organization authorized, because the other
   // organization's connection is not theirs to end.
-  const mine = await connect({ userId: person.userId, organizationId: KHYTE })
-  const theirs = await connect({ userId: person.userId, organizationId: OTHER_ORG })
+  const mine = await approve({ userId: person.userId, organizationId: KHYTE })
+  const theirs = await approve({ userId: person.userId, organizationId: OTHER_ORG })
   assert.equal(await revokeConnectionsForUser(db, person.userId, KHYTE), 1)
   await assert.rejects(authenticateBearer(db, `Bearer ${mine.access_token}`), failsWith('unauthorized'))
   assert.equal((await authenticateBearer(db, `Bearer ${theirs.access_token}`)).organizationId, OTHER_ORG)
+})
+
+/* ———— Stage 1 acceptance criteria ————
+ *
+ * One test per criterion from the audit, named after it. Everything above
+ * proves the shapes these rely on; these are the withdrawal-of-access rules
+ * themselves — what stops working, when, and what must keep working beside it.
+ */
+
+test('acceptance 1 — a wallpaper link dies with the membership that minted it, and does not come back', async () => {
+  const person = await member(KHYTE, { displayName: 'Wallpaper Lifecycle' })
+  const first = await membership(person.userId, KHYTE)
+  const link = displayToken({ organizationId: KHYTE, ...first }, 'erik')!
+  assert.equal(await resolveDisplayGrant(db, 'erik', link), KHYTE)
+
+  // Revoked: the link is refused, though the signature is as good as it ever was.
+  await revokeMember(db, KHYTE, person.memberId)
+  assert.equal(await resolveDisplayGrant(db, 'erik', link), null)
+  assert.ok(verifyDisplayToken('erik', link), 'refused by the membership lookup, not by the HMAC')
+
+  // Re-added: the same membership row is active again — and this is the case
+  // the generation exists for. Without it the old link would open the board
+  // again the moment the person came back.
+  const again = await addMember(db, { organizationId: KHYTE, userId: person.userId, email: person.email, displayName: 'Wallpaper Lifecycle', role: 'member', colleague: null })
+  assert.equal(again.id, person.memberId, 'reactivated, not a second membership')
+  assert.equal(again.status, 'active')
+  const second = await membership(person.userId, KHYTE)
+  assert.notEqual(second.credentialGeneration, first.credentialGeneration, 'reactivation rotates the generation')
+  assert.equal(await resolveDisplayGrant(db, 'erik', link), null, 'the link minted before the revoke stays dead')
+  assert.ok(verifyDisplayToken('erik', link))
+  // A link minted now works, so what died is the credential and not the board.
+  const fresh = displayToken({ organizationId: KHYTE, ...second }, 'erik')!
+  assert.equal(await resolveDisplayGrant(db, 'erik', fresh), KHYTE)
+
+  // A password reset ends links the same way: whoever copied one had it while
+  // the old password still opened the app.
+  let replaced = 0
+  const reset = await resetCredentials(db, { organizationId: KHYTE, memberId: person.memberId }, {}, async (target) => {
+    assert.equal(target.userId, person.userId)
+    replaced += 1
+  })
+  assert.equal(replaced, 1, 'the password callback runs inside the transaction')
+  assert.equal(reset.id, person.memberId)
+  assert.equal(await resolveDisplayGrant(db, 'erik', fresh), null)
+  assert.ok(verifyDisplayToken('erik', fresh))
+  const third = await membership(person.userId, KHYTE)
+  assert.notEqual(third.credentialGeneration, second.credentialGeneration)
+  assert.equal(await resolveDisplayGrant(db, 'erik', displayToken({ organizationId: KHYTE, ...third }, 'erik')), KHYTE)
+})
+
+test('acceptance 2 — an authorization code and the connection it becomes die with the membership behind them', async () => {
+  const person = await member(KHYTE, { displayName: 'Code Holder' })
+  const who = { userId: person.userId, organizationId: KHYTE }
+  const codeFor = async () => new URL(await issueCode(db, authorization(), await codeIdentity(who))).searchParams.get('code')!
+  const codeExists = async (code: string) => (await db.query('select code_hash from crm_oauth_codes where code_hash = $1', [hashToken(code)])).length
+
+  // The ordinary path, so the refusals below mean something: a code exchanges
+  // once and the connection it creates authenticates.
+  const plain = await codeFor()
+  const token = await exchangeToken(db, tokenForm(plain))
+  assert.equal((await authenticateBearer(db, `Bearer ${token.access_token}`)).userId, person.userId)
+
+  // Revoked and re-added inside the five minutes a code lives. Two rules
+  // refuse it and the first one wins: revokeMember discards this
+  // organization's pending codes outright, so the exchange never gets as far
+  // as the membership — which is why the assertion here is the error code and
+  // the missing row rather than the 'active member' message.
+  const pending = await codeFor()
+  await revokeMember(db, KHYTE, person.memberId)
+  assert.equal(await codeExists(pending), 0, 'revoking a membership throws away the codes it has not yet exchanged')
+  await addMember(db, { organizationId: KHYTE, userId: person.userId, email: person.email, displayName: 'Code Holder', role: 'member', colleague: null })
+  await assert.rejects(exchangeToken(db, tokenForm(pending)), failsWith('invalid_grant'))
+
+  // The generation check underneath it, reached by moving the generation
+  // without touching the codes — what the members script or a manual update
+  // does. The code row is still there, and is still refused.
+  const stale = await codeFor()
+  await db.query('update organization_members set credential_generation = gen_random_uuid() where id = $1', [person.memberId])
+  assert.equal(await codeExists(stale), 1)
+  await assert.rejects(exchangeToken(db, tokenForm(stale)), /active member/)
+  // The failed exchange rolled back, its deletion of the code included, so a
+  // second attempt finds the same answer rather than a spent code.
+  assert.equal(await codeExists(stale), 1)
+  await assert.rejects(exchangeToken(db, tokenForm(stale)), /active member/)
+
+  // A password reset discards pending codes everywhere, for the same reason a
+  // revoke discards this organization's.
+  const duringReset = await codeFor()
+  await resetCredentials(db, { organizationId: KHYTE, memberId: person.memberId }, {}, async () => {})
+  assert.equal(await codeExists(duringReset), 0)
+  await assert.rejects(exchangeToken(db, tokenForm(duringReset)), failsWith('invalid_grant'))
+
+  // And a connection approved before a reset no longer authenticates after
+  // it. Not merely because the row was revoked: clearing revoked_at by hand —
+  // the "some other path" the membership join exists for — leaves it refused
+  // all the same, because its generation is no longer the membership's.
+  const fresh = await approve(who)
+  const live = await authenticateBearer(db, `Bearer ${fresh.access_token}`)
+  await resetCredentials(db, { organizationId: KHYTE, memberId: person.memberId }, {}, async () => {})
+  await assert.rejects(authenticateBearer(db, `Bearer ${fresh.access_token}`), failsWith('unauthorized'))
+  await db.query('update crm_oauth_connections set revoked_at = null where id = $1', [live.connectionId])
+  await assert.rejects(authenticateBearer(db, `Bearer ${fresh.access_token}`), failsWith('unauthorized'))
+  const [row] = await db.query<{ member_generation: string }>('select member_generation from crm_oauth_connections where id = $1', [live.connectionId])
+  assert.notEqual(row.member_generation, (await membership(person.userId, KHYTE)).credentialGeneration)
+})
+
+test('acceptance 3 — a tool write stops the moment the membership behind its connection is revoked', async () => {
+  const person = await member(KHYTE, { displayName: 'Cut Off Mid-Session' })
+  const principal = await connect(person.userId, KHYTE)
+  const input = { ...task(), title: `Proposal ${randomUUID()}` }
+
+  // Authenticated, then revoked, then writing: the check the connection passed
+  // when the request arrived is not the check that lets it write.
+  await revokeMember(db, KHYTE, person.memberId)
+  await assert.rejects(commitAction(db, 'create_task', input, principal), /unauthorized|lost its access/)
+  assert.equal((await db.query('select request_id from crm_tool_receipts where request_id = $1', [input.requestId])).length, 0,
+    'a refused write is not receipted')
+  assert.equal((await db.query('select id from tasks where title = $1', [input.title])).length, 0, 'and writes nothing')
+
+  // Mid-batch. A bulk import commits one row at a time, for minutes; access
+  // withdrawn while it runs has to stop the very next row, not the next
+  // request. The wrapper revokes the membership the moment the first row's
+  // transaction has committed.
+  const importer = await member(KHYTE, { displayName: 'Bulk Importer' })
+  const actingAs = await connect(importer.userId, KHYTE)
+  let commits = 0
+  const cutting: Database = {
+    ...db,
+    transaction: async (run) => {
+      const result = await db.transaction(run)
+      commits += 1
+      // Revoked on the underlying database, so this revoke is not itself counted.
+      if (commits === 1) await revokeMember(db, KHYTE, importer.memberId)
+      return result
+    },
+  }
+  const batch = await commitBulkOutreach(cutting, {
+    batchId: randomUUID(),
+    defaults: { occurredOn: '2026-08-24', channel: 'email' as const, summary: 'Cut off mid-batch.', followedUpBy: 'erik' as const },
+    records: [
+      { ref: 'one', companyName: `Mid Batch One ${randomUUID()}`, contactName: 'Ann', email: `${randomUUID()}@example.test` },
+      { ref: 'two', companyName: `Mid Batch Two ${randomUUID()}`, contactName: 'Bo', email: `${randomUUID()}@example.test` },
+      { ref: 'three', companyName: `Mid Batch Three ${randomUUID()}`, contactName: 'Cyl', email: `${randomUUID()}@example.test` },
+    ],
+    previewToken: 'unused-by-the-service-layer',
+  }, actingAs)
+
+  assert.equal(batch.counts.saved, 1, 'exactly the row that committed before the revoke')
+  assert.equal(batch.counts.failed, 2)
+  assert.deepEqual(batch.failed.map(row => row.code), ['unauthorized', 'unauthorized'])
+  assert.deepEqual(batch.saved.map(row => row.ref), ['one'])
+  assert.equal((await db.query<{ n: number }>('select count(*)::int as n from crm_tool_receipts where connection_id = $1', [actingAs.connectionId]))[0].n, 1,
+    'one receipt, matching the one row that landed')
+})
+
+test('acceptance 4 — the client store refuses a snapshot belonging to another identity', async (t) => {
+  // The store is a client module, but it imports the Server Actions it calls,
+  // and lib/auth/guard.ts imports next/navigation. Under
+  // --conditions=react-server (which this suite needs, so that 'server-only'
+  // is an empty module) next/navigation resolves to the client router
+  // context, which calls React.createContext — absent from React's
+  // react-server build. Without the condition, 'server-only' throws instead.
+  // Next's bundler aliases both per runtime; plain Node cannot, so the import
+  // is attempted and the exact reason reported rather than shimmed away.
+  let createCRMStore: typeof import('../lib/store/store').createCRMStore
+  try {
+    ;({ createCRMStore } = await import('../lib/store/store'))
+  } catch (cause) {
+    t.skip('lib/store/store is not importable in a plain Node test: ' +
+      `${cause instanceof Error ? cause.message : String(cause)} — lib/store/store.ts imports @/app/actions/crm, ` +
+      'which imports lib/auth/guard.ts, which imports next/navigation.')
+    return
+  }
+
+  const workspaceFor = (organizationId: string, userId: string): Workspace => ({
+    organization: { id: organizationId, name: 'Workspace', slug: 'workspace', timezone: 'Europe/Stockholm' },
+    viewer: { userId, memberId: randomUUID(), role: 'owner', displayName: 'Viewer', email: 'viewer@example.test' },
+    members: [],
+  })
+  const snapshotFor = (workspace: Workspace) => ({
+    workspace, companies: [], contacts: [], opportunities: [], leads: [], notes: [],
+    strategyBoards: [], strategyBoardOpportunities: [], strategyColumns: [], strategyCards: [], tasks: [],
+  })
+  const orgA = randomUUID(), orgB = randomUUID(), userA = randomUUID()
+  const newcomer: OrganizationMember = { id: randomUUID(), userId: randomUUID(), role: 'member', status: 'active',
+    email: 'newcomer@example.test', displayName: 'Newcomer', createdAt: new Date().toISOString() }
+
+  // Another organization's snapshot.
+  const foreign = createCRMStore(snapshotFor(workspaceFor(orgA, userA)))
+  foreign.getState().upsertWorkspaceMember(newcomer)
+  assert.equal(foreign.getState().applyRemoteSnapshot(snapshotFor(workspaceFor(orgB, userA))), false)
+  assert.equal(foreign.getState().identityChanged, true)
+  assert.equal(foreign.getState().workspace.organization.id, orgA, 'the workspace is not merged with the other one')
+  assert.ok(foreign.getState().workspace.members.some(m => m.id === newcomer.id), 'and the member just added is still there')
+
+  // The same organization, a different person: the cookie changed under this tab.
+  const swapped = createCRMStore(snapshotFor(workspaceFor(orgA, userA)))
+  swapped.getState().upsertWorkspaceMember(newcomer)
+  assert.equal(swapped.getState().applyRemoteSnapshot(snapshotFor(workspaceFor(orgA, randomUUID()))), false)
+  assert.equal(swapped.getState().identityChanged, true)
+  assert.ok(swapped.getState().workspace.members.some(m => m.id === newcomer.id))
+
+  // The same organization and the same person: an ordinary merge.
+  const ours = createCRMStore(snapshotFor(workspaceFor(orgA, userA)))
+  assert.equal(ours.getState().applyRemoteSnapshot(snapshotFor(workspaceFor(orgA, userA))), true)
+  assert.equal(ours.getState().identityChanged, false)
+
+  // The 'context_mismatch' path through persist() is not reachable from here:
+  // the store calls the Server Actions through a static `import * as api`,
+  // with no seam to intercept, and a real call needs a session and a
+  // database. What is proved above is the pure half — the merge refusal and
+  // the flag SnapshotSync reloads on.
+})
+
+test('acceptance 5 — two organizations cannot claim one account, and a claim is all-or-nothing', async () => {
+  const claimant = (organizationId: string, userId: string, email: string) => ({
+    organizationId, userId, email, displayName: 'Claimed Person', role: 'member' as const, colleague: null,
+  })
+  const account = async () => {
+    const userId = randomUUID(), email = `${userId.slice(0, 8)}@example.test`
+    await db.query('insert into auth.users (id, email) values ($1, $2)', [userId, email])
+    return { userId, email }
+  }
+  const memberships = async (userId: string) =>
+    db.query<{ organization_id: string; status: string }>('select organization_id, status from organization_members where user_id = $1', [userId])
+
+  // Khyte claims a fresh account: the membership is written and the password
+  // callback runs inside the transaction that wrote it.
+  const first = await account()
+  let khyteCalls = 0
+  const claimed = await claimAccount(db, claimant(KHYTE, first.userId, first.email), {}, async (m) => {
+    assert.equal(m.userId, first.userId)
+    khyteCalls += 1
+  })
+  assert.equal(claimed.status, 'active')
+  assert.equal(khyteCalls, 1)
+
+  // The other organization cannot take it over — and, crucially, never
+  // touches the password: the refusal happens under the account lock, before
+  // the callback.
+  let otherCalls = 0
+  await assert.rejects(
+    claimAccount(db, claimant(OTHER_ORG, first.userId, first.email), {}, async () => { otherCalls += 1 }),
+    failsWith('belongs_elsewhere'))
+  assert.equal(otherCalls, 0, 'the loser must not replace a password it was refused the right to')
+  assert.deepEqual(await memberships(first.userId), [{ organization_id: KHYTE, status: 'active' }])
+
+  // A callback that throws — Supabase Auth refusing the password — rolls the
+  // membership back. The account is left exactly as it was.
+  const refused = await account()
+  await assert.rejects(
+    claimAccount(db, claimant(KHYTE, refused.userId, refused.email), {}, async () => { throw new Error('auth service unavailable') }),
+    /auth service unavailable/)
+  assert.deepEqual(await memberships(refused.userId), [], 'nothing was saved')
+
+  // The one failure a transaction cannot undo: the password was replaced and
+  // a later step failed. The membership rolls back, the password does not —
+  // and the callback's own bookkeeping is what lets app/actions/members.ts
+  // answer 'membership_unsaved' instead of a generic failure.
+  const stranded = await account()
+  let passwordReplaced = false
+  const failing: Database = { ...db, transaction: run => db.transaction(tx => run({
+    async query<T extends Row>(sql: string, values: unknown[] = []) {
+      if (sql.includes('delete from crm_oauth_codes')) throw new Error('simulated failure after the password call')
+      return tx.query<T>(sql, values)
+    },
+  })) }
+  await assert.rejects(
+    claimAccount(failing, claimant(KHYTE, stranded.userId, stranded.email), {}, async () => { passwordReplaced = true }),
+    /simulated failure/)
+  assert.equal(passwordReplaced, true, 'the password call did happen')
+  assert.deepEqual(await memberships(stranded.userId), [], 'and the membership did not')
+
+  // A reset is refused for a shared account for the same reason a claim is,
+  // and likewise before the password is touched: that password is the
+  // person's, not one organization's.
+  const shared = await account()
+  const here = await claimAccount(db, claimant(KHYTE, shared.userId, shared.email), {}, async () => {})
+  await addMember(db, claimant(OTHER_ORG, shared.userId, shared.email))
+  let resetCalls = 0
+  await assert.rejects(
+    resetCredentials(db, { organizationId: KHYTE, memberId: here.id }, {}, async () => { resetCalls += 1 }),
+    failsWith('shared_account'))
+  assert.equal(resetCalls, 0)
+})
+
+test('acceptance 6 — an administration is re-checked against its acting owner inside the lock', async () => {
+  const owner = await member(KHYTE, { role: 'owner', displayName: 'Acting Owner' })
+  const plain = await member(KHYTE, { displayName: 'Plain Member' })
+  const target = await member(KHYTE, { displayName: 'The Target' })
+
+  // An owner may. A member of the same organization may not, however true the
+  // rest of the request is.
+  await assert.rejects(revokeMember(db, KHYTE, target.memberId, { actingUserId: plain.userId }), failsWith('forbidden'))
+  await assert.rejects(updateMember(db, KHYTE, target.memberId, { displayName: 'Renamed' }, { actingUserId: plain.userId }), failsWith('forbidden'))
+  // Nor may somebody who is no member of this organization at all — an owner
+  // of the other one included.
+  await assert.rejects(updateMember(db, KHYTE, target.memberId, { displayName: 'Renamed' }, { actingUserId: otherActor.userId }), failsWith('forbidden'))
+  assert.equal((await updateMember(db, KHYTE, target.memberId, { displayName: 'Renamed' }, { actingUserId: owner.userId })).displayName, 'Renamed')
+
+  // An owner revoked a moment ago must not finish an administration they
+  // began: the check is made inside the lock, against the database, not
+  // against whatever the request arrived with.
+  await revokeMember(db, KHYTE, owner.memberId, { actingUserId: actor.userId })
+  await assert.rejects(revokeMember(db, KHYTE, target.memberId, { actingUserId: owner.userId }), failsWith('forbidden'))
+  await assert.rejects(updateMember(db, KHYTE, target.memberId, { role: 'owner' }, { actingUserId: owner.userId }), failsWith('forbidden'))
+  assert.equal((await db.query<{ status: string }>('select status from organization_members where id = $1', [target.memberId]))[0].status, 'active')
+
+  // The last-owner rules are unchanged by any of this: an acting owner cannot
+  // revoke or demote the organization's last owner, themselves included.
+  const [sole] = await db.query<{ id: string }>(
+    'select id from organization_members where organization_id = $1 and user_id = $2', [OTHER_ORG, otherActor.userId])
+  await assert.rejects(revokeMember(db, OTHER_ORG, sole.id, { actingUserId: otherActor.userId }), failsWith('last_owner'))
+  await assert.rejects(updateMember(db, OTHER_ORG, sole.id, { role: 'member' }, { actingUserId: otherActor.userId }), failsWith('last_owner'))
+  assert.ok((await db.query<{ n: number }>(
+    `select count(*)::int as n from organization_members where organization_id = $1 and role = 'owner' and status = 'active'`, [KHYTE]))[0].n >= 1)
 })

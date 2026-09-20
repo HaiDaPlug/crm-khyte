@@ -9,13 +9,10 @@ import { crmDatabase } from '@/lib/crm/database'
 import { CrmError } from '@/lib/crm/errors'
 import { isDirectDbConfigured } from '@/lib/db/pg'
 import {
-  addMember as addMembership,
   assertCanAddMember,
-  findActiveMember,
-  hasActiveMembershipElsewhere,
-  revokeConnectionsForUser,
+  claimAccount,
+  resetCredentials,
   revokeMember as revokeMembership,
-  revokeSessionsForUser,
   updateMember as updateMembership,
 } from '@/lib/org/members'
 import type { OrganizationMember } from '@/lib/types'
@@ -57,6 +54,7 @@ export type MemberActionError =
   | 'revoked_member'
   | 'belongs_elsewhere'
   | 'shared_account'
+  | 'membership_unsaved'
   | 'not_found'
   | 'failed'
 
@@ -102,6 +100,8 @@ function errorCode(cause: unknown): MemberActionError {
       case 'shared_account':
       case 'not_found':
         return cause.code
+      case 'forbidden':
+        return 'unauthorized'
     }
   }
   if (cause instanceof IdentityError) {
@@ -139,14 +139,19 @@ async function owner(): Promise<{ organizationId: string; userId: string } | nul
  * Adds a person: creates their account, or takes over one that belongs
  * nowhere else, always with a fresh temporary password.
  *
- * Order matters. Every refusal — already a member, roster label taken,
- * active elsewhere — is decided before an account is created or touched, so
- * a refused add leaves nothing behind: no orphaned account whose password
- * nobody was shown. An existing account's password is replaced rather than
- * left alone, because "added to the roster with no way in" was the state
- * that used to result, and because the response is then the same whether or
- * not the address already had an account — an owner learns nothing about the
- * rest of the platform from adding someone.
+ * The claim itself — eligibility, the membership write, the password change
+ * and the revocations — happens in one locked transaction in
+ * lib/org/members.claimAccount, so two organizations claiming the same
+ * account at once are serialized and the loser never touches the password.
+ * The early checks before an account is created are the same rules asked
+ * first, so a refusal leaves no orphaned account whose password nobody was
+ * shown; the transaction asks them again under its locks.
+ *
+ * The one failure a SQL transaction cannot undo is the call to Supabase
+ * Auth. If the password was replaced and the membership then failed to
+ * save, the owner is told exactly that (`membership_unsaved`) rather than a
+ * generic failure: the account is fine, nothing else changed, and adding the
+ * person again both saves the membership and issues a fresh password.
  */
 export async function addMember(input: unknown): Promise<MemberResult> {
   const context = await owner()
@@ -157,13 +162,10 @@ export async function addMember(input: unknown): Promise<MemberResult> {
   if (!parsed.success) return { ok: false, error: 'invalid_input' }
   const email = parsed.data.email.trim().toLowerCase()
 
+  let passwordReplaced = false
   try {
     const db = crmDatabase()
     const account = await findAccountByEmail(db, email)
-
-    if (account && (await hasActiveMembershipElsewhere(db, account.userId, context.organizationId))) {
-      throw new CrmError('belongs_elsewhere', 'This account is an active member of another organization.')
-    }
     await assertCanAddMember(db, {
       organizationId: context.organizationId,
       userId: account?.userId ?? null,
@@ -171,27 +173,38 @@ export async function addMember(input: unknown): Promise<MemberResult> {
     })
 
     const password = temporaryPassword()
-    let userId: string
-    if (account) {
-      userId = account.userId
-      await setPassword(userId, password)
-      // The old password's holders hold no session either.
-      await revokeSessionsForUser(db, userId)
-    } else {
-      userId = (await createAccount({ email, password, displayName: parsed.data.displayName })).userId
-    }
+    // A brand-new account is created with the password already set; the
+    // claim below then has nothing to replace. An existing one is replaced
+    // inside the claim, after the locks have established it belongs nowhere
+    // else.
+    const userId = account
+      ? account.userId
+      : (await createAccount({ email, password, displayName: parsed.data.displayName })).userId
 
-    const member = await addMembership(db, {
-      organizationId: context.organizationId,
-      userId,
-      email: account?.email ?? email,
-      displayName: parsed.data.displayName,
-      role: parsed.data.role,
-      colleague: parsed.data.colleague,
-    })
+    const member = await claimAccount(
+      db,
+      {
+        organizationId: context.organizationId,
+        userId,
+        email: account?.email ?? email,
+        displayName: parsed.data.displayName,
+        role: parsed.data.role,
+        colleague: parsed.data.colleague,
+      },
+      { actingUserId: context.userId },
+      async () => {
+        if (!account) return
+        await setPassword(userId, password)
+        passwordReplaced = true
+      }
+    )
 
     return { ok: true, member, temporaryPassword: password }
   } catch (cause) {
+    if (passwordReplaced) {
+      console.error('[khyte] account password replaced but membership not saved:', cause instanceof Error ? cause.message : String(cause))
+      return { ok: false, error: 'membership_unsaved' }
+    }
     return { ok: false, error: errorCode(cause) }
   }
 }
@@ -206,7 +219,7 @@ export async function updateMember(input: unknown): Promise<MemberResult> {
 
   try {
     const { memberId, ...changes } = parsed.data
-    const member = await updateMembership(crmDatabase(), context.organizationId, memberId, changes)
+    const member = await updateMembership(crmDatabase(), context.organizationId, memberId, changes, { actingUserId: context.userId })
     return { ok: true, member, temporaryPassword: null }
   } catch (cause) {
     return { ok: false, error: errorCode(cause) }
@@ -227,7 +240,7 @@ export async function revokeMember(input: unknown): Promise<MemberResult> {
   if (!parsed.success) return { ok: false, error: 'invalid_input' }
 
   try {
-    const member = await revokeMembership(crmDatabase(), context.organizationId, parsed.data.memberId)
+    const member = await revokeMembership(crmDatabase(), context.organizationId, parsed.data.memberId, { actingUserId: context.userId })
     return { ok: true, member, temporaryPassword: null }
   } catch (cause) {
     return { ok: false, error: errorCode(cause) }
@@ -236,12 +249,16 @@ export async function revokeMember(input: unknown): Promise<MemberResult> {
 
 /**
  * Replaces a member's password with a fresh temporary one, returned once,
- * and ends every session and MCP connection the old one was behind.
+ * and ends every session, connection, pending code and wallpaper link the
+ * old one was behind (lib/org/members.resetCredentials).
  *
  * Refused when the account also belongs to another organization — see the
  * header. The app sends no recovery email in this release, so for a person
  * whose only workspace this is, an owner resetting and handing over the new
- * password is how a lock-out ends.
+ * password is how a lock-out ends. The same Supabase Auth caveat as add
+ * applies: a failure after the password call is reported as
+ * `membership_unsaved` — the password changed, the revocations may not have
+ * run — and a second reset completes them.
  */
 export async function resetMemberPassword(input: unknown): Promise<MemberResult> {
   const context = await owner()
@@ -251,22 +268,24 @@ export async function resetMemberPassword(input: unknown): Promise<MemberResult>
   const parsed = memberIdInput.safeParse(input)
   if (!parsed.success) return { ok: false, error: 'invalid_input' }
 
+  const password = temporaryPassword()
+  let passwordReplaced = false
   try {
-    const db = crmDatabase()
-    const member = await findActiveMember(db, context.organizationId, parsed.data.memberId)
-    if (!member) return { ok: false, error: 'not_found' }
-    if (await hasActiveMembershipElsewhere(db, member.userId, context.organizationId)) {
-      throw new CrmError('shared_account', 'This account is an active member of another organization.')
-    }
-
-    const password = temporaryPassword()
-    await setPassword(member.userId, password)
-    // A reset is done because the old credential may be in the wrong hands;
-    // whatever it already opened is closed with it.
-    await revokeSessionsForUser(db, member.userId)
-    await revokeConnectionsForUser(db, member.userId, context.organizationId)
+    const member = await resetCredentials(
+      crmDatabase(),
+      { organizationId: context.organizationId, memberId: parsed.data.memberId },
+      { actingUserId: context.userId },
+      async (target) => {
+        await setPassword(target.userId, password)
+        passwordReplaced = true
+      }
+    )
     return { ok: true, member, temporaryPassword: password }
   } catch (cause) {
+    if (passwordReplaced) {
+      console.error('[khyte] password replaced but credential reset not saved:', cause instanceof Error ? cause.message : String(cause))
+      return { ok: false, error: 'membership_unsaved' }
+    }
     return { ok: false, error: errorCode(cause) }
   }
 }

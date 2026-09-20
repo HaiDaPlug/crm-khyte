@@ -155,8 +155,11 @@ to the signed browser session and protected by origin checks.
 To revoke a connection, use OAuth `/oauth/revoke` with its access or refresh token
 and client credentials, or set that connection's `revoked_at` in the database.
 Revoking a member (Settings → Organisation, or `npm run org:members -- revoke`)
-revokes every connection that person approved in that organization, and every
-bearer authentication re-checks that the membership is still active. Rotating
+revokes every connection that person approved in that organization and
+discards their pending authorization codes; every bearer authentication and
+every tool commit re-checks that the membership is still active on the same
+credential generation the connection was minted under, so a connection or
+code from before a revoke, re-add or password reset stays dead. Rotating
 `MCP_SECRET` invalidates all MCP connections and preview tokens. Rotating the
 browser `AUTH_SECRET` only invalidates browser sessions; it does not revoke
 separately approved MCP connections. There is no connection-management UI yet.

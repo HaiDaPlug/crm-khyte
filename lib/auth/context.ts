@@ -25,6 +25,13 @@ export interface AuthContext {
   organizationId: string
   organization: Organization
   viewer: Viewer
+  /**
+   * The membership's current credential generation. Anything minted on this
+   * person's behalf during the request — a wallpaper link, an OAuth code —
+   * records it, and dies when the membership rotates it (revoke, re-add,
+   * password reset). Server-side only; the client never needs it.
+   */
+  credentialGeneration: string
 }
 
 type ContextRow = {
@@ -35,6 +42,7 @@ type ContextRow = {
   org_slug: string
   org_timezone: string
   member_id: string
+  credential_generation: string
   role: MemberRole
   display_name: string
   email: string
@@ -60,7 +68,7 @@ export async function resolveAuthContext(
   const [row] = await db.query<ContextRow>(
     `select s.id as session_id, s.user_id, o.id as organization_id,
             o.name as org_name, o.slug as org_slug, o.timezone as org_timezone,
-            m.id as member_id, m.role, m.display_name, m.email, m.colleague
+            m.id as member_id, m.credential_generation, m.role, m.display_name, m.email, m.colleague
      from app_sessions s
      join organization_members m
        on m.organization_id = s.organization_id and m.user_id = s.user_id and m.status = 'active'
@@ -89,6 +97,7 @@ export async function resolveAuthContext(
       email: row.email,
       ...(row.colleague ? { colleague: row.colleague } : {}),
     },
+    credentialGeneration: row.credential_generation,
   }
 }
 

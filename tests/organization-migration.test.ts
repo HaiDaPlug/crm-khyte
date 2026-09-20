@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { readdir, readFile } from 'node:fs/promises'
 import { after, before, test } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
+import { applyMigrations, finishRollout, readSql } from './support/migrations'
 
 /**
  * Rehearses supabase/migrations/20260920120000_organizations.sql the way it
@@ -29,8 +29,7 @@ const KHYTE = '7b1e3d2a-8f4c-4a6e-9b21-0c5d3e7f9a10'
 const pg = new PGlite()
 const rows = async <T extends Record<string, unknown>>(sql: string, values: unknown[] = []) => (await pg.query<T>(sql, values)).rows
 const count = async (table: string) => Number((await rows<{ n: number }>(`select count(*)::int as n from ${table}`))[0].n)
-// gen_random_uuid is built into modern Postgres; PGlite does not bundle pgcrypto.
-const migration = async (file: string) => (await readFile(`supabase/migrations/${file}`, 'utf8')).replace('create extension if not exists pgcrypto;', '')
+const migration = (file: string) => readSql(`supabase/migrations/${file}`)
 
 /**
  * Every table the migration gives an organization to, except crm_oauth_codes:
@@ -61,10 +60,9 @@ const OTHER = randomUUID()
 before(async () => {
   await pg.exec(`create role anon; create role authenticated; create schema auth; create table auth.users (id uuid primary key, email text);
     create function auth.uid() returns uuid language sql as $$ select null::uuid $$;`)
-  const files = (await readdir('supabase/migrations')).filter(f => f.endsWith('.sql')).sort()
-  const stop = files.indexOf(ORGANIZATION_MIGRATION)
-  assert.ok(stop > 0, `${ORGANIZATION_MIGRATION} must exist and cannot be the first migration`)
-  for (const file of files.slice(0, stop)) await pg.exec(await migration(file))
+  // Everything up to, but not including, the migration under rehearsal: the
+  // schema exactly as it stood the moment before it ran.
+  await applyMigrations(pg, { stopBefore: ORGANIZATION_MIGRATION })
 
   // One row per table, written the way the pre-organization code wrote them:
   // no organization_id (the column does not exist yet), owner_id null
@@ -175,23 +173,19 @@ test('the rollout guard holds until the follow-up runs, and then the aids, the g
   assert.ok(scoped, 'the new one is what archiveFinishedWeeks names')
   assert.match(scoped.indexdef, /CREATE UNIQUE INDEX .* \(organization_id, week_start\)/)
 
-  // While those aids stand, a second organization is not merely unwise: the
-  // database refuses it. A forgotten insert would land silently in Khyte, and
-  // under the old index two organizations could not archive the same week at
-  // all. The guard turns both sentences into a rule Postgres keeps.
-  await assert.rejects(pg.query(`insert into organizations (id, name, slug) values ($1, 'Refused AB', 'refused')`, [OTHER]), /rollout finished/)
-  assert.equal(await count('organizations'), 1)
-
   const defaults = async () => Number((await rows<{ n: number }>(
     `select count(*)::int as n from information_schema.columns
      where table_schema = 'public' and column_name = 'organization_id' and column_default is not null`))[0].n)
   assert.equal(await defaults(), 19, 'every business and integration table still carries the rollout default')
 
-  // Step 5 of the deploy order. The follow-up lives outside
-  // supabase/migrations/ so `db:push` cannot apply it ahead of the code that
-  // writes organization_id explicitly — applying it early is exactly the
-  // migration-before-its-code ordering that took this CRM down once.
-  await pg.exec(await readFile('supabase/followups/20260927120000_drop_organization_rollout.sql', 'utf8'))
+  // While those aids stand, a second organization is not merely unwise: the
+  // database refuses it. A forgotten insert would land silently in Khyte, and
+  // under the old index two organizations could not archive the same week at
+  // all. The guard turns both sentences into a rule Postgres keeps — which
+  // finishRollout asserts before applying step 5 of the deploy order, from
+  // wherever the cleanup currently lives (see tests/support/migrations.ts).
+  await finishRollout(pg, OTHER)
+  assert.equal(await count('organizations'), 1, 'the refused organization left nothing behind')
   assert.equal(await defaults(), 0, 'a forgotten organization_id is now a not-null violation, not a silent Khyte row')
   assert.equal((await rows("select 1 from pg_indexes where indexname = 'weekly_snapshots_week_idx'")).length, 0)
   assert.equal((await rows("select 1 from pg_trigger where tgname = 'organizations_rollout_guard'")).length, 0)

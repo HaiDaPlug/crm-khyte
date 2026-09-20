@@ -521,6 +521,24 @@ export async function commitAction(db: Database, action: ActionName, raw: unknow
     // Serializes tool writes across processes: name matching and first-time creation cannot race.
     // Existing UI updates are protected by row locks and expectedVersion checks on the affected records.
     await tx.query("select pg_advisory_xact_lock(hashtext('khyte:crm-tools'))")
+    // The actor was authenticated when the request arrived, which may be a
+    // long time ago by now: this call has just waited for the tools lock, and
+    // a bulk import commits one row at a time for minutes. Access withdrawn
+    // in that time — the member revoked, the connection revoked, the
+    // person's password reset — must stop the very next write, not the next
+    // request. So the connection and its membership are checked again here,
+    // inside the transaction, under the same account lock revocation takes
+    // (lib/org/members.ts): the revoke either finished first and this fails,
+    // or it waits for this commit and then cuts the connection. Nothing is
+    // written on the strength of a check made before the wait.
+    await tx.query('select pg_advisory_xact_lock(hashtext($1))', [`khyte:user:${actor.userId}`])
+    const [live] = await tx.query<{ id: string }>(
+      `select c.id from crm_oauth_connections c
+       join organization_members m on m.id = c.member_id and m.user_id = c.user_id and m.organization_id = c.organization_id
+         and m.status = 'active' and m.credential_generation = c.member_generation
+       where c.id = $1 and c.user_id = $2 and c.organization_id = $3 and c.revoked_at is null and c.access_expires_at > now()`,
+      [actor.connectionId, actor.userId, actor.organizationId])
+    if (!live) throw new CrmError('unauthorized', 'This connection lost its access while the operation was waiting. Connect again.')
     // Looked up by request id alone — it is the primary key, so a request id
     // taken by another organization or connection is a real collision, not a
     // miss. Answering not-found there would let the caller write a second

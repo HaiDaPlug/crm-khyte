@@ -97,6 +97,12 @@ create table if not exists public.organization_members (
   -- The legacy roster label this person is known as on tasks, prospects,
   -- leads, events and interactions. Optional; set explicitly by an owner.
   colleague       crm_colleague,
+  -- Everything minted for this membership — wallpaper links, OAuth codes,
+  -- MCP connections — records this value and is refused when it no longer
+  -- matches. It rotates on revoke, on reactivation and on a password reset,
+  -- so a credential copied before any of those cannot come back to life when
+  -- the same membership row is activated again.
+  credential_generation uuid not null default gen_random_uuid(),
   revoked_at      timestamptz,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now(),
@@ -198,6 +204,16 @@ comment on column public.crm_events.recorded_by is
 
 alter table public.crm_oauth_codes       add column if not exists user_id uuid references auth.users (id) on delete cascade;
 alter table public.crm_oauth_connections add column if not exists user_id uuid references auth.users (id) on delete cascade;
+
+-- The membership, and its generation at minting time (see
+-- organization_members.credential_generation). A code or connection whose
+-- generation no longer matches the membership's is dead, however it got
+-- there: revoked and re-added, or reset. Nullable because the tables predate
+-- this; the application refuses a null the same as a mismatch.
+alter table public.crm_oauth_codes       add column if not exists member_id uuid references public.organization_members (id) on delete cascade;
+alter table public.crm_oauth_codes       add column if not exists member_generation uuid;
+alter table public.crm_oauth_connections add column if not exists member_id uuid references public.organization_members (id) on delete cascade;
+alter table public.crm_oauth_connections add column if not exists member_generation uuid;
 
 -- Codes live five minutes; any without a person are simply gone.
 delete from public.crm_oauth_codes where user_id is null;

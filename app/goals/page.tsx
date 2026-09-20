@@ -46,7 +46,14 @@ export default async function GoalsPage() {
     id,
     name: colleagues[id].name,
     color: colleagues[id].color,
-    token: displayToken(context.organizationId, context.viewer.memberId, id),
+    token: displayToken(
+      {
+        organizationId: context.organizationId,
+        memberId: context.viewer.memberId,
+        credentialGeneration: context.credentialGeneration,
+      },
+      id
+    ),
   }))
 
   return (

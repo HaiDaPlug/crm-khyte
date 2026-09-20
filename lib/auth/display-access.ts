@@ -13,16 +13,17 @@ import { verifyDisplayToken } from './display-token'
  * proxy.ts admits a well-signed token without I/O; this is the check that
  * costs a query and is therefore made once, by the page and its version
  * route, rather than on every prefetch. A token names the membership that
- * minted it (see ./display-token), and that membership has to still be
- * active: revoking a member is meant to end their access everywhere, and a
- * wallpaper link they copied while a member is exactly the kind of access
- * that would otherwise outlive them.
+ * minted it and that membership's credential generation at the time (see
+ * ./display-token); the membership has to still be active under the same
+ * generation. Revoking a member is meant to end their access everywhere, and
+ * a wallpaper link they copied while a member is exactly the kind of access
+ * that would otherwise outlive them — or come back when they are re-added.
  */
 
 /**
- * The organization a token opens, or null when the token is bad or its
- * minting membership is no longer active. Pure of Next so the PGlite suite
- * can exercise the revocation rule.
+ * The organization a token opens, or null when the token is bad, its minting
+ * membership is no longer active, or that membership's generation has moved
+ * on. Pure of Next so the PGlite suite can exercise the revocation rule.
  */
 export async function resolveDisplayGrant(
   db: Queryable,
@@ -32,10 +33,13 @@ export async function resolveDisplayGrant(
   const grant = verifyDisplayToken(colleague, token)
   if (!grant) return null
 
+  // Active AND the same generation the link was minted under. A membership
+  // revoked and re-added is active again, but its generation has moved on,
+  // so a link from before the revoke stays dead.
   const [row] = await db.query<{ organization_id: string }>(
     `select organization_id from organization_members
-     where id = $1 and organization_id = $2 and status = 'active'`,
-    [grant.memberId, grant.organizationId]
+     where id = $1 and organization_id = $2 and status = 'active' and credential_generation = $3`,
+    [grant.memberId, grant.organizationId, grant.credentialGeneration]
   )
   return row ? row.organization_id : null
 }

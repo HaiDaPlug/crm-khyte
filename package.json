@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "test": "npm run test:mcp && npm run test:org",
+    "test": "npm run test:mcp && npm run test:org && npm run test:scoping",
     "test:mcp": "node --conditions=react-server --import tsx --test tests/mcp.test.ts",
     "test:org": "node --conditions=react-server --import tsx --test tests/organization-migration.test.ts",
+    "test:scoping": "node --conditions=react-server --import tsx --test tests/scoping.test.ts",
     "test:mcp:http": "node --test tests/mcp-http.test.mjs",
     "dev": "next dev",
     "build": "next build",

@@ -1,6 +1,7 @@
 'use server'
 
 import type {
+  ActionScope,
   ColleagueId,
   Company,
   Contact,
@@ -77,11 +78,58 @@ import {
  * individual, is the unit of access, and the composite foreign keys in
  * 20260920120000_organizations.sql hold that line even for a query that
  * forgets to filter.
+ *
+ * IDENTITY. Every action below takes a trailing `scope: ActionScope` naming
+ * the organization and the person the calling tab believed it was acting as
+ * when the draft was made. It is compared with the session that actually
+ * arrived — in run(), in guardedOk(), and by hand in the three actions that
+ * read before they reach either — and a disagreement comes back as
+ * `context_mismatch` having read nothing and written nothing.
+ *
+ * The case this exists for: two tabs open, and the second signs in as someone
+ * else. The session cookie is shared by both, so the first tab's next save
+ * would commit as the new person, into whatever organization that person
+ * belongs to, carrying a row id minted in the old one. That is a lost edit at
+ * best and a write across organizations at worst, and neither shows up as an
+ * error anywhere — the request is perfectly well authenticated. The scope
+ * makes the tab's assumption explicit so the server can catch it; the client
+ * store hears `context_mismatch` and reloads the page instead of retrying.
+ *
+ * The scope is an expectation to verify, never an authority. Nothing below
+ * reads an organization or a user id out of it — those still come only from
+ * the AuthContext — so a forged scope can make a write fail and can do
+ * nothing else.
  */
 
 export type ActionResult = { ok: true } | { ok: false; error: string }
 
 const OK: ActionResult = { ok: true }
+
+/**
+ * What a scope disagreement is reported as. Part of the contract with the
+ * client store (lib/store/store.ts), which reads it as "this tab is finished"
+ * and reloads the page rather than showing a toast and leaving the draft up.
+ */
+const CONTEXT_MISMATCH = 'context_mismatch'
+
+/**
+ * Compares what the caller thought it was with what the session says it is.
+ *
+ * Returns the refusal to hand straight back, or null when the two agree. Called
+ * immediately after requireAuth() and before anything touches the database, so
+ * a write submitted under a stale identity is not partly applied, not merely
+ * mis-scoped, but never started.
+ *
+ * Comparison only. The organization and the user every query below is scoped
+ * by still come from `context` alone, so the worst a made-up scope can do is
+ * refuse a write its sender was entitled to make.
+ */
+function scopeMismatch(context: AuthContext, scope: ActionScope): ActionResult | null {
+  if (scope.organizationId === context.organizationId && scope.userId === context.userId) {
+    return null
+  }
+  return { ok: false, error: CONTEXT_MISMATCH }
+}
 
 /**
  * Without credentials the app runs on in-memory demo data, so writes have
@@ -100,10 +148,14 @@ function skipUnconfigured(): boolean {
  * pointing an unauthenticated POST at an app running on demo data. Rare, but
  * it is exactly the sort of gap that turns into a real one the moment someone
  * deploys a preview without credentials.
+ *
+ * The scope check rides along for the same reason: an action that returns
+ * early must not become the one path on which a tab acting as somebody else
+ * gets a quiet `{ ok: true }` back.
  */
-async function guardedOk(): Promise<ActionResult> {
-  await requireAuth()
-  return OK
+async function guardedOk(scope: ActionScope): Promise<ActionResult> {
+  const context = await requireAuth()
+  return scopeMismatch(context, scope) ?? OK
 }
 
 /**
@@ -144,6 +196,7 @@ function eventScope(context: AuthContext): EventScope {
 
 async function run(
   table: string,
+  scope: ActionScope,
   operation: (context: AuthContext) => Promise<WriteResponse>,
   expect: Expect = 'insert'
 ): Promise<ActionResult> {
@@ -151,6 +204,14 @@ async function run(
   // and returned as { ok: false } that the client store treats as a failed
   // write to retry.
   const context = await requireAuth()
+
+  // Ahead of the try as well, and ahead of `operation` ever being called: a
+  // tab whose session changed underneath it is turned away without a row being
+  // read or written. Returned rather than thrown, unlike the auth failure
+  // above — the client store has to tell this apart from a write that failed,
+  // and the error string is how it does it.
+  const mismatch = scopeMismatch(context, scope)
+  if (mismatch) return mismatch
 
   try {
     // A PostgREST error is raised rather than returned so withRetry can judge
@@ -184,9 +245,9 @@ async function run(
 
 // --- companies -------------------------------------------------------------
 
-export async function createCompany(company: Company): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('companies', async (context) =>
+export async function createCompany(company: Company, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('companies', scope, async (context) =>
     getSupabase()
       .from('companies')
       .insert({ ...toCompanyInsert(company), organization_id: context.organizationId })
@@ -195,13 +256,15 @@ export async function createCompany(company: Company): Promise<ActionResult> {
 
 export async function updateCompany(
   id: string,
-  updates: Partial<Company>
+  updates: Partial<Company>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toCompanyUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   return run(
     'companies',
+    scope,
     async (context) =>
       getSupabase()
         .from('companies')
@@ -215,9 +278,9 @@ export async function updateCompany(
 
 // --- contacts --------------------------------------------------------------
 
-export async function createContact(contact: Contact): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('contacts', async (context) =>
+export async function createContact(contact: Contact, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('contacts', scope, async (context) =>
     getSupabase()
       .from('contacts')
       .insert({ ...toContactInsert(contact), organization_id: context.organizationId })
@@ -226,13 +289,15 @@ export async function createContact(contact: Contact): Promise<ActionResult> {
 
 export async function updateContact(
   id: string,
-  updates: Partial<Contact>
+  updates: Partial<Contact>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toContactUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   return run(
     'contacts',
+    scope,
     async (context) =>
       getSupabase()
         .from('contacts')
@@ -247,15 +312,22 @@ export async function updateContact(
 // --- opportunities ---------------------------------------------------------
 
 export async function createOpportunity(
-  opportunity: Opportunity
+  opportunity: Opportunity,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   // Resolved here as well as inside run(). getAuthContext is cached per
   // request, so this is the same context and not a second query — it is
   // needed out here because the event scope below outlives the write.
   const context = await requireAuth()
 
-  const result = await run('opportunities', async () =>
+  // The comparison run() makes, made here too. This action resolves its own
+  // context for the event scope below, and a tab acting as somebody else must
+  // have nothing recorded under the identity that replaced it.
+  const mismatch = scopeMismatch(context, scope)
+  if (mismatch) return mismatch
+
+  const result = await run('opportunities', scope, async () =>
     getSupabase()
       .from('opportunities')
       .insert({ ...toOpportunityInsert(opportunity), organization_id: context.organizationId })
@@ -292,14 +364,20 @@ export async function createOpportunity(
 
 export async function updateOpportunity(
   id: string,
-  updates: Partial<Opportunity>
+  updates: Partial<Opportunity>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toOpportunityUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   // Same request-cached context as run() resolves; see createOpportunity.
   // Needed ahead of the write here because the pre-read must be scoped too.
   const context = await requireAuth()
+
+  // Before the pre-read, not just before the write: this action reads a row
+  // of its own below, and a stale tab must not get so much as a look at it.
+  const mismatch = scopeMismatch(context, scope)
+  if (mismatch) return mismatch
 
   /**
    * A stage change is the CRM's only record that something happened, and the
@@ -352,6 +430,7 @@ export async function updateOpportunity(
 
   const result = await run(
     'opportunities',
+    scope,
     async () =>
       getSupabase()
         .from('opportunities')
@@ -424,9 +503,14 @@ export async function updateOpportunity(
  * and the writes describe the same set, and a guessed id from outside the
  * organization sees no boards and deletes nothing.
  */
-export async function deleteOpportunity(id: string): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function deleteOpportunity(id: string, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   const context = await requireAuth()
+
+  // Before the link reads below, for the same reason as updateOpportunity:
+  // the scope has to be settled before this action reads anything at all.
+  const mismatch = scopeMismatch(context, scope)
+  if (mismatch) return mismatch
 
   const { data: links } = await getSupabase()
     .from('strategy_board_opportunities')
@@ -437,6 +521,7 @@ export async function deleteOpportunity(id: string): Promise<ActionResult> {
 
   const result = await run(
     'opportunities',
+    scope,
     async () =>
       getSupabase()
         .from('opportunities')
@@ -463,6 +548,7 @@ export async function deleteOpportunity(id: string): Promise<ActionResult> {
     // never surfaces it again anyway.
     const cleanup = await run(
       'strategy_boards',
+      scope,
       async () =>
         getSupabase()
           .from('strategy_boards')
@@ -482,12 +568,17 @@ export async function deleteOpportunity(id: string): Promise<ActionResult> {
 
 // --- leads -------------------------------------------------------------
 
-export async function createLead(lead: Lead): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function createLead(lead: Lead, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   // Same request-cached context as run() resolves; see createOpportunity.
   const context = await requireAuth()
 
-  const result = await run('leads', async () =>
+  // Same as createOpportunity: the context resolved here outlives the write,
+  // so the scope is settled before anything is recorded against it.
+  const mismatch = scopeMismatch(context, scope)
+  if (mismatch) return mismatch
+
+  const result = await run('leads', scope, async () =>
     getSupabase()
       .from('leads')
       .insert({ ...toLeadInsert(lead), organization_id: context.organizationId })
@@ -512,13 +603,15 @@ export async function createLead(lead: Lead): Promise<ActionResult> {
 
 export async function updateLead(
   id: string,
-  updates: Partial<Lead>
+  updates: Partial<Lead>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toLeadUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   return run(
     'leads',
+    scope,
     async (context) =>
       getSupabase()
         .from('leads')
@@ -530,10 +623,11 @@ export async function updateLead(
   )
 }
 
-export async function deleteLead(id: string): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function deleteLead(id: string, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   return run(
     'leads',
+    scope,
     async (context) =>
       getSupabase()
         .from('leads')
@@ -547,9 +641,9 @@ export async function deleteLead(id: string): Promise<ActionResult> {
 
 // --- notes -----------------------------------------------------------------
 
-export async function createNote(note: Note): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('notes', async (context) =>
+export async function createNote(note: Note, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('notes', scope, async (context) =>
     getSupabase()
       .from('notes')
       .insert({ ...toNoteInsert(note), organization_id: context.organizationId })
@@ -558,13 +652,15 @@ export async function createNote(note: Note): Promise<ActionResult> {
 
 export async function updateNote(
   id: string,
-  updates: Partial<Note>
+  updates: Partial<Note>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toNoteUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   return run(
     'notes',
+    scope,
     async (context) =>
       getSupabase()
         .from('notes')
@@ -576,10 +672,11 @@ export async function updateNote(
   )
 }
 
-export async function deleteNote(id: string): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function deleteNote(id: string, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   return run(
     'notes',
+    scope,
     async (context) =>
       getSupabase()
         .from('notes')
@@ -593,9 +690,12 @@ export async function deleteNote(id: string): Promise<ActionResult> {
 
 // --- strategy boards ---------------------------------------------------------
 
-export async function createStrategyBoard(board: StrategyBoard): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('strategy_boards', async (context) =>
+export async function createStrategyBoard(
+  board: StrategyBoard,
+  scope: ActionScope
+): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('strategy_boards', scope, async (context) =>
     getSupabase()
       .from('strategy_boards')
       .insert({ id: board.id, organization_id: context.organizationId })
@@ -613,10 +713,11 @@ export async function createStrategyBoard(board: StrategyBoard): Promise<ActionR
  */
 export async function linkOpportunityToBoard(
   boardId: string,
-  opportunityId: string
+  opportunityId: string,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('strategy_board_opportunities', async (context) =>
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('strategy_board_opportunities', scope, async (context) =>
     getSupabase()
       .from('strategy_board_opportunities')
       .upsert(
@@ -632,11 +733,13 @@ export async function linkOpportunityToBoard(
 
 export async function unlinkOpportunityFromBoard(
   boardId: string,
-  opportunityId: string
+  opportunityId: string,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   return run(
     'strategy_board_opportunities',
+    scope,
     async (context) =>
       getSupabase()
         .from('strategy_board_opportunities')
@@ -652,10 +755,11 @@ export async function unlinkOpportunityFromBoard(
 /** Columns and cards go with it (`on delete cascade`). Only ever called from
  * the orphan cleanup in deleteOpportunity — a board is never deleted directly
  * from the UI, only by unlinking every prospect from it. */
-export async function deleteStrategyBoard(id: string): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function deleteStrategyBoard(id: string, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   return run(
     'strategy_boards',
+    scope,
     async (context) =>
       getSupabase()
         .from('strategy_boards')
@@ -670,10 +774,11 @@ export async function deleteStrategyBoard(id: string): Promise<ActionResult> {
 // --- strategy headlines ----------------------------------------------------
 
 export async function createStrategyColumn(
-  column: StrategyColumn
+  column: StrategyColumn,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('strategy_columns', async (context) =>
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('strategy_columns', scope, async (context) =>
     getSupabase()
       .from('strategy_columns')
       .insert({ ...toStrategyColumnInsert(column), organization_id: context.organizationId })
@@ -682,13 +787,15 @@ export async function createStrategyColumn(
 
 export async function updateStrategyColumn(
   id: string,
-  updates: Partial<StrategyColumn>
+  updates: Partial<StrategyColumn>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toStrategyColumnUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   return run(
     'strategy_columns',
+    scope,
     async (context) =>
       getSupabase()
         .from('strategy_columns')
@@ -701,10 +808,11 @@ export async function updateStrategyColumn(
 }
 
 /** The deal's cards under this headline go with it (`on delete cascade`). */
-export async function deleteStrategyColumn(id: string): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function deleteStrategyColumn(id: string, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   return run(
     'strategy_columns',
+    scope,
     async (context) =>
       getSupabase()
         .from('strategy_columns')
@@ -719,10 +827,11 @@ export async function deleteStrategyColumn(id: string): Promise<ActionResult> {
 // --- strategy cards --------------------------------------------------------
 
 export async function createStrategyCard(
-  card: StrategyCard
+  card: StrategyCard,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('strategy_cards', async (context) =>
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('strategy_cards', scope, async (context) =>
     getSupabase()
       .from('strategy_cards')
       .insert({ ...toStrategyCardInsert(card), organization_id: context.organizationId })
@@ -731,13 +840,15 @@ export async function createStrategyCard(
 
 export async function updateStrategyCard(
   id: string,
-  updates: Partial<StrategyCard>
+  updates: Partial<StrategyCard>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toStrategyCardUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   return run(
     'strategy_cards',
+    scope,
     async (context) =>
       getSupabase()
         .from('strategy_cards')
@@ -749,10 +860,11 @@ export async function updateStrategyCard(
   )
 }
 
-export async function deleteStrategyCard(id: string): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function deleteStrategyCard(id: string, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   return run(
     'strategy_cards',
+    scope,
     async (context) =>
       getSupabase()
         .from('strategy_cards')
@@ -766,9 +878,9 @@ export async function deleteStrategyCard(id: string): Promise<ActionResult> {
 
 // --- tasks -----------------------------------------------------------------
 
-export async function createTask(task: Task): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
-  return run('tasks', async (context) =>
+export async function createTask(task: Task, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
+  return run('tasks', scope, async (context) =>
     getSupabase()
       .from('tasks')
       .insert({ ...toTaskInsert(task), organization_id: context.organizationId })
@@ -777,13 +889,15 @@ export async function createTask(task: Task): Promise<ActionResult> {
 
 export async function updateTask(
   id: string,
-  updates: Partial<Task>
+  updates: Partial<Task>,
+  scope: ActionScope
 ): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+  if (skipUnconfigured()) return guardedOk(scope)
   const payload = toTaskUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk()
+  if (Object.keys(payload).length === 0) return guardedOk(scope)
   return run(
     'tasks',
+    scope,
     async (context) =>
       getSupabase()
         .from('tasks')
@@ -799,10 +913,11 @@ export async function updateTask(
  * Permanent. Reserved for tasks created in error — anything worth keeping in
  * the record should be archived instead.
  */
-export async function deleteTask(id: string): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk()
+export async function deleteTask(id: string, scope: ActionScope): Promise<ActionResult> {
+  if (skipUnconfigured()) return guardedOk(scope)
   return run(
     'tasks',
+    scope,
     async (context) =>
       getSupabase()
         .from('tasks')

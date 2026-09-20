@@ -9,20 +9,25 @@ import { createHmac, timingSafeEqual } from 'node:crypto'
  * to carry the credential.
  *
  * `?k=<token>` on a display route is checked here. The token is
- * `<organization id>.<member id>.<hmac>`: the organization and the membership
- * that minted the link in the clear (both are identifiers, not secrets) and
- * an HMAC over `<organization>:<member>:<colleague>` signed with
- * DISPLAY_SECRET. One leaked link therefore opens exactly one person's board
- * in exactly one organization and nothing else.
+ * `<organization>.<member>.<generation>.<hmac>`: the organization, the
+ * membership that minted the link and that membership's credential
+ * generation at the time (all identifiers, none secret), and an HMAC over
+ * `organization:member:generation:colleague` signed with DISPLAY_SECRET.
+ * One leaked link therefore opens exactly one person's board in exactly one
+ * organization and nothing else.
  *
- * WHY THE MEMBER IS IN IT. A link is minted by a person and must stop working
- * when that person is no longer a member. The HMAC alone cannot know that —
- * it is the same for the rest of the link's life — so the display routes
- * look the membership up (./display-access) and refuse a link whose minter
- * has been revoked. Other members' links are untouched, which is the point:
- * revoking one person must not blank the whole team's wallpapers. Rotating
- * DISPLAY_SECRET still invalidates every link at once, which remains the
- * right blunt instrument when a link's whereabouts are unknown.
+ * WHY THE MEMBER AND ITS GENERATION ARE IN IT. A link is minted by a person
+ * and must stop working when that person's access is withdrawn — and must
+ * NOT start working again when the same membership row is reactivated. The
+ * HMAC alone cannot know either; it is the same for the rest of the link's
+ * life. So the display routes look the membership up (./display-access) and
+ * refuse a link whose minter is not active or whose generation is not the
+ * membership's current one. Revoke, re-add and password reset all rotate the
+ * generation (lib/org/members.ts), so every link minted before any of them is
+ * dead for good, while other members' links are untouched — revoking one
+ * person must not blank the whole team's wallpapers. Rotating DISPLAY_SECRET
+ * still invalidates every link at once, the right blunt instrument when a
+ * link's whereabouts are unknown.
  *
  * SCOPE. This is deliberately weaker than a session and must stay confined to
  * read-only display routes — proxy.ts is what enforces that, by only
@@ -50,25 +55,34 @@ function getSecret(): string | undefined {
   return process.env.DISPLAY_SECRET
 }
 
-function signature(organizationId: string, memberId: string, colleague: string): string | undefined {
+function signature(
+  organizationId: string,
+  memberId: string,
+  generation: string,
+  colleague: string
+): string | undefined {
   const secret = getSecret()
   if (!secret) return undefined
   // Truncated to 32 base64url characters — 192 bits, far past guessing, and
   // short enough that the whole URL still fits in Lively's input field.
   return createHmac('sha256', secret)
-    .update(`${organizationId}:${memberId}:${colleague}`)
+    .update(`${organizationId}:${memberId}:${generation}:${colleague}`)
     .digest('base64url')
     .slice(0, 32)
 }
 
+/** What a link is minted for: the membership, as it stands right now. */
+export interface DisplayMinter {
+  organizationId: string
+  memberId: string
+  /** organization_members.credential_generation at minting time. */
+  credentialGeneration: string
+}
+
 /** The token one member mints for one colleague's board in one organization. */
-export function displayToken(
-  organizationId: string,
-  memberId: string,
-  colleague: string
-): string | undefined {
-  const sig = signature(organizationId, memberId, colleague)
-  return sig ? `${organizationId}.${memberId}.${sig}` : undefined
+export function displayToken(minter: DisplayMinter, colleague: string): string | undefined {
+  const sig = signature(minter.organizationId, minter.memberId, minter.credentialGeneration, colleague)
+  return sig ? `${minter.organizationId}.${minter.memberId}.${minter.credentialGeneration}.${sig}` : undefined
 }
 
 /** Constant-time compare; same reasoning and shape as ./session's. */
@@ -82,15 +96,17 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB)
 }
 
-/** What a verified token says: which organization's board, minted by whom. */
+/** What a verified token says: which organization's board, minted by whom,
+ *  under which generation. */
 export interface DisplayGrant {
   organizationId: string
   memberId: string
+  credentialGeneration: string
 }
 
 /**
- * The organization and minting member a token opens `colleague`'s board for,
- * or null. Signature only — whether the member is still active is
+ * The grant a token carries for `colleague`'s board, or null. Signature only
+ * — whether the member is still active under this generation is
  * ./display-access's question, because answering it needs the database.
  *
  * Returns null when DISPLAY_SECRET is unset rather than throwing: an
@@ -101,17 +117,21 @@ export function verifyDisplayToken(
   colleague: string | undefined,
   token: string | undefined
 ): DisplayGrant | null {
-  if (!colleague || !token || token.length > 160) return null
+  if (!colleague || !token || token.length > 200) return null
 
   const parts = token.split('.')
-  if (parts.length !== 3) return null
-  const [organizationId, memberId, provided] = parts
-  if (!UUID.test(organizationId) || !UUID.test(memberId) || !provided) return null
+  if (parts.length !== 4) return null
+  const [organizationId, memberId, generation, provided] = parts
+  if (!UUID.test(organizationId) || !UUID.test(memberId) || !UUID.test(generation) || !provided) return null
 
-  const expected = signature(organizationId, memberId, colleague)
+  const expected = signature(organizationId, memberId, generation, colleague)
   if (!expected) return null
   return safeEqual(provided, expected)
-    ? { organizationId: organizationId.toLowerCase(), memberId: memberId.toLowerCase() }
+    ? {
+        organizationId: organizationId.toLowerCase(),
+        memberId: memberId.toLowerCase(),
+        credentialGeneration: generation.toLowerCase(),
+      }
     : null
 }
 

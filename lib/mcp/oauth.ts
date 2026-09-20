@@ -56,12 +56,21 @@ export function validateAuthorization(raw: unknown): Authorization {
  * them from their session — the code is the only thing that carries that
  * identity from the browser to the token exchange, which has no session.
  */
-export async function issueCode(db: Database, request: Authorization, identity: { userId: string; organizationId: string }) {
+export interface CodeIdentity {
+  userId: string
+  organizationId: string
+  memberId: string
+  /** organization_members.credential_generation as the consent route saw it. */
+  credentialGeneration: string
+}
+
+export async function issueCode(db: Database, request: Authorization, identity: CodeIdentity) {
   const a = validateAuthorization(request), code = randomToken()
   await db.query('delete from crm_oauth_codes where expires_at < now()')
-  await db.query(`insert into crm_oauth_codes (code_hash, client_id, redirect_uri, challenge, scopes, resource, user_id, organization_id, expires_at)
-    values ($1,$2,$3,$4,$5::text[],$6,$7,$8,now() + interval '5 minutes')`,
-    [hashToken(code), a.client_id, a.redirect_uri, a.code_challenge, a.scope.split(' '), a.resource, identity.userId, identity.organizationId])
+  await db.query(`insert into crm_oauth_codes (code_hash, client_id, redirect_uri, challenge, scopes, resource, user_id, organization_id, member_id, member_generation, expires_at)
+    values ($1,$2,$3,$4,$5::text[],$6,$7,$8,$9,$10,now() + interval '5 minutes')`,
+    [hashToken(code), a.client_id, a.redirect_uri, a.code_challenge, a.scope.split(' '), a.resource,
+      identity.userId, identity.organizationId, identity.memberId, identity.credentialGeneration])
   const callback = new URL(a.redirect_uri)
   callback.searchParams.set('code', code); callback.searchParams.set('state', a.state); callback.searchParams.set('iss', config().origin)
   return callback.toString()
@@ -76,11 +85,14 @@ function authenticateClient(form: URLSearchParams) {
 }
 
 // The membership join every credential check below shares. An active
-// membership is a condition of the token, not only of its issue: revokeMember
-// revokes the connections it knows about, but a connection that outlives its
-// membership by any other path — the members script, a manual update — must
-// still be refused, and this is where that happens.
-const ACTIVE_MEMBER_JOIN = "join organization_members m on m.organization_id = c.organization_id and m.user_id = c.user_id and m.status = 'active'"
+// membership *under the generation the credential was minted with* is a
+// condition of the token, not only of its issue: revokeMember revokes the
+// connections it knows about, but a connection that outlives its membership
+// by any other path — the members script, a manual update — must still be
+// refused, and one minted before a revoke must stay dead after the same
+// membership row is re-added or its password reset (both rotate the
+// generation; see lib/org/members.ts). This is where all of that happens.
+const ACTIVE_MEMBER_JOIN = "join organization_members m on m.id = c.member_id and m.organization_id = c.organization_id and m.user_id = c.user_id and m.status = 'active' and m.credential_generation = c.member_generation"
 
 export async function exchangeToken(db: Database, form: URLSearchParams) {
   const c = authenticateClient(form)
@@ -94,33 +106,41 @@ export async function exchangeToken(db: Database, form: URLSearchParams) {
     if (form.get('grant_type') === 'authorization_code') {
       const code = form.get('code') ?? '', verifier = form.get('code_verifier') ?? ''
       if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) throw new CrmError('invalid_grant', 'Invalid PKCE verifier.')
-      // A left join rather than an inner one, so a code whose person is gone
-      // is told apart from a code that does not exist: the first is someone
-      // removed between consent and exchange, and the error should say so.
-      // The throw below rolls this transaction back, so such a code is not
-      // consumed — it cannot succeed on a retry either, and expires within
-      // five minutes like any other.
       const [row] = await tx.query<{ client_id: string; redirect_uri: string; challenge: string; scopes: string[]; resource: string;
-        user_id: string | null; organization_id: string | null; member_id: string | null }>(
-        `select c.client_id, c.redirect_uri, c.challenge, c.scopes, c.resource, c.user_id, c.organization_id, m.id as member_id
-         from crm_oauth_codes c
-         left join organization_members m on m.organization_id = c.organization_id and m.user_id = c.user_id and m.status = 'active'
-         where c.code_hash = $1 and c.expires_at > now() for update of c`, [hashToken(code)])
+        user_id: string | null; organization_id: string | null; member_id: string | null; member_generation: string | null }>(
+        `select client_id, redirect_uri, challenge, scopes, resource, user_id, organization_id, member_id, member_generation
+         from crm_oauth_codes where code_hash = $1 and expires_at > now() for update`, [hashToken(code)])
       if (!row || row.client_id !== c.clientId || row.redirect_uri !== form.get('redirect_uri') || row.resource !== c.resource || !secureEqual(row.challenge, pkceChallenge(verifier))) {
         throw new CrmError('invalid_grant', 'Invalid or expired authorization code.')
       }
       await tx.query('delete from crm_oauth_codes where code_hash = $1', [hashToken(code)])
-      // The columns are nullable (they were added to a live table), so the
-      // check is here rather than trusted to the schema. A code with no person
-      // behind it, or whose membership was revoked in the five minutes since
-      // consent, would become a token acting as nobody.
-      if (!row.user_id || !row.organization_id || !row.member_id) {
+      // The identity columns are nullable (they were added to a live table),
+      // so the check is here rather than trusted to the schema.
+      if (!row.user_id || !row.organization_id || !row.member_id || !row.member_generation) {
+        throw new CrmError('invalid_grant', 'The authorization code has no active member behind it. Log in and connect again.')
+      }
+      // The account lock orders this exchange against a revoke of the same
+      // person (lib/org/members.ts takes the same lock): either the revoke
+      // finished first and the membership below is gone or regenerated, or it
+      // waits for this to commit and then revokes the connection it created.
+      // Nothing can slip through between the check and the insert.
+      await tx.query('select pg_advisory_xact_lock(hashtext($1))', [`khyte:user:${row.user_id}`])
+      // The membership must be active *and* still on the generation the code
+      // was minted under. Someone revoked and re-added inside the five-minute
+      // window is active again, but on a new generation — the code stays
+      // dead, as it should. The throw rolls the deletion back, and the code
+      // cannot succeed on a retry either.
+      const [member] = await tx.query<{ id: string }>(
+        `select id from organization_members
+         where id = $1 and user_id = $2 and organization_id = $3 and status = 'active' and credential_generation = $4`,
+        [row.member_id, row.user_id, row.organization_id, row.member_generation])
+      if (!member) {
         throw new CrmError('invalid_grant', 'The authorization code has no active member behind it. Log in and connect again.')
       }
       connectionId = randomUUID(); scopes = row.scopes
-      await tx.query(`insert into crm_oauth_connections (id, client_id, user_id, organization_id, access_hash, refresh_hash, scopes, access_expires_at, refresh_expires_at)
-        values ($1,$2,$3,$4,$5,$6,$7::text[],now() + interval '1 hour',now() + interval '30 days')`,
-        [connectionId, c.clientId, row.user_id, row.organization_id, hashToken(access), hashToken(refresh), scopes])
+      await tx.query(`insert into crm_oauth_connections (id, client_id, user_id, organization_id, member_id, member_generation, access_hash, refresh_hash, scopes, access_expires_at, refresh_expires_at)
+        values ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],now() + interval '1 hour',now() + interval '30 days')`,
+        [connectionId, c.clientId, row.user_id, row.organization_id, row.member_id, row.member_generation, hashToken(access), hashToken(refresh), scopes])
     } else if (form.get('grant_type') === 'refresh_token') {
       const [row] = await tx.query<{ id: string; scopes: string[] }>(`select c.id, c.scopes from crm_oauth_connections c ${ACTIVE_MEMBER_JOIN}
         where c.refresh_hash = $1 and c.client_id = $2 and c.revoked_at is null and c.refresh_expires_at > now() for update of c`, [hashToken(form.get('refresh_token') ?? ''), c.clientId])
