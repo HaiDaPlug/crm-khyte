@@ -6,7 +6,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js'
 import type { Database, Queryable, Row } from '../lib/crm/database'
-import type { ColleagueId, MemberRole, OrganizationMember, Workspace } from '../lib/types'
+import type { ColleagueId, MemberRole } from '../lib/types'
 import { actionSchemas, calendarDate } from '../lib/crm/contracts'
 import { commitAction, previewAction, getRecord, searchRecords, safeError,
   previewBulkOutreach, commitBulkOutreach, getBulkResult } from '../lib/crm/service'
@@ -25,6 +25,13 @@ import { displayToken, verifyDisplayToken } from '../lib/auth/display-token'
 import { resolveDisplayGrant } from '../lib/auth/display-access'
 import { addMember, assertCanAddMember, claimAccount, hasActiveMembershipElsewhere, resetCredentials,
   revokeConnectionsForUser, revokeMember, revokeSessionsForUser, updateMember } from '../lib/org/members'
+// The member flows themselves, with the one call SQL cannot undo behind an
+// injected provider — which is what lets the suite fail it on command. The
+// Server Action around them (app/actions/members.ts) is the gate, and reads a
+// session; scopeMatches is the half of that gate which is pure.
+import { addMemberFlow, resetPasswordFlow, scopeMatches,
+  type AddMemberRequest, type Administrator, type IdentityProvider } from '../lib/org/administration'
+import { IdentityError } from '../lib/auth/identity'
 import { applyMigrations, finishRollout } from './support/migrations'
 import { register } from '../instrumentation'
 import { exportProspects, EXPORT_ROWS_BYTES } from '../lib/mcp/export'
@@ -514,6 +521,10 @@ function authorization(scope = 'crm:read crm:tasks:write') {
 function tokenForm(code: string) {
   return new URLSearchParams({ grant_type: 'authorization_code', client_id: config().clientId, client_secret: config().clientSecret,
     redirect_uri: config().redirects[0], code, code_verifier: verifier, resource: config().resource })
+}
+/** An RFC 7009 revocation request: the client, and the token to end. */
+function revocationForm(token: string) {
+  return new URLSearchParams({ client_id: config().clientId, client_secret: config().clientSecret, token })
 }
 
 test('authorization tolerates ChatGPT extras and an absent resource, and names bad fields', async () => {
@@ -1126,64 +1137,10 @@ test('acceptance 3 — a tool write stops the moment the membership behind its c
     'one receipt, matching the one row that landed')
 })
 
-test('acceptance 4 — the client store refuses a snapshot belonging to another identity', async (t) => {
-  // The store is a client module, but it imports the Server Actions it calls,
-  // and lib/auth/guard.ts imports next/navigation. Under
-  // --conditions=react-server (which this suite needs, so that 'server-only'
-  // is an empty module) next/navigation resolves to the client router
-  // context, which calls React.createContext — absent from React's
-  // react-server build. Without the condition, 'server-only' throws instead.
-  // Next's bundler aliases both per runtime; plain Node cannot, so the import
-  // is attempted and the exact reason reported rather than shimmed away.
-  let createCRMStore: typeof import('../lib/store/store').createCRMStore
-  try {
-    ;({ createCRMStore } = await import('../lib/store/store'))
-  } catch (cause) {
-    t.skip('lib/store/store is not importable in a plain Node test: ' +
-      `${cause instanceof Error ? cause.message : String(cause)} — lib/store/store.ts imports @/app/actions/crm, ` +
-      'which imports lib/auth/guard.ts, which imports next/navigation.')
-    return
-  }
-
-  const workspaceFor = (organizationId: string, userId: string): Workspace => ({
-    organization: { id: organizationId, name: 'Workspace', slug: 'workspace', timezone: 'Europe/Stockholm' },
-    viewer: { userId, memberId: randomUUID(), role: 'owner', displayName: 'Viewer', email: 'viewer@example.test' },
-    members: [],
-  })
-  const snapshotFor = (workspace: Workspace) => ({
-    workspace, companies: [], contacts: [], opportunities: [], leads: [], notes: [],
-    strategyBoards: [], strategyBoardOpportunities: [], strategyColumns: [], strategyCards: [], tasks: [],
-  })
-  const orgA = randomUUID(), orgB = randomUUID(), userA = randomUUID()
-  const newcomer: OrganizationMember = { id: randomUUID(), userId: randomUUID(), role: 'member', status: 'active',
-    email: 'newcomer@example.test', displayName: 'Newcomer', createdAt: new Date().toISOString() }
-
-  // Another organization's snapshot.
-  const foreign = createCRMStore(snapshotFor(workspaceFor(orgA, userA)))
-  foreign.getState().upsertWorkspaceMember(newcomer)
-  assert.equal(foreign.getState().applyRemoteSnapshot(snapshotFor(workspaceFor(orgB, userA))), false)
-  assert.equal(foreign.getState().identityChanged, true)
-  assert.equal(foreign.getState().workspace.organization.id, orgA, 'the workspace is not merged with the other one')
-  assert.ok(foreign.getState().workspace.members.some(m => m.id === newcomer.id), 'and the member just added is still there')
-
-  // The same organization, a different person: the cookie changed under this tab.
-  const swapped = createCRMStore(snapshotFor(workspaceFor(orgA, userA)))
-  swapped.getState().upsertWorkspaceMember(newcomer)
-  assert.equal(swapped.getState().applyRemoteSnapshot(snapshotFor(workspaceFor(orgA, randomUUID()))), false)
-  assert.equal(swapped.getState().identityChanged, true)
-  assert.ok(swapped.getState().workspace.members.some(m => m.id === newcomer.id))
-
-  // The same organization and the same person: an ordinary merge.
-  const ours = createCRMStore(snapshotFor(workspaceFor(orgA, userA)))
-  assert.equal(ours.getState().applyRemoteSnapshot(snapshotFor(workspaceFor(orgA, userA))), true)
-  assert.equal(ours.getState().identityChanged, false)
-
-  // The 'context_mismatch' path through persist() is not reachable from here:
-  // the store calls the Server Actions through a static `import * as api`,
-  // with no seam to intercept, and a real call needs a session and a
-  // database. What is proved above is the pure half — the merge refusal and
-  // the flag SnapshotSync reloads on.
-})
+/* Acceptance 4 — the client store refusing a snapshot belonging to another
+ * identity — lives in tests/store.test.ts. The store is a client module and
+ * cannot be imported under --conditions=react-server, which this suite needs;
+ * it now runs for real in its own suite rather than skipping here. */
 
 test('acceptance 5 — two organizations cannot claim one account, and a claim is all-or-nothing', async () => {
   const claimant = (organizationId: string, userId: string, email: string) => ({
@@ -1287,4 +1244,233 @@ test('acceptance 6 — an administration is re-checked against its acting owner 
   await assert.rejects(updateMember(db, OTHER_ORG, sole.id, { role: 'member' }, { actingUserId: otherActor.userId }), failsWith('last_owner'))
   assert.ok((await db.query<{ n: number }>(
     `select count(*)::int as n from organization_members where organization_id = $1 and role = 'owner' and status = 'active'`, [KHYTE]))[0].n >= 1)
+})
+
+/* ———— Second review ————
+ *
+ * The four findings of the second Stage 1 review, each exercised against the
+ * real code rather than a description of it.
+ *
+ *   R1  the scope a browser sends is an expectation, checked before anything
+ *       is looked up (scopeMatches; the Server Action around it is the gate).
+ *   R2  organization advisory lock, then account advisory lock, then rows —
+ *       everywhere. The orderings themselves need two connections and live in
+ *       tests/mcp-postgres.test.ts; what is here is the sequential outcome.
+ *   R3  a revoked token stops the next tool write.
+ *   R4  after a failure that follows an external side effect, the flow reads
+ *       the database and answers from what it finds.
+ */
+
+/**
+ * The account service the flows are given, as a fake that records what it was
+ * asked and writes to the stubbed auth.users instead of GoTrue.
+ *
+ * A fake provider rather than a fake flow: lib/org/administration.ts,
+ * lib/org/members.ts and every lock and constraint under them are the real
+ * ones. Only the one thing SQL cannot undo — a call to Supabase Auth — is
+ * replaced, which is precisely the thing these tests need to be able to fail
+ * on command.
+ */
+function fakeIdentity(onSetPassword?: (userId: string) => Promise<void>) {
+  const calls = { findAccountByEmail: 0, createAccount: 0, setPassword: 0 }
+  const passwords = new Map<string, string>()
+  const provider: IdentityProvider = {
+    async findAccountByEmail(queryable, email) {
+      calls.findAccountByEmail += 1
+      const [row] = await queryable.query<{ id: string; email: string }>('select id, email from auth.users where email = $1', [email])
+      return row ? { userId: row.id, email: row.email } : null
+    },
+    async createAccount({ email, password }) {
+      calls.createAccount += 1
+      const userId = randomUUID()
+      await db.query('insert into auth.users (id, email) values ($1, $2)', [userId, email])
+      passwords.set(userId, password)
+      return { userId }
+    },
+    async setPassword(userId, password) {
+      calls.setPassword += 1
+      if (onSetPassword) await onSetPassword(userId)
+      passwords.set(userId, password)
+    },
+  }
+  return { provider, calls, passwords }
+}
+
+/** A fresh address with no account behind it. */
+const freshEmail = () => `${randomUUID().slice(0, 8)}@example.test`
+
+/** An account with no membership anywhere — the "existing account" the add
+ *  flow takes over rather than creates. */
+async function unattachedAccount() {
+  const userId = randomUUID(), email = freshEmail()
+  await db.query('insert into auth.users (id, email) values ($1, $2)', [userId, email])
+  return { userId, email }
+}
+
+const addRequest = (email: string): AddMemberRequest => ({ email, displayName: 'Flow Person', role: 'member', colleague: null })
+
+const activeMemberships = async (userId: string) =>
+  (await db.query<{ n: number }>(`select count(*)::int as n from organization_members where user_id = $1 and status = 'active'`, [userId]))[0].n
+
+/** The database call fails before it starts: nothing was written, and the
+ *  caller cannot know that from the exception alone. */
+const neverCommits: Database = { ...db, transaction: async () => { throw new Error('the connection dropped before the transaction began') } }
+
+/** The transaction commits and the acknowledgement is lost on the way back —
+ *  the failure that looks identical to the one above and is its opposite. */
+const lostAcknowledgement: Database = {
+  ...db,
+  transaction: async (run) => { await db.transaction(run); throw new Error('the commit was acknowledged to nobody') },
+}
+
+test('R1 — the scope a browser sends matches only the session that arrived', () => {
+  const context = { organizationId: KHYTE, userId: actor.userId }
+  assert.equal(scopeMatches(context, { organizationId: KHYTE, userId: actor.userId }), true)
+  // A Settings dialog opened in one workspace and submitted after another tab
+  // logged in: the session is perfectly valid and belongs somewhere else.
+  assert.equal(scopeMatches(context, { organizationId: OTHER_ORG, userId: actor.userId }), false)
+  // The same workspace, a different person — the cookie changed under the tab.
+  assert.equal(scopeMatches(context, { organizationId: KHYTE, userId: otherActor.userId }), false)
+  assert.equal(scopeMatches(context, { organizationId: OTHER_ORG, userId: otherActor.userId }), false)
+})
+
+test('R4 — an account created and then not saved is reported as unsaved, and the retry repairs it', async () => {
+  const owner = await member(KHYTE, { role: 'owner', displayName: 'Unsaved Owner' })
+  const admin: Administrator = { organizationId: KHYTE, userId: owner.userId }
+  const { provider, calls } = fakeIdentity()
+  const email = freshEmail()
+
+  // The account is created, and then the membership never reaches the
+  // database at all. The flow re-reads rather than guessing: no membership,
+  // so it says which half is unfinished. (It logs the cause as it does so.)
+  const stranded = await addMemberFlow(neverCommits, provider, admin, addRequest(email), 'stranded-password')
+  assert.deepEqual(stranded, { ok: false, error: 'membership_unsaved' })
+  assert.equal(calls.createAccount, 1)
+  const [account] = await db.query<{ id: string }>('select id from auth.users where email = $1', [email])
+  assert.ok(account, 'the account the owner was never told about exists')
+  assert.equal(await activeMemberships(account.id), 0, 'and nothing on the roster')
+
+  // The retry is the repair: the same address now has an account, so the flow
+  // takes it over and replaces the password rather than creating a second.
+  const retried = await addMemberFlow(db, provider, admin, addRequest(email), 'retried-password')
+  assert.equal(retried.ok, true)
+  assert.equal(retried.ok && retried.temporaryPassword, 'retried-password')
+  assert.equal(retried.ok && retried.member.userId, account.id)
+  assert.equal(calls.createAccount, 1, 'no second account for the same address')
+  assert.equal(calls.setPassword, 1, 'the existing account had its password replaced instead')
+  assert.equal(await activeMemberships(account.id), 1)
+})
+
+test('R4 — a commit whose acknowledgement was lost still hands the owner the password', async () => {
+  const owner = await member(KHYTE, { role: 'owner', displayName: 'Lost Ack Owner' })
+  const admin: Administrator = { organizationId: KHYTE, userId: owner.userId }
+
+  // An existing account: the password was replaced inside the transaction
+  // that committed, so the owner must be given it — reporting a failure here
+  // would leave a person locked out of an account nobody can name.
+  const taken = await unattachedAccount()
+  const existing = fakeIdentity()
+  const first = await addMemberFlow(lostAcknowledgement, existing.provider, admin, addRequest(taken.email), 'reconciled-password')
+  assert.equal(first.ok, true)
+  assert.equal(first.ok && first.temporaryPassword, 'reconciled-password')
+  assert.equal(first.ok && first.member.userId, taken.userId)
+  assert.equal(existing.calls.setPassword, 1)
+  assert.equal(existing.calls.createAccount, 0)
+  assert.equal(await activeMemberships(taken.userId), 1, 'exactly the membership that committed')
+
+  // A brand-new account reaches the same answer by the other route: the
+  // account was created before the transaction, so the side effect stands
+  // whichever way the commit went.
+  const created = fakeIdentity()
+  const email = freshEmail()
+  const second = await addMemberFlow(lostAcknowledgement, created.provider, admin, addRequest(email), 'new-account-password')
+  assert.equal(second.ok, true)
+  assert.equal(second.ok && second.temporaryPassword, 'new-account-password')
+  assert.equal(created.calls.createAccount, 1)
+  assert.equal(created.calls.setPassword, 0, 'a new account is created with the password already set')
+  const [account] = await db.query<{ id: string }>('select id from auth.users where email = $1', [email])
+  assert.equal(await activeMemberships(account.id), 1)
+})
+
+test('R4 — a reset answers from the generation it chose, not from the exception', async () => {
+  const owner = await member(KHYTE, { role: 'owner', displayName: 'Reset Owner' })
+  const admin: Administrator = { organizationId: KHYTE, userId: owner.userId }
+  const person = await member(KHYTE, { displayName: 'Reset Target' })
+  const before = await membership(person.userId, KHYTE)
+  const session = await login(person.userId, KHYTE)
+
+  // Committed, and then the acknowledgement was lost. The generation the
+  // reset chose is on the row, so the reset did happen and the owner gets the
+  // password they must hand over.
+  const { provider, calls } = fakeIdentity()
+  const reset = await resetPasswordFlow(lostAcknowledgement, provider, admin, person.memberId, 'reset-password')
+  assert.equal(reset.ok, true)
+  assert.equal(reset.ok && reset.temporaryPassword, 'reset-password')
+  assert.equal(calls.setPassword, 1)
+  const after = await membership(person.userId, KHYTE)
+  assert.notEqual(after.credentialGeneration, before.credentialGeneration, 'the row carries the generation this reset chose')
+  assert.equal(await resolveAuthContext(db, session.cookie), null, 'and everything the old password opened is closed')
+
+  // A failure *before* the provider call landed is an ordinary refusal: the
+  // transaction rolled back, nothing outside the database changed, and
+  // memberErrorCode names the provider's own reason rather than 'failed'.
+  const restored = await login(person.userId, KHYTE)
+  const refusing = fakeIdentity(async () => { throw new IdentityError('unavailable', 'the identity provider is unavailable') })
+  const failed = await resetPasswordFlow(db, refusing.provider, admin, person.memberId, 'never-handed-over')
+  assert.deepEqual(failed, { ok: false, error: 'unavailable' })
+  assert.equal(refusing.calls.setPassword, 1, 'the provider was asked and refused')
+  assert.equal((await membership(person.userId, KHYTE)).credentialGeneration, after.credentialGeneration, 'the generation did not move')
+  assert.equal((await resolveAuthContext(db, restored.cookie))?.viewer.memberId, person.memberId, 'and the session survived the refusal')
+})
+
+test('R3 — a revoked token stops the next tool write, and only that connection', async () => {
+  const person = await member(KHYTE, { displayName: 'Token Revoked' })
+  const who = { userId: person.userId, organizationId: KHYTE }
+  const token = await approve(who)
+  const principal = await authenticateBearer(db, `Bearer ${token.access_token}`)
+  const input = { ...task(), title: `After Revocation ${randomUUID()}` }
+
+  // By access token. The commit re-checks the connection under the account
+  // lock this revocation takes, so a write already in flight is refused
+  // rather than slipping past a check it passed before the revocation.
+  await revokeToken(db, revocationForm(token.access_token))
+  await assert.rejects(commitAction(db, 'create_task', input, principal), /unauthorized|lost its access/)
+  assert.equal((await db.query('select request_id from crm_tool_receipts where request_id = $1', [input.requestId])).length, 0,
+    'a refused write is not receipted')
+  assert.equal((await db.query('select id from tasks where title = $1', [input.title])).length, 0)
+  await assert.rejects(authenticateBearer(db, `Bearer ${token.access_token}`), failsWith('unauthorized'))
+
+  // One connection ended, not a person: the same member connecting again works.
+  const fresh = await connect(person.userId, KHYTE)
+  assert.equal((await commitAction(db, 'create_task', { ...task(), title: `Reconnected ${randomUUID()}` }, fresh)).status, 'saved')
+
+  // By refresh token, the other half of RFC 7009 — the same connection either way.
+  const second = await approve(who)
+  const secondPrincipal = await authenticateBearer(db, `Bearer ${second.access_token}`)
+  await revokeToken(db, revocationForm(second.refresh_token))
+  await assert.rejects(commitAction(db, 'create_task', task(), secondPrincipal), /unauthorized|lost its access/)
+  await assert.rejects(authenticateBearer(db, `Bearer ${second.access_token}`), failsWith('unauthorized'))
+
+  // An unknown token is a successful no-op: nothing to lock, nothing to say.
+  await revokeToken(db, revocationForm(randomUUID()))
+  await revokeToken(db, revocationForm(''))
+})
+
+test('R2 — a revoke leaves nothing for a pending code or a refresh to find', async () => {
+  const person = await member(KHYTE, { displayName: 'Lock Order Sequential' })
+  const who = { userId: person.userId, organizationId: KHYTE }
+  const live = await approve(who)
+  const pending = new URL(await issueCode(db, authorization(), await codeIdentity(who))).searchParams.get('code')!
+
+  // The revoke takes the organization lock, then the account lock, then the
+  // rows — and inside it discards this person's pending codes and revokes
+  // their connections. Sequentially that is simply: there is nothing left.
+  await revokeMember(db, KHYTE, person.memberId)
+  assert.equal((await db.query('select code_hash from crm_oauth_codes where code_hash = $1', [hashToken(pending)])).length, 0,
+    'the code was discarded, so the exchange never reaches the membership check')
+  await assert.rejects(exchangeToken(db, tokenForm(pending)), failsWith('invalid_grant'))
+  const refresh = new URLSearchParams({ grant_type: 'refresh_token', client_id: config().clientId,
+    client_secret: config().clientSecret, resource: config().resource, refresh_token: live.refresh_token })
+  await assert.rejects(exchangeToken(db, refresh), failsWith('invalid_grant'))
+  await assert.rejects(authenticateBearer(db, `Bearer ${live.access_token}`), failsWith('unauthorized'))
 })

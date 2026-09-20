@@ -12,10 +12,13 @@ import type { Database, Queryable, Row } from '../lib/crm/database'
  *      rolls back, so it leaves nothing behind.
  *   2. Concurrency. PGlite is a single connection — two "simultaneous" callers
  *      are two sequential ones, and an advisory lock nobody contends for
- *      proves nothing. The second test opens two real connections and makes
- *      them race. It CANNOT roll back (each side has to see the other's
- *      committed work), so it creates its own organizations and accounts and
- *      deletes them again in a finally.
+ *      proves nothing. Every test after the first opens real connections and
+ *      makes them race: two callers reaching the same invariant at once, and
+ *      then — in the last two — one caller held at an exact statement while
+ *      the other runs, which is the only way to pin down a lock *order*. They
+ *      CANNOT roll back (each side has to see the other's committed work), so
+ *      they create their own organizations and accounts and delete them again
+ *      in a finally.
  *
  * Opt in with a migrated Postgres database. Never load .env.local
  * automatically. Run with:
@@ -199,6 +202,341 @@ test('two owners revoking each other, and two organizations claiming one account
     } finally {
       await left.end({ timeout: 5 })
       await right.end({ timeout: 5 })
+    }
+  }
+})
+
+/* ———— Real concurrency: the lock order itself ————
+ *
+ * The two races the second review asked for evidence of. Both need two
+ * backends holding real locks, so PGlite cannot run either of them and only a
+ * migrated PostgreSQL can: they are skipped exactly like the tests above.
+ *
+ * Neither uses a sleep to mean "at the same time". Each wraps the Database one
+ * side is given so that its query() stops at a named statement and waits on a
+ * barrier; the other side is then started, watched until it is genuinely
+ * blocked on an advisory lock (pg_locks, by that connection's own backend pid),
+ * and only then is the barrier released. The interleaving is therefore the one
+ * the test claims, every run.
+ *
+ * What they prove is the order lib/org/members.ts states: organization
+ * advisory lock, then account advisory lock, then row locks. A writer that
+ * held a row for update while waiting for the account lock would deadlock
+ * against a token exchange holding that lock and needing the row — so the
+ * first test asserts that neither side ever fails with SQLSTATE 40P01, which
+ * is the failure the order exists to prevent, and that no connection outlives
+ * the membership behind it whichever side wins.
+ */
+
+/** postgres.js, as these tests drive it: one statement at a time. */
+type Sql = import('postgres').Sql
+
+const wrapConnection = (connection: Pick<Sql, 'unsafe'>): Queryable => ({
+  async query<T extends Row>(statement: string, parameters: unknown[] = []) {
+    return await connection.unsafe(statement, parameters as never[]) as unknown as T[]
+  },
+})
+
+const databaseOn = (sql: Sql): Database => ({
+  ...wrapConnection(sql),
+  async transaction<T>(run: (tx: Queryable) => Promise<T>) { return await sql.begin(tx => run(wrapConnection(tx))) as T },
+})
+
+/**
+ * One caller, stopped at an exact point inside its transaction.
+ *
+ * The first statement `pause` recognizes is executed and then held: `reached`
+ * resolves when it is, and nothing continues until `release()` is called.
+ * `statements` is everything that ran, in order, so a test can assert *what*
+ * it paused after rather than trusting a count.
+ */
+function pauseAfter(sql: Sql, pause: (statement: string, index: number) => boolean) {
+  const statements: string[] = []
+  let arrive: () => void = () => {}
+  let letGo: () => void = () => {}
+  const reached = new Promise<void>(resolve => { arrive = resolve })
+  const released = new Promise<void>(resolve => { letGo = resolve })
+  const base = databaseOn(sql)
+  let paused = false
+  const database: Database = {
+    ...base,
+    transaction: (run) => base.transaction(async tx => run({
+      async query<T extends Row>(statement: string, parameters: unknown[] = []) {
+        const rows = await tx.query<T>(statement, parameters)
+        statements.push(statement)
+        if (!paused && pause(statement, statements.length - 1)) {
+          paused = true
+          arrive()
+          await released
+        }
+        return rows
+      },
+    })),
+  }
+  return { database, statements, reached, release: () => letGo() }
+}
+
+/** Waits for the paused side to arrive. Should the call fail before it gets
+ *  there, that failure is raised here rather than left to look like a barrier
+ *  nothing ever reached. */
+async function reachedOrFailed(held: { reached: Promise<void> }, running: Promise<unknown>): Promise<void> {
+  await Promise.race([held.reached, running.then(() => undefined)])
+}
+
+const moment = () => new Promise<void>(resolve => { setTimeout(resolve, 25) })
+
+/** Whether `pid`'s backend is waiting for an advisory lock right now. Asked of
+ *  a third connection, because the two racing ones are busy being raced. */
+async function waitingForAdvisoryLock(observer: Sql, pid: number): Promise<boolean> {
+  const [row] = await observer`select count(*)::int as n from pg_locks
+    where pid = ${pid} and locktype = 'advisory' and not granted`
+  return Number(row.n) > 0
+}
+
+/** Blocks until that backend is waiting on an advisory lock, and says so. */
+async function untilBlocked(observer: Sql, pid: number): Promise<boolean> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if (await waitingForAdvisoryLock(observer, pid)) return true
+    await moment()
+  }
+  return false
+}
+
+/** Blocks until that backend is waiting on an advisory lock *or* the call it
+ *  is running has finished. Not being blocked is a legitimate outcome: it is
+ *  what the corrected lock order produces when the other side holds nothing. */
+async function untilBlockedOrDone(observer: Sql, pid: number, running: Promise<unknown>): Promise<void> {
+  let done = false
+  running.then(() => { done = true }, () => { done = true })
+  for (let attempt = 0; attempt < 200 && !done; attempt++) {
+    if (await waitingForAdvisoryLock(observer, pid)) return
+    await moment()
+  }
+}
+
+/** The one SQLSTATE these two orders exist to make impossible. */
+function assertNoDeadlock(outcome: PromiseSettledResult<unknown>, who: string): void {
+  if (outcome.status === 'rejected') {
+    assert.notEqual((outcome.reason as { code?: string } | null)?.code, '40P01',
+      `${who} deadlocked — the lock order is what prevents that, so this is the regression`)
+  }
+}
+
+/** The MCP configuration the OAuth paths read at call time. Test-only values;
+ *  no deployment's keys are read, written or needed. */
+function mcpTestEnvironment(): void {
+  process.env.MCP_PUBLIC_URL = 'https://crm.example.test'
+  process.env.MCP_SECRET = 'test-only-signing-secret-with-at-least-32-characters'
+  process.env.MCP_CLIENT_ID = 'test-chatgpt'
+  process.env.MCP_CLIENT_SECRET = 'test-only-client-secret-with-at-least-32-characters'
+  process.env.MCP_REDIRECT_URIS = 'https://chatgpt.com/connector_platform_oauth_redirect'
+}
+
+const VERIFIER = 'a'.repeat(64)
+
+/** The OAuth module plus the three request shapes these tests build. */
+async function oauthPath() {
+  mcpTestEnvironment()
+  const oauth = await import('../lib/mcp/oauth')
+  const { config, pkceChallenge } = await import('../lib/mcp/security')
+  return {
+    ...oauth,
+    authorization: () => oauth.validateAuthorization({
+      response_type: 'code', client_id: config().clientId, redirect_uri: config().redirects[0], state: 'state-value',
+      resource: config().resource, code_challenge: pkceChallenge(VERIFIER), code_challenge_method: 'S256',
+      scope: 'crm:read crm:tasks:write',
+    }),
+    tokenForm: (code: string) => new URLSearchParams({ grant_type: 'authorization_code', client_id: config().clientId,
+      client_secret: config().clientSecret, redirect_uri: config().redirects[0], code, code_verifier: VERIFIER,
+      resource: config().resource }),
+    revocationForm: (token: string) => new URLSearchParams({ client_id: config().clientId,
+      client_secret: config().clientSecret, token }),
+  }
+}
+
+/**
+ * Everything these tests create, removed again.
+ *
+ * Nothing here runs inside a transaction — each side has to see the other's
+ * committed work — so the cleanup is the rollback. The organization_id columns
+ * retro-fitted to the existing tables are plain references without `on delete
+ * cascade` (see the organizations migration), so their rows go first, by
+ * organization; memberships and sessions would cascade anyway.
+ */
+async function removeTestData(sql: Sql, organizations: string[], accounts: string[]): Promise<void> {
+  // Nothing was created — the test skipped before its scaffold.
+  if (!organizations.length) return
+  for (const table of ['crm_tool_receipts', 'tasks', 'crm_events', 'crm_oauth_connections',
+    'crm_oauth_codes', 'app_sessions', 'organization_members']) {
+    await sql.unsafe(`delete from ${table} where organization_id = any($1::uuid[])`, [organizations] as never[])
+  }
+  if (accounts.length) await sql`delete from auth.users where id = any(${accounts}::uuid[])`
+  await sql`delete from organizations where id = any(${organizations}::uuid[])`
+}
+
+/** An organization of its own, an owner so the roster is well formed, and one
+ *  ordinary member — the person both races are about. */
+async function scaffold(sql: Sql, label: string) {
+  const suffix = randomUUID().slice(0, 8)
+  const organizationId = randomUUID()
+  await sql`insert into organizations (id, name, slug)
+    values (${organizationId}, ${`${label} ${suffix}`}, ${`${label}-${suffix}`.toLowerCase()})`
+  const accounts: string[] = []
+  const join = async (role: 'owner' | 'member') => {
+    const userId = randomUUID()
+    await sql`insert into auth.users (id, email) values (${userId}, ${`${userId}@example.test`})`
+    accounts.push(userId)
+    const [row] = await sql`insert into organization_members (organization_id, user_id, email, display_name, role)
+      values (${organizationId}, ${userId}, ${`${userId}@example.test`}, 'Concurrency', ${role})
+      returning id, credential_generation::text as credential_generation`
+    return { userId, memberId: row.id as string, credentialGeneration: row.credential_generation as string }
+  }
+  await join('owner')
+  return { organizationId, accounts, person: await join('member') }
+}
+
+test('an exchange and a revoke of the same account are serialized, never deadlocked', {
+  skip: !process.env.MCP_TEST_DATABASE_URL,
+}, async (t) => {
+  const url = process.env.MCP_TEST_DATABASE_URL!
+  const { default: postgres } = await import('postgres')
+  const left = postgres(url, { max: 1 }), right = postgres(url, { max: 1 }), observer = postgres(url, { max: 1 })
+  let organizations: string[] = [], accounts: string[] = []
+  try {
+    const guard = await left`select 1 as present from pg_trigger where tgname = 'organizations_rollout_guard'`
+    if (guard.length) {
+      t.skip('organizations_rollout_guard is still on this database, so a second organization cannot be created. ' +
+        'Apply the rollout follow-up (supabase/followups/…drop_organization_rollout.sql) before running this test.')
+      return
+    }
+    const { issueCode, exchangeToken, authenticateBearer, authorization, tokenForm } = await oauthPath()
+    const { revokeMember } = await import('../lib/org/members')
+
+    const world = await scaffold(left, 'Exchange Race')
+    organizations = [world.organizationId]
+    accounts = world.accounts
+    const { userId, memberId, credentialGeneration } = world.person
+    const code = new URL(await issueCode(databaseOn(left), authorization(),
+      { userId, organizationId: world.organizationId, memberId, credentialGeneration })).searchParams.get('code')!
+    const [{ pid: revokerPid }] = await right`select pg_backend_pid()::int as pid`
+
+    // The exchange, held immediately after its first statement — the plain
+    // read that learns whose code this is. No lock of any kind is held here:
+    // that is the whole of the change, and the reason the revoke below can
+    // pass it rather than wait behind a row it has for update.
+    const exchange = pauseAfter(left, (_statement, index) => index === 0)
+    const exchanging = exchangeToken(exchange.database, tokenForm(code))
+    await reachedOrFailed(exchange, exchanging)
+    assert.match(exchange.statements[0] ?? '', /select user_id from crm_oauth_codes/,
+      'the exchange must learn the account from an unlocked read before it locks anything')
+
+    // The revoke, on the other backend. It takes the organization lock, then
+    // the account lock, then its rows — and since the exchange holds neither,
+    // it is free to run to completion. If it does block on the account lock
+    // instead, that is equally sound; what it must never do is wait on a row
+    // the exchange is holding while the exchange waits on the lock it holds.
+    const revoking = revokeMember(databaseOn(right), world.organizationId, memberId)
+    await untilBlockedOrDone(observer, Number(revokerPid), revoking)
+    exchange.release()
+    const [exchanged, revoked] = await Promise.allSettled([exchanging, revoking])
+
+    assertNoDeadlock(exchanged, 'the token exchange')
+    assertNoDeadlock(revoked, 'the membership revoke')
+    assert.equal(revoked.status, 'fulfilled', 'the revoke must finish; withdrawal of access cannot be the side that loses')
+    const [membership] = await observer`select status from organization_members where id = ${memberId}`
+    assert.equal(membership.status, 'revoked')
+
+    // Whichever order the two landed in, exactly two outcomes are honest: the
+    // exchange found nothing left and said so, or it minted a connection that
+    // no longer authenticates because the membership behind it is gone.
+    if (exchanged.status === 'rejected') {
+      assert.equal((exchanged.reason as { code?: string }).code, 'invalid_grant')
+    } else {
+      await assert.rejects(authenticateBearer(databaseOn(observer), `Bearer ${exchanged.value.access_token}`),
+        /expired or was revoked/)
+    }
+    const [live] = await observer`select count(*)::int as n from crm_oauth_connections c
+      join organization_members m on m.id = c.member_id and m.organization_id = c.organization_id
+        and m.user_id = c.user_id and m.status = 'active' and m.credential_generation = c.member_generation
+      where c.user_id = ${userId} and c.revoked_at is null`
+    assert.equal(Number(live.n), 0, 'no connection may outlive the membership behind it')
+  } finally {
+    try {
+      await removeTestData(left, organizations, accounts)
+    } finally {
+      await left.end({ timeout: 5 })
+      await right.end({ timeout: 5 })
+      await observer.end({ timeout: 5 })
+    }
+  }
+})
+
+test('a tool commit authorized under the account lock finishes, and the revocation that waited ends the next one', {
+  skip: !process.env.MCP_TEST_DATABASE_URL,
+}, async (t) => {
+  const url = process.env.MCP_TEST_DATABASE_URL!
+  const { default: postgres } = await import('postgres')
+  const left = postgres(url, { max: 1 }), right = postgres(url, { max: 1 }), observer = postgres(url, { max: 1 })
+  let organizations: string[] = [], accounts: string[] = []
+  try {
+    const guard = await left`select 1 as present from pg_trigger where tgname = 'organizations_rollout_guard'`
+    if (guard.length) {
+      t.skip('organizations_rollout_guard is still on this database, so a second organization cannot be created. ' +
+        'Apply the rollout follow-up (supabase/followups/…drop_organization_rollout.sql) before running this test.')
+      return
+    }
+    const { issueCode, exchangeToken, authenticateBearer, revokeToken, authorization, tokenForm, revocationForm } = await oauthPath()
+    const { commitAction } = await import('../lib/crm/service')
+
+    const world = await scaffold(left, 'Commit Race')
+    organizations = [world.organizationId]
+    accounts = world.accounts
+    const { userId, memberId, credentialGeneration } = world.person
+    const code = new URL(await issueCode(databaseOn(left), authorization(),
+      { userId, organizationId: world.organizationId, memberId, credentialGeneration })).searchParams.get('code')!
+    const token = await exchangeToken(databaseOn(left), tokenForm(code))
+    const actor = await authenticateBearer(databaseOn(left), `Bearer ${token.access_token}`)
+    const [{ pid: revokerPid }] = await right`select pg_backend_pid()::int as pid`
+
+    // The commit, held immediately after the statement that authorized it.
+    // The account advisory lock was taken the statement before, so this is a
+    // commit that has passed its check and is holding the lock a revocation
+    // needs — the exact moment RFC 7009 revocation must not be able to
+    // "succeed" behind.
+    const input = { requestId: randomUUID(), title: `Concurrency commit ${randomUUID()}`,
+      assignee: null, dueDate: null, tags: ['concurrency'] }
+    const commit = pauseAfter(left, statement => statement.includes('from crm_oauth_connections c'))
+    const committing = commitAction(commit.database, 'create_task', input, actor)
+    await reachedOrFailed(commit, committing)
+
+    const revoking = revokeToken(databaseOn(right), revocationForm(token.access_token))
+    assert.equal(await untilBlocked(observer, Number(revokerPid)), true,
+      'the revocation must wait for the account lock the commit holds, not slip past it')
+    commit.release()
+    const [committed, revokedToken] = await Promise.allSettled([committing, revoking])
+
+    assertNoDeadlock(committed, 'the tool commit')
+    assertNoDeadlock(revokedToken, 'the token revocation')
+    assert.equal(committed.status, 'fulfilled', 'the commit was authorized before the revocation arrived')
+    assert.equal(committed.status === 'fulfilled' && (committed.value as Row).status, 'saved')
+    assert.equal(revokedToken.status, 'fulfilled', 'and the revocation completed once the commit let the lock go')
+    const [saved] = await observer`select id from tasks where title = ${input.title}`
+    assert.ok(saved, 'the write that was authorized landed')
+
+    // The next one is refused: the connection is revoked, and commitAction
+    // re-reads it inside its own transaction rather than trusting the check
+    // this request passed a moment ago.
+    await assert.rejects(authenticateBearer(databaseOn(observer), `Bearer ${token.access_token}`), /expired or was revoked/)
+    await assert.rejects(
+      commitAction(databaseOn(left), 'create_task', { ...input, requestId: randomUUID(), title: `Refused ${randomUUID()}` }, actor),
+      /unauthorized|lost its access/)
+  } finally {
+    try {
+      await removeTestData(left, organizations, accounts)
+    } finally {
+      await left.end({ timeout: 5 })
+      await right.end({ timeout: 5 })
+      await observer.end({ timeout: 5 })
     }
   }
 })

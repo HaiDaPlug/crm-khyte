@@ -49,6 +49,13 @@ crm_oauth_connections    + user_id, organization_id   (legacy rows: user_id null
 The Khyte organization has a fixed id, `7b1e3d2a-8f4c-4a6e-9b21-0c5d3e7f9a10`,
 so every environment that applies the migration agrees on it.
 
+The migration file was edited after commit `977e05c` (credential
+generation, member identity on codes and connections). That is safe only
+because it had not been applied anywhere: `npm run db:status` against the
+live project on 2026-09-20 listed `20260920120000_organizations.sql` as the
+one pending migration. If it is ever applied before a further edit, that
+edit must ship as a new forward migration instead.
+
 **Same-organization foreign keys.** `companies`, `contacts`, `opportunities`,
 `strategy_boards` and `strategy_columns` gained a `(id, organization_id)` key,
 and every child key was rebuilt as a composite reference with the on-delete
@@ -192,18 +199,42 @@ shared account and logged in as that person into another organization.
 check followed by a write: an organization always has at least one active
 owner, and an account is administered by one organization at a time. Every
 roster write takes the organization's advisory lock and, when it touches an
-account, that account's lock (organization first, then account, everywhere);
-the check and the change happen inside one serialized step, and the acting
-owner is re-checked inside the lock as well. The MCP token exchange and the
-tool commit take the account lock too, so revocation and in-flight work have
-a defined order.
+account, that account's lock; the check and the change happen inside one
+serialized step, and the acting owner is re-checked inside the lock as well.
 
-**Supabase Auth cannot be rolled back by SQL.** Add and reset therefore
-write the membership first, call Supabase Auth second, and revoke old
-credentials last. A failed password call rolls the membership back and
-nothing has changed. A failure after a successful password call is reported
-as `membership_unsaved`: the password changed, the rest did not, and
-running the same action again completes it with a fresh password.
+**One lock order, everywhere.** Organization advisory lock, then account
+advisory lock, then row locks. Row locks last is as important as the two
+advisory locks: a writer holding a membership row for update while waiting
+for the account lock would deadlock against the OAuth token exchange, which
+holds the account lock while its connection insert needs that row. So every
+writer that needs an account lock learns the account from a plain read,
+takes the locks, and only then re-reads its rows for update and revalidates
+every condition. The token exchange, the refresh grant, direct token
+revocation (`/oauth/revoke`) and the tool commit all take the account lock
+in that same order, so revocation and in-flight work have a defined order:
+a commit that has already passed its check finishes first and the next one
+is refused; a revocation that finished first makes the commit fail.
+
+**Supabase Auth cannot be rolled back by SQL, and a commit's outcome can be
+lost.** Add and reset write the membership first, call Supabase Auth second,
+and revoke old credentials last, so a failed password call rolls the
+membership back and nothing has changed. After a failure that follows the
+external call, the flow asks the database instead of trusting the
+exception: an active membership for that account means the claim committed
+and the owner receives the result and the password after all; for a reset,
+the generation the call chose is either on the row (committed) or not. Only
+when the read says no is an unfinished state reported, and it says which:
+`membership_unsaved` (the account exists; if the person now shows on the
+roster use Reset password, otherwise add again) or `reset_unconfirmed` (run
+Reset password once more). The flows live in `lib/org/administration.ts`
+behind an injectable identity provider so the suite drives every one of
+these paths with a fake account service.
+
+**Member actions pass the same identity gate as CRM writes.** Every member
+action carries the scope the Settings page believes it is acting in and is
+refused with `context_mismatch` before any account lookup when it does not
+match the session; the page marks the store finished and reloads rather
+than filing anything the server returned.
 
 **CLI**, for bootstrap and recovery:
 
@@ -294,16 +325,12 @@ never redeploying the legacy build.
 | --- | --- | --- |
 | Typecheck | `npx tsc --noEmit` | 0 errors |
 | Production build | `npm run build` | passes |
-| Service, OAuth, MCP, sessions, members, isolation, wallpaper links, credential generation, revocation mid-request, account claims | `npm run test:mcp` | 36 pass, 1 skipped |
+| Service, OAuth, MCP, sessions, members, isolation, wallpaper links, credential generation, revocation mid-request, account claims, recovery, token revocation | `npm run test:mcp` | 42 / 42, none skipped |
 | Migration rehearsal, rollout guard and follow-up (both layouts) | `npm run test:org` | 7 / 7 |
 | Structural scoping lint over actions and data modules | `npm run test:scoping` | 3 / 3 |
+| Client identity boundary (store refuses a foreign snapshot) | `npm run test:store` | 2 / 2 |
 | HTTP boundaries against the built server | `npm run test:mcp:http` | 3 / 3 |
-| Real multi-connection concurrency (opt-in, needs `MCP_TEST_DATABASE_URL`) | `tests/mcp-postgres.test.ts` | not run here |
-
-The skipped test is the client identity boundary (`createCRMStore` cannot be
-loaded in plain Node because the store imports the Server Actions, which
-import `next/navigation`); the test is written and skips with that reason
-until the store takes its actions by injection.
+| Real multi-connection concurrency (opt-in, needs `MCP_TEST_DATABASE_URL`) | `tests/mcp-postgres.test.ts` | written, not run here |
 
 **Review history.** An adversarial review on the first cut confirmed three
 gaps (shared-account takeover via add plus reset; wallpaper links outliving
@@ -318,6 +345,18 @@ binding), unserialized account claims (locked claim protocol with an
 explicit recovery path), concurrent owner changes reaching zero owners
 (organization lock), the cleanup promotion breaking the test setup
 (layout-independent migration helper), and the rollback runbook.
+
+Astra's review of `4bb1f69` kept that work and asked for four more
+corrections, all in this branch: member actions now pass the same scope
+gate as CRM writes and Settings reloads on a mismatch instead of filing the
+result; the lock order is uniform (organization, account, then rows) with
+plain reads before locks and revalidation after, which removes the
+exchange-versus-revoke deadlock; direct token revocation takes the account
+lock so it orders against in-flight commits; and recovery after an external
+side effect reads the database back instead of inferring from the
+exception, covering both the created-account case and the lost
+acknowledgement. The client identity test now runs under its own command
+instead of skipping.
 
 What the suites establish:
 
@@ -357,18 +396,25 @@ What the suites establish:
   substance; the HTTP suite shows unauthenticated and unknown-cookie requests
   going to the login page and protocol routes behaving as before.
 
-**Automated checks versus rehearsal.** The suites above run in PGlite, a
-single-connection engine: they prove the service, OAuth, membership and
-migration rules sequentially, and they cover the browser write path only
-structurally (`tests/scoping.test.ts` lints every PostgREST chain and SQL
-statement in the actions and data modules for an organization predicate; it
-is a lint, not proof). They do not exercise a real browser session against
-a live Supabase Auth project, the Server Actions end to end, the display
-routes over HTTP with a live database, or genuine multi-connection
-concurrency. The advisory-lock protocol is verified by reading and by the
-opt-in `tests/mcp-postgres.test.ts`, which needs a real PostgreSQL
-(`MCP_TEST_DATABASE_URL`) and was not run here. Those remain manual
-rehearsal items for the deploy, listed under *Deploy order*.
+**Automated checks versus rehearsal.** The PGlite suites run on a
+single-connection engine: they prove the service, OAuth, membership,
+recovery and migration rules sequentially, and they cover the browser write
+path only structurally (`tests/scoping.test.ts` lints every PostgREST chain
+and SQL statement in the actions and data modules for an organization
+predicate; it is a lint, not proof). The client identity boundary runs under
+`npm run test:store`, with a test-only preload that blanks the framework's
+`server-only` marker; it proves the store's refusal, not the browser reload.
+Not exercised here: a real browser session against a live Supabase Auth
+project, the Server Actions end to end (the member gate is covered through
+`scopeMatches` and the flows, not through a cookie), the display routes over
+HTTP with a live database, and genuine multi-connection concurrency. The
+lock protocol is verified by reading and by the opt-in
+`tests/mcp-postgres.test.ts`, which holds the owner-versus-owner,
+claim-versus-claim, exchange-versus-revoke and commit-versus-token-revoke
+scenarios with explicit barriers on two connections. It needs a real
+PostgreSQL (`MCP_TEST_DATABASE_URL`) and could not be run on this machine:
+the local PostgreSQL 18 install has no server libraries and there is no
+Docker. Run it against a disposable instance before accepting Stage 1.
 
 Unresolved identity mappings: the table under *Members*.
 

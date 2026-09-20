@@ -102,6 +102,12 @@ export interface CRMStore {
    */
   identityChanged: boolean
   /**
+   * For a caller outside `persist` — the Settings roster, whose actions
+   * return their rows directly — that has just been told `context_mismatch`
+   * by the server. Same consequence: the store is finished, reload.
+   */
+  markIdentityChanged: () => void
+  /**
    * Swaps the data collections and the workspace for a freshly read snapshot,
    * leaving every piece of UI state (settings, sidebar, search) alone.
    *
@@ -547,6 +553,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       // Sync state
       toasts: [],
       identityChanged: false,
+      markIdentityChanged: () => set({ identityChanged: true }),
 
       dismissToast: (id) =>
         set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),

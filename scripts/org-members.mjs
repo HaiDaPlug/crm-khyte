@@ -9,15 +9,15 @@
  * roster is inspected without a browser.
  *
  * SAME RULES AS THE APP. Every rule in lib/org/members.ts and
- * app/actions/members.ts is mirrored here: one membership per account per
- * organization (a revoked one is reactivated, never duplicated), one active
- * member per roster label, never zero active owners, and a revocation cuts
- * the person's sessions, MCP connections and pending codes in the same
- * transaction. A plain .mjs cannot import the TypeScript modules, so keep the
- * three in step.
+ * lib/org/administration.ts — the flows behind app/actions/members.ts — is
+ * mirrored here: one membership per account per organization (a revoked one
+ * is reactivated, never duplicated), one active member per roster label,
+ * never zero active owners, and a revocation cuts the person's sessions, MCP
+ * connections and pending codes in the same transaction. A plain .mjs cannot
+ * import the TypeScript modules, so keep them in step by hand.
  *
- * TWO LOCKS, ALWAYS ORGANIZATION THEN ACCOUNT. Every command that writes does
- * it in one transaction that first takes
+ * ORGANIZATION LOCK, ACCOUNT LOCK, ROW LOCKS LAST. Every command that writes
+ * does it in one transaction that first takes
  *
  *     select pg_advisory_xact_lock(hashtext('khyte:org:<organization id>'))
  *     select pg_advisory_xact_lock(hashtext('khyte:user:<account id>'))
@@ -29,6 +29,16 @@
  * row lock inside one roster. This script races the running app exactly the
  * way a second owner does, so taking the two in the other order here would
  * deadlock against it rather than protect anything.
+ *
+ * Row locks come last, and that matters as much as the order of the two
+ * advisory locks: a writer holding a membership row `for update` while it
+ * waits for the account lock deadlocks against the MCP token exchange
+ * (lib/mcp/oauth.ts), which holds the account lock while its connection
+ * insert needs that same membership row. So `revoke` and `reset-password`
+ * learn the account from a plain, unlocked read, take the account lock, and
+ * only then re-read the row `for update` and ask every condition again — the
+ * row can have been revoked, reactivated or handed to another account while
+ * the lock was waited for, and only the locked read is the truth.
  *
  * CREDENTIAL GENERATION. Wallpaper links, OAuth codes and MCP connections all
  * record organization_members.credential_generation when they are minted, and
@@ -61,21 +71,28 @@
  * nothing behind: no orphan account whose password nobody saw.
  *
  * THE ONE CALL A TRANSACTION CANNOT UNDO is the one to Supabase Auth that
- * replaces a password. It is made inside the transaction and after the
- * membership write, the way claimAccount orders it, so everything that can
- * refuse this run rolls back with the password untouched. If that call
- * succeeds and a later step or the commit then fails, the account has a new
- * password and nothing was saved — the run says exactly that, and says to run
- * the same command again, which issues a fresh password and completes.
+ * creates an account or replaces a password. It is made inside the
+ * transaction and after the membership write, the way claimAccount orders it,
+ * so everything that can refuse this run rolls back with the password
+ * untouched. If that call succeeds and a later step then fails, what this
+ * database holds is genuinely unknown: the commit may have landed and only
+ * its acknowledgement been lost. So the run asks the database instead of
+ * reading the exception — `add` re-reads the active membership, and
+ * `reset-password` re-reads the credential generation it chose in JS for
+ * exactly this purpose. Found, the run prints the success and the password it
+ * was holding; not found, it names the unfinished state it left and the
+ * command that repairs it. This is lib/org/administration.ts answering
+ * `membership_unsaved` and `reset_unconfirmed`, by hand.
  *
  * NEVER GUESSES. --email is required by every command that touches a person;
  * there is no positional fallback, no prompt, no "the only member". The
  * roster label is mapped only when --colleague says so — never from a name.
  *
  * NEVER PRINTS A SECRET, with one exception: a temporary password this run
- * just generated, shown once and only after the commit, so it can be handed
- * over. A password given with --password is never echoed. Connection strings
- * and keys stay in .env.local.
+ * just generated, shown once and only once the commit is established — by its
+ * acknowledgement, or, when that was lost, by the re-read above — so it can be
+ * handed over. A password given with --password is never echoed. Connection
+ * strings and keys stay in .env.local.
  *
  * Usage:
  *   npm run org:members -- list
@@ -86,7 +103,7 @@
  *
  * Every command takes --org <uuid> to act on an organization other than Khyte.
  */
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import postgres from 'postgres'
 import { createClient } from '@supabase/supabase-js'
 import { readEnvLocal } from './supabase.mjs'
@@ -221,10 +238,10 @@ function showOnce(password) {
 
 // --- locks -------------------------------------------------------------------
 //
-// lockOrganization then lockAccount, never the other way round — see the
-// header. Both are transaction-scoped, so the commit or the rollback releases
-// them and there is nothing to unlock by hand; both therefore only mean
-// anything when handed a `tx` from sql.begin.
+// lockOrganization, then lockAccount, then row locks — never another order,
+// see the header. Both advisory locks are transaction-scoped, so the commit or
+// the rollback releases them and there is nothing to unlock by hand; both
+// therefore only mean anything when handed a `tx` from sql.begin.
 //
 // The call to Supabase Auth that replaces a password is made while both are
 // held, as it is in lib/org/members.ts: nothing else may administer the
@@ -293,6 +310,31 @@ async function assertCanAddMember(org, userId) {
       refuse(`The roster label "${colleague}" is already carried by ${taken.email}. One active member per label.`)
     }
   }
+}
+
+/**
+ * The active membership of one account in one organization — mirroring
+ * findActiveMembership in lib/org/members.ts. It is how `add` finds out,
+ * after a failure it cannot interpret, whether its transaction committed:
+ * the membership is there or it is not, and the exception has no say.
+ */
+async function findActiveMembership(db, organizationId, userId) {
+  const [row] = await db`
+    select id, display_name, role, colleague from organization_members
+    where organization_id = ${organizationId} and user_id = ${userId} and status = 'active'`
+  return row ?? null
+}
+
+/**
+ * Whether a membership currently carries `generation` — mirroring
+ * hasCredentialGeneration in lib/org/members.ts. The same question for
+ * `reset-password`, answerable only because the generation is chosen here
+ * rather than by gen_random_uuid() inside the statement.
+ */
+async function hasCredentialGeneration(db, memberId, generation) {
+  const [row] = await db`
+    select id from organization_members where id = ${memberId} and credential_generation = ${generation}`
+  return Boolean(row)
 }
 
 // --- credential revocation ---------------------------------------------------
@@ -457,28 +499,38 @@ async function add(org) {
       return { id: row.id, reactivated: Boolean(existing), sessions, codes }
     })
   } catch (cause) {
-    // The two states a rollback cannot repair, because they live in Supabase
-    // Auth and not in this database. Both are survivable, and both are
-    // repaired by running the same add again — which finds the account this
-    // run left behind, replaces its password, and saves the membership.
-    if (passwordReplaced) {
-      refuse(
-        `The password for ${email} was replaced, but the membership was NOT saved: ${reasonOf(cause)}\n` +
-          `  Nothing else changed — the roster of ${org.name} is as it was, and no session was cut.\n` +
-          `  ${generated
-            ? 'The password this run generated was never printed, so nobody has it.'
-            : 'The account now carries the password passed with --password.'}\n` +
-          '  Run the same add again: it saves the membership and issues a fresh password.'
+    // Nothing left Supabase Auth, so the rollback undid everything there was.
+    if (!accountCreated && !passwordReplaced) throw cause
+
+    // An account was created or a password replaced, and then something
+    // failed — possibly only the acknowledgement of a commit that landed.
+    // Ask the database, the way addMemberFlow does, rather than trust the
+    // exception: an active membership means the add went through after all,
+    // and the password this run is holding is the one to hand over.
+    const settled = await findActiveMembership(sql, org.id, account.id).catch(() => null)
+    if (settled) {
+      console.log(
+        `\n[khyte] The add committed after all: ${settled.display_name} <${email}> is an active ${settled.role} of\n` +
+          `  ${org.name}${settled.colleague ? `, known on the roster as "${settled.colleague}"` : ''} — only the acknowledgement was lost (${reasonOf(cause)}).\n` +
+          "  The account's sessions and pending codes were cut by that same transaction.\n"
       )
+      if (generated) showOnce(generated)
+      return
     }
-    if (accountCreated) {
-      refuse(
-        `The account for ${email} was created, but the membership was NOT saved: ${reasonOf(cause)}\n` +
-          '  The account exists with a password that was never printed, and belongs to no organization.\n' +
-          '  Run the same add again: it finds that account, issues a fresh password and saves the membership.'
-      )
-    }
-    throw cause
+
+    // Now the state a rollback could not repair, because it lives in Supabase
+    // Auth and not in this database.
+    refuse(
+      `${passwordReplaced ? `The password for ${email} was replaced` : `The account for ${email} was created`}, ` +
+        `but no active membership in ${org.name} could be found afterwards: ${reasonOf(cause)}\n` +
+        `  ${generated
+          ? 'The password this run generated was never printed, so nobody has it.'
+          : 'The account now carries the password passed with --password.'}\n` +
+        `  The account exists either way. Run \`list\`: if ${email} is on the roster, the membership did\n` +
+        '  commit and only this check could not see it — hand over a fresh password with `reset-password`.\n' +
+        '  If they are not on it, run the same add again: it finds that account, issues a fresh password\n' +
+        '  and saves the membership.'
+    )
   }
 
   // Printed only now: before the commit these counts are a claim, not a fact.
@@ -507,15 +559,29 @@ async function revoke(org) {
     // every wallpaper link they minted. Leaving any of those would leave a
     // person with access the roster says they no longer have.
     await lockOrganization(tx, org.id)
+
+    // A plain read first, to learn the account and the row; then the account
+    // lock; then the row for update — never the row before the account lock.
+    // A membership held for update while waiting for that lock deadlocks
+    // against a token exchange that holds it and inserts a connection
+    // referencing this very row (lib/mcp/oauth.ts). Once the lock is held, a
+    // tool commit or exchange in flight for this person either finished
+    // before this revoke and is cut by it, or waits and finds the membership
+    // gone.
+    const [peek] = await tx`
+      select id, user_id from organization_members
+      where organization_id = ${org.id} and user_id = ${account.id}`
+    if (!peek) refuse(`${email} is not a member of ${org.name}.`)
+    await lockAccount(tx, peek.user_id)
+
+    // Read again under the lock and believe only this: the row may have been
+    // revoked, or reactivated onto another account, while the lock was waited
+    // for. Already revoked is the no-op it was before.
     const [member] = await tx`
       select id, user_id, role, status from organization_members
-      where organization_id = ${org.id} and user_id = ${account.id} for update`
-    if (!member) refuse(`${email} is not a member of ${org.name}.`)
+      where id = ${peek.id} and organization_id = ${org.id} for update`
+    if (!member || member.user_id !== peek.user_id) refuse(`${email} is not a member of ${org.name}.`)
     if (member.status === 'revoked') return null
-    // Taken after the row is read, the way revokeMember does it: a token
-    // exchange or tool commit in flight for this person either finishes before
-    // this revoke and is then cut, or waits here and finds the membership gone.
-    await lockAccount(tx, member.user_id)
 
     if (member.role === 'owner') {
       const [{ n }] = await tx`
@@ -556,21 +622,38 @@ async function resetPassword(org) {
   if (!account) refuse(`No account has the email ${email}.`)
 
   const password = temporaryPassword()
-  let passwordReplaced = false
+  // Chosen here rather than by gen_random_uuid() inside the statement, the way
+  // resetCredentials does it, so that after a failure this run cannot
+  // interpret, the row either carries this value — the reset committed — or it
+  // does not. A generation the database invented would answer nothing.
+  const nextGeneration = randomUUID()
+  let replaced = null
 
   let outcome
   try {
     outcome = await sql.begin(async (tx) => {
       // resetCredentials in lib/org/members.ts, step for step.
       await lockOrganization(tx, org.id)
-      // Only an active member of THIS organization: a revoked person does not
-      // get a fresh way in through a password reset, and an account outside
-      // the organization is none of its owners' business.
+
+      // A plain read to learn the account, then the account lock, then the row
+      // for update — the lock order in the header. Only an active member of
+      // THIS organization: a revoked person does not get a fresh way in
+      // through a password reset, and an account outside the organization is
+      // none of its owners' business.
+      const [peek] = await tx`
+        select id, user_id from organization_members
+        where organization_id = ${org.id} and user_id = ${account.id} and status = 'active'`
+      if (!peek) refuse(`${email} is not an active member of ${org.name}. Reactivate them with add first.`)
+      await lockAccount(tx, peek.user_id)
+
+      // Every condition again under the lock: the membership may have been
+      // revoked, or reactivated onto another account, while it was waited for.
       const [member] = await tx`
         select id, user_id, display_name from organization_members
-        where organization_id = ${org.id} and user_id = ${account.id} and status = 'active' for update`
-      if (!member) refuse(`${email} is not an active member of ${org.name}. Reactivate them with add first.`)
-      await lockAccount(tx, member.user_id)
+        where id = ${peek.id} and organization_id = ${org.id} and status = 'active' for update`
+      if (!member || member.user_id !== peek.user_id) {
+        refuse(`${email} is not an active member of ${org.name}. Reactivate them with add first.`)
+      }
 
       // A password that also opens another organization is the person's to
       // change, not this one's — see the header. Refused rather than narrowed,
@@ -586,10 +669,10 @@ async function resetPassword(org) {
       // The generation is rotated before the external call, so that even a
       // failure after it leaves no wallpaper link, code or connection minted
       // under the old credential usable.
-      await tx`update organization_members set credential_generation = gen_random_uuid() where id = ${member.id}`
+      await tx`update organization_members set credential_generation = ${nextGeneration} where id = ${member.id}`
       const { error } = await adminAuth().updateUserById(member.user_id, { password })
       if (error) refuse(`The password could not be replaced: ${error.message}.`)
-      passwordReplaced = true
+      replaced = { id: member.id, displayName: member.display_name }
 
       // A reset is done because the old credential may be in the wrong hands,
       // so whatever it already opened is closed with it: every session of the
@@ -602,17 +685,29 @@ async function resetPassword(org) {
       return { displayName: member.display_name, sessions, connections, codes }
     })
   } catch (cause) {
+    // Nothing left Supabase Auth, so the rollback undid everything there was.
+    if (!replaced) throw cause
+
     // The same line add draws, for the same reason: the call to Supabase Auth
-    // is the one thing the rollback did not undo.
-    if (passwordReplaced) {
-      refuse(
-        `The password for ${email} was replaced, but the reset was NOT saved: ${reasonOf(cause)}\n` +
-          '  The password this run generated was never printed, so nobody has it, and the sessions,\n' +
-          '  connections and pending codes it was meant to cut may still be live.\n' +
-          '  Run reset-password again: it issues a fresh password and cuts them.'
+    // is the one thing the rollback did not undo — and whether this database
+    // saved the reset is a question only this database can answer. The row
+    // carries the generation this run chose, or it does not.
+    const committed = await hasCredentialGeneration(sql, replaced.id, nextGeneration).catch(() => false)
+    if (committed) {
+      console.log(
+        `\n[khyte] The reset for ${replaced.displayName} <${email}> committed after all — only its\n` +
+          `  acknowledgement was lost (${reasonOf(cause)}). The generation is rotated, so the sessions,\n` +
+          '  MCP connections, pending codes and wallpaper links went with that same transaction.'
       )
+      showOnce(password)
+      return
     }
-    throw cause
+    refuse(
+      `The password for ${email} was replaced, but the reset was NOT saved: ${reasonOf(cause)}\n` +
+        '  The password this run generated was never printed, so nobody has it, and the sessions,\n' +
+        '  connections and pending codes it was meant to cut may still be live.\n' +
+        '  Run reset-password again: it issues a fresh password and cuts them.'
+    )
   }
 
   console.log(

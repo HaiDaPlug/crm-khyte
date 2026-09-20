@@ -1,5 +1,7 @@
 import 'server-only'
 
+import { randomUUID } from 'node:crypto'
+
 import type { Database, Queryable } from '@/lib/crm/database'
 import { CrmError } from '@/lib/crm/errors'
 import type {
@@ -37,9 +39,16 @@ import type {
  *     checking that at the same moment could both pass; every writer that
  *     administers an account first takes the account's advisory lock.
  *
- * Lock order is organization, then account, everywhere in this module. The
- * MCP token exchange and the tool commit take only the account lock, which
- * cannot form a cycle with that order.
+ * Lock order is organization advisory lock, then account advisory lock,
+ * then row locks — everywhere in this module, in the MCP token exchange and
+ * revocation (lib/mcp/oauth.ts) and in the tool commit (lib/crm/service.ts).
+ * Row locks last matters as much as the two advisory locks: a writer holding
+ * a membership row for update while waiting for the account lock would
+ * deadlock against the token exchange, which holds the account lock while
+ * its connection insert needs that membership row. So every writer that
+ * needs an account lock learns the account from a plain read first, takes
+ * the locks, and only then re-reads its rows for update and revalidates
+ * every condition — a row can have changed while the lock was waited for.
  *
  * CREDENTIAL GENERATION. Wallpaper links, OAuth codes and MCP connections all
  * record `organization_members.credential_generation` when they are minted,
@@ -113,6 +122,20 @@ export async function loadWorkspace(
     viewer: context.viewer,
     members: await listMembers(db, context.organization.id),
   }
+}
+
+/** The active membership of one account in one organization, if any. */
+export async function findActiveMembership(
+  db: Queryable,
+  organizationId: string,
+  userId: string
+): Promise<OrganizationMember | null> {
+  const [row] = await db.query<MemberRow>(
+    `select ${MEMBER_COLUMNS} from organization_members
+     where organization_id = $1 and user_id = $2 and status = 'active'`,
+    [organizationId, userId]
+  )
+  return row ? fromMemberRow(row) : null
 }
 
 /** One active member of the organization, for owner-only account operations. */
@@ -390,35 +413,54 @@ export async function resetCredentials(
   db: Database,
   target: { organizationId: string; memberId: string },
   administration: Administration,
-  replacePassword: (member: OrganizationMember) => Promise<void>
+  replacePassword: (member: OrganizationMember, nextGeneration: string) => Promise<void>
 ): Promise<OrganizationMember> {
+  // Chosen here rather than by gen_random_uuid() so the caller can tell,
+  // after a failure it cannot interpret, whether this reset committed: the
+  // row either carries this value or it does not.
+  const nextGeneration = randomUUID()
   return db.transaction(async (tx) => {
     await lockOrganization(tx, target.organizationId)
     if (administration.actingUserId) await assertActingOwner(tx, target.organizationId, administration.actingUserId)
+
+    // Plain read to learn the account, locks, then the row for update and
+    // every condition again — see the lock order in the header.
+    const [peek] = await tx.query<{ user_id: string }>(
+      'select user_id from organization_members where id = $1 and organization_id = $2 and status = $3',
+      [target.memberId, target.organizationId, 'active']
+    )
+    if (!peek) throw new CrmError('not_found', 'That member is not an active member of this organization.')
+    await lockAccount(tx, peek.user_id)
 
     const [row] = await tx.query<MemberRow>(
       `select ${MEMBER_COLUMNS} from organization_members
        where id = $1 and organization_id = $2 and status = 'active' for update`,
       [target.memberId, target.organizationId]
     )
-    if (!row) throw new CrmError('not_found', 'That member is not an active member of this organization.')
-    await lockAccount(tx, row.user_id)
+    if (!row || row.user_id !== peek.user_id) throw new CrmError('not_found', 'That member is not an active member of this organization.')
 
     if (await hasActiveMembershipElsewhere(tx, row.user_id, target.organizationId)) {
       throw new CrmError('shared_account', 'This account is an active member of another organization.')
     }
 
-    await tx.query(
-      'update organization_members set credential_generation = gen_random_uuid() where id = $1',
-      [row.id]
-    )
+    await tx.query('update organization_members set credential_generation = $2 where id = $1', [row.id, nextGeneration])
     const member = fromMemberRow(row)
-    await replacePassword(member)
+    await replacePassword(member, nextGeneration)
     await revokeSessionsForUser(tx, row.user_id)
     await revokeConnectionsForUser(tx, row.user_id, target.organizationId)
     await discardCodesForUser(tx, row.user_id, null)
     return member
   })
+}
+
+/** Whether a membership currently carries `generation` — how a caller that
+ *  lost the outcome of resetCredentials finds out whether it committed. */
+export async function hasCredentialGeneration(db: Queryable, memberId: string, generation: string): Promise<boolean> {
+  const [row] = await db.query<{ id: string }>(
+    'select id from organization_members where id = $1 and credential_generation = $2',
+    [memberId, generation]
+  )
+  return Boolean(row)
 }
 
 export interface UpdateMemberInput {
@@ -508,14 +550,24 @@ export async function revokeMember(
     await lockOrganization(tx, organizationId)
     if (administration.actingUserId) await assertActingOwner(tx, organizationId, administration.actingUserId)
 
+    // Plain read to learn the account, then the account lock, then the row
+    // for update — never the row first. A membership row held for update
+    // while waiting for the account lock deadlocks against a token exchange
+    // holding that lock and inserting a connection that references the row.
+    const [peek] = await tx.query<{ user_id: string; status: MemberStatus }>(
+      'select user_id, status from organization_members where id = $1 and organization_id = $2',
+      [memberId, organizationId]
+    )
+    if (!peek) throw new CrmError('not_found', 'That member does not exist in this organization.')
+    await lockAccount(tx, peek.user_id)
+
     const [member] = await tx.query<MemberRow>(
       `select ${MEMBER_COLUMNS} from organization_members
        where id = $1 and organization_id = $2 for update`,
       [memberId, organizationId]
     )
-    if (!member) throw new CrmError('not_found', 'That member does not exist in this organization.')
+    if (!member || member.user_id !== peek.user_id) throw new CrmError('not_found', 'That member does not exist in this organization.')
     if (member.status === 'revoked') return fromMemberRow(member)
-    await lockAccount(tx, member.user_id)
 
     if (member.role === 'owner') {
       const [owners] = await tx.query<{ n: number | string }>(

@@ -106,6 +106,18 @@ export async function exchangeToken(db: Database, form: URLSearchParams) {
     if (form.get('grant_type') === 'authorization_code') {
       const code = form.get('code') ?? '', verifier = form.get('code_verifier') ?? ''
       if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) throw new CrmError('invalid_grant', 'Invalid PKCE verifier.')
+      // LOCK ORDER: account advisory lock first, row locks after — the same
+      // order lib/org/members.ts keeps (organization, account, then rows).
+      // Locking the code row first and the account second would let a
+      // revoke (holding the account lock, deleting this person's codes) and
+      // this exchange (holding the code row, wanting the account lock) wait
+      // on each other until Postgres aborts one. So the account is learned
+      // from a plain read, the lock is taken, and only then is the code
+      // re-read for update and every value revalidated: a code deleted or
+      // consumed while this waited is simply not there any more.
+      const [peek] = await tx.query<{ user_id: string | null }>(
+        'select user_id from crm_oauth_codes where code_hash = $1', [hashToken(code)])
+      if (peek?.user_id) await tx.query('select pg_advisory_xact_lock(hashtext($1))', [`khyte:user:${peek.user_id}`])
       const [row] = await tx.query<{ client_id: string; redirect_uri: string; challenge: string; scopes: string[]; resource: string;
         user_id: string | null; organization_id: string | null; member_id: string | null; member_generation: string | null }>(
         `select client_id, redirect_uri, challenge, scopes, resource, user_id, organization_id, member_id, member_generation
@@ -115,16 +127,15 @@ export async function exchangeToken(db: Database, form: URLSearchParams) {
       }
       await tx.query('delete from crm_oauth_codes where code_hash = $1', [hashToken(code)])
       // The identity columns are nullable (they were added to a live table),
-      // so the check is here rather than trusted to the schema.
-      if (!row.user_id || !row.organization_id || !row.member_id || !row.member_generation) {
+      // so the check is here rather than trusted to the schema. A code is
+      // immutable, so the person it names is the one whose lock is held.
+      if (!row.user_id || !row.organization_id || !row.member_id || !row.member_generation || row.user_id !== peek?.user_id) {
         throw new CrmError('invalid_grant', 'The authorization code has no active member behind it. Log in and connect again.')
       }
-      // The account lock orders this exchange against a revoke of the same
-      // person (lib/org/members.ts takes the same lock): either the revoke
-      // finished first and the membership below is gone or regenerated, or it
-      // waits for this to commit and then revokes the connection it created.
-      // Nothing can slip through between the check and the insert.
-      await tx.query('select pg_advisory_xact_lock(hashtext($1))', [`khyte:user:${row.user_id}`])
+      // Under the account lock, a revoke of this person has either finished
+      // (the membership below is gone or regenerated) or is waiting for this
+      // commit, after which it revokes the connection created here. Nothing
+      // can slip through between the check and the insert.
       // The membership must be active *and* still on the generation the code
       // was minted under. Someone revoked and re-added inside the five-minute
       // window is active again, but on a new generation — the code stays
@@ -142,8 +153,14 @@ export async function exchangeToken(db: Database, form: URLSearchParams) {
         values ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],now() + interval '1 hour',now() + interval '30 days')`,
         [connectionId, c.clientId, row.user_id, row.organization_id, row.member_id, row.member_generation, hashToken(access), hashToken(refresh), scopes])
     } else if (form.get('grant_type') === 'refresh_token') {
+      // Same order as the code path: account lock from a plain read, then
+      // the row for update, then every condition re-checked under both.
+      const refreshHash = hashToken(form.get('refresh_token') ?? '')
+      const [peek] = await tx.query<{ user_id: string | null }>(
+        'select user_id from crm_oauth_connections where refresh_hash = $1 and client_id = $2', [refreshHash, c.clientId])
+      if (peek?.user_id) await tx.query('select pg_advisory_xact_lock(hashtext($1))', [`khyte:user:${peek.user_id}`])
       const [row] = await tx.query<{ id: string; scopes: string[] }>(`select c.id, c.scopes from crm_oauth_connections c ${ACTIVE_MEMBER_JOIN}
-        where c.refresh_hash = $1 and c.client_id = $2 and c.revoked_at is null and c.refresh_expires_at > now() for update of c`, [hashToken(form.get('refresh_token') ?? ''), c.clientId])
+        where c.refresh_hash = $1 and c.client_id = $2 and c.revoked_at is null and c.refresh_expires_at > now() for update of c`, [refreshHash, c.clientId])
       if (!row) throw new CrmError('invalid_grant', 'The connection expired or was revoked. Connect again.')
       connectionId = row.id; scopes = row.scopes
       if (form.has('scope') && form.get('scope') !== scopes.join(' ')) throw new CrmError('invalid_scope', 'Reconnect to change permissions.')
@@ -170,9 +187,27 @@ export async function authenticateBearer(db: Database, header: string | null): P
   return { connectionId: row.id, scopes: row.scopes, userId: row.user_id, organizationId: row.organization_id }
 }
 
+/**
+ * RFC 7009 revocation, by access or refresh token.
+ *
+ * Takes the account lock before touching the row, for the same reason
+ * member revocation does: a tool commit that has already passed its
+ * connection check holds that lock until it commits, so this waits for it
+ * and the next commit is refused; a commit that arrives after this holds the
+ * lock finds the connection revoked. Without the lock a revocation could
+ * "succeed" while a commit it should have stopped was still in flight. An
+ * unknown token is a successful no-op, as the RFC requires — nothing to
+ * lock, nothing to say.
+ */
 export async function revokeToken(db: Database, form: URLSearchParams) {
   const c = authenticateClient(form), hash = hashToken(form.get('token') ?? '')
-  await db.query('update crm_oauth_connections set revoked_at = now() where client_id = $1 and (access_hash = $2 or refresh_hash = $2)', [c.clientId, hash])
+  const [target] = await db.query<{ id: string; user_id: string | null }>(
+    'select id, user_id from crm_oauth_connections where client_id = $1 and (access_hash = $2 or refresh_hash = $2)', [c.clientId, hash])
+  if (!target) return
+  await db.transaction(async tx => {
+    if (target.user_id) await tx.query('select pg_advisory_xact_lock(hashtext($1))', [`khyte:user:${target.user_id}`])
+    await tx.query('update crm_oauth_connections set revoked_at = now() where id = $1 and revoked_at is null', [target.id])
+  })
 }
 
 export function authorizationMetadata() {

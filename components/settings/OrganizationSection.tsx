@@ -90,9 +90,15 @@ export function OrganizationSection() {
   const copy = t.organization
   const workspace = useCRMStore((s) => s.workspace)
   const upsertWorkspaceMember = useCRMStore((s) => s.upsertWorkspaceMember)
+  const markIdentityChanged = useCRMStore((s) => s.markIdentityChanged)
 
   const { organization, viewer } = workspace
   const isOwner = viewer.role === 'owner'
+  // Sent with every member action and compared with the session server-side:
+  // a dialog opened here and submitted after another tab logged in as
+  // someone else is refused rather than saved into the new workspace. An
+  // expectation to verify, never an authority.
+  const scope = { organizationId: organization.id, userId: viewer.userId }
   const members = [...workspace.members].sort(rosterOrder)
   const activeCount = members.filter((m) => m.status === 'active').length
 
@@ -116,6 +122,14 @@ export function OrganizationSection() {
     try {
       const result = await run()
       if (!result.ok) {
+        // The server answered as someone else: this tab's session is gone.
+        // Nothing the server returned may be filed here, and no further
+        // action may be sent — the store is finished and SnapshotSync
+        // reloads the page. Same move the CRM store makes in persist().
+        if (result.error === 'context_mismatch') {
+          markIdentityChanged()
+          return null
+        }
         setError(result.error)
         return null
       }
@@ -134,7 +148,7 @@ export function OrganizationSection() {
   }
 
   const handleAdd = async (values: MemberValues) => {
-    const result = await perform(() => addMember(values))
+    const result = await perform(() => addMember(values, scope))
     if (!result) return
     // A brand-new account comes back with the password it was created with;
     // an existing account merely added to the roster does not, and the new
@@ -148,19 +162,22 @@ export function OrganizationSection() {
 
   const handleEdit = async (memberId: string, values: MemberValues) => {
     const result = await perform(() =>
-      updateMember({
-        memberId,
-        displayName: values.displayName,
-        role: values.role,
-        colleague: values.colleague,
-      })
+      updateMember(
+        {
+          memberId,
+          displayName: values.displayName,
+          role: values.role,
+          colleague: values.colleague,
+        },
+        scope
+      )
     )
     if (result) showDialog(null)
   }
 
   const handleRevoke = async (member: OrganizationMember) => {
     showDialog(null)
-    const result = await perform(() => revokeMember({ memberId: member.id }))
+    const result = await perform(() => revokeMember({ memberId: member.id }, scope))
     // Revoking yourself has already ended this session on the server. logout
     // clears the cookie and lands on the gate, instead of leaving a CRM on
     // screen whose every next request will be turned away.
@@ -169,7 +186,7 @@ export function OrganizationSection() {
 
   const handleReset = async (member: OrganizationMember) => {
     showDialog(null)
-    const result = await perform(() => resetMemberPassword({ memberId: member.id }))
+    const result = await perform(() => resetMemberPassword({ memberId: member.id }, scope))
     if (result?.temporaryPassword) {
       showDialog({ kind: 'password', member: result.member, password: result.temporaryPassword })
     }
