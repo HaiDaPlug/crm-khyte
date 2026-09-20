@@ -300,7 +300,13 @@ export interface Administration {
  * comes back with it. An active membership is refused — the caller meant to
  * edit, not add. Runs inside the caller's locked transaction.
  */
-async function upsertMembership(tx: Queryable, input: AddMemberInput): Promise<OrganizationMember> {
+async function upsertMembership(
+  tx: Queryable,
+  input: AddMemberInput,
+  /** The generation this write stamps — chosen by the caller so it can later
+   *  recognise its own commit (see claimAccount). */
+  generation: string
+): Promise<OrganizationMember> {
   const [existing] = await tx.query<MemberRow>(
     `select ${MEMBER_COLUMNS} from organization_members
      where organization_id = $1 and user_id = $2 for update`,
@@ -323,16 +329,16 @@ async function upsertMembership(tx: Queryable, input: AddMemberInput): Promise<O
     ? await tx.query<MemberRow>(
         `update organization_members
          set status = 'active', revoked_at = null, role = $3, email = $4, display_name = $5, colleague = $6,
-             credential_generation = gen_random_uuid()
+             credential_generation = $7
          where id = $1 and organization_id = $2
          returning ${MEMBER_COLUMNS}`,
-        [existing.id, input.organizationId, input.role, input.email, input.displayName, input.colleague]
+        [existing.id, input.organizationId, input.role, input.email, input.displayName, input.colleague, generation]
       )
     : await tx.query<MemberRow>(
-        `insert into organization_members (organization_id, user_id, role, email, display_name, colleague)
-         values ($1, $2, $3, $4, $5, $6)
+        `insert into organization_members (organization_id, user_id, role, email, display_name, colleague, credential_generation)
+         values ($1, $2, $3, $4, $5, $6, $7)
          returning ${MEMBER_COLUMNS}`,
-        [input.organizationId, input.userId, input.role, input.email, input.displayName, input.colleague]
+        [input.organizationId, input.userId, input.role, input.email, input.displayName, input.colleague, generation]
       )
 
   return fromMemberRow(row)
@@ -353,7 +359,7 @@ export async function addMember(
     await lockOrganization(tx, input.organizationId)
     if (administration.actingUserId) await assertActingOwner(tx, input.organizationId, administration.actingUserId)
     await lockAccount(tx, input.userId)
-    return upsertMembership(tx, input)
+    return upsertMembership(tx, input, randomUUID())
   })
 }
 
@@ -367,18 +373,28 @@ export async function addMember(
  * is deliberate — membership first, then the external password change, then
  * the revocations — so a password call that fails rolls the membership back
  * and nothing has changed; while a failure *after* the password call leaves
- * the account with a new password and no saved membership, which the caller
- * reports as `membership_unsaved` (the password callback's own bookkeeping
- * tells it which side of the line it is on) and which a retry repairs, since
- * a retry replaces the password again. A SQL transaction cannot undo a call
- * to Supabase Auth; this ordering is what makes that survivable.
+ * the account with a new password and an unknown membership outcome, which
+ * the caller settles by reading the row back. A SQL transaction cannot undo
+ * a call to Supabase Auth; this ordering is what makes that survivable.
+ *
+ * THE CLAIM'S OWN GENERATION. The membership is stamped with a generation
+ * chosen here, in JavaScript, before the transaction — and handed to the
+ * password callback — so that a caller which lost the outcome can ask "is
+ * the active membership the one *I* wrote?" rather than "is there one?".
+ * The difference is not academic: two owners can add the same new address
+ * at once, the first still waiting for Supabase Auth to answer its account
+ * creation while the second finds the account, claims it and sets a
+ * password of its own. The first then meets `already_member`, and an
+ * answer of "there is an active membership, so mine committed" would hand
+ * its owner a password the account no longer has.
  */
 export async function claimAccount(
   db: Database,
   input: AddMemberInput,
   administration: Administration,
-  replacePassword: (member: OrganizationMember) => Promise<void>
+  replacePassword: (member: OrganizationMember, generation: string) => Promise<void>
 ): Promise<OrganizationMember> {
+  const generation = randomUUID()
   return db.transaction(async (tx) => {
     await lockOrganization(tx, input.organizationId)
     if (administration.actingUserId) await assertActingOwner(tx, input.organizationId, administration.actingUserId)
@@ -388,8 +404,8 @@ export async function claimAccount(
       throw new CrmError('belongs_elsewhere', 'This account is an active member of another organization.')
     }
 
-    const member = await upsertMembership(tx, input)
-    await replacePassword(member)
+    const member = await upsertMembership(tx, input, generation)
+    await replacePassword(member, generation)
     // Whatever the old password opened is closed with it: every session of
     // the account, and any connection still waiting to be exchanged.
     await revokeSessionsForUser(tx, input.userId)
@@ -451,6 +467,26 @@ export async function resetCredentials(
     await discardCodesForUser(tx, row.user_id, null)
     return member
   })
+}
+
+/**
+ * The active membership of one account in one organization, but only if it
+ * carries `generation` — how a caller that lost the outcome of claimAccount
+ * finds out whether the membership it sees is its own commit or another
+ * operation's.
+ */
+export async function findActiveMembershipWithGeneration(
+  db: Queryable,
+  organizationId: string,
+  userId: string,
+  generation: string
+): Promise<OrganizationMember | null> {
+  const [row] = await db.query<MemberRow>(
+    `select ${MEMBER_COLUMNS} from organization_members
+     where organization_id = $1 and user_id = $2 and status = 'active' and credential_generation = $3`,
+    [organizationId, userId, generation]
+  )
+  return row ? fromMemberRow(row) : null
 }
 
 /** Whether a membership currently carries `generation` — how a caller that

@@ -45,8 +45,12 @@
  * are refused once it no longer matches. Revoking, reactivating and resetting
  * a password each rotate it here, exactly as the app does, so a credential
  * copied before any of those cannot come back to life when the same
- * membership row is active again. Sessions and pending codes are plain rows,
- * and are revoked or deleted outright.
+ * membership row is active again. `add` and `reset-password` choose the new
+ * value in JS rather than leaving it to gen_random_uuid(), so that a run which
+ * loses the outcome of its transaction can recognise its own commit by it;
+ * `revoke` has nothing to recover afterwards and lets the database invent one.
+ * Sessions and pending codes are plain rows, and are revoked or deleted
+ * outright.
  *
  * THE ACCOUNT IS GLOBAL; THE OWNER IS NOT. One Supabase Auth login serves
  * every organization a person belongs to, while an owner's authority stops at
@@ -77,12 +81,17 @@
  * untouched. If that call succeeds and a later step then fails, what this
  * database holds is genuinely unknown: the commit may have landed and only
  * its acknowledgement been lost. So the run asks the database instead of
- * reading the exception — `add` re-reads the active membership, and
- * `reset-password` re-reads the credential generation it chose in JS for
- * exactly this purpose. Found, the run prints the success and the password it
- * was holding; not found, it names the unfinished state it left and the
+ * reading the exception — and it asks for ITS OWN commit. Both `add` and
+ * `reset-password` choose the credential generation in JS before their
+ * transaction and write it on the row, so the question afterwards is not
+ * "is there a membership" but "does the membership carry the generation this
+ * run stamped". Carrying it, the run prints the success and the password it
+ * was holding. An active membership carrying another generation means a
+ * second owner added the same person while this run waited on Supabase Auth:
+ * theirs is the password the account has, so this run says so and prints
+ * nothing. No membership at all is the unfinished state, named along with the
  * command that repairs it. This is lib/org/administration.ts answering
- * `membership_unsaved` and `reset_unconfirmed`, by hand.
+ * `membership_unsaved`, `claim_superseded` and `reset_unconfirmed`, by hand.
  *
  * NEVER GUESSES. --email is required by every command that touches a person;
  * there is no positional fallback, no prompt, no "the only member". The
@@ -90,9 +99,10 @@
  *
  * NEVER PRINTS A SECRET, with one exception: a temporary password this run
  * just generated, shown once and only once the commit is established — by its
- * acknowledgement, or, when that was lost, by the re-read above — so it can be
- * handed over. A password given with --password is never echoed. Connection
- * strings and keys stay in .env.local.
+ * acknowledgement, or, when that was lost, by the re-read above finding this
+ * run's own generation on the row — so it can be handed over. A password given
+ * with --password is never echoed. Connection strings and keys stay in
+ * .env.local.
  *
  * Usage:
  *   npm run org:members -- list
@@ -313,14 +323,20 @@ async function assertCanAddMember(org, userId) {
 }
 
 /**
- * The active membership of one account in one organization — mirroring
- * findActiveMembership in lib/org/members.ts. It is how `add` finds out,
- * after a failure it cannot interpret, whether its transaction committed:
- * the membership is there or it is not, and the exception has no say.
+ * The active membership of one account in one organization, with the
+ * generation it carries — mirroring findActiveMembership and
+ * findActiveMembershipWithGeneration in lib/org/members.ts, which ask the two
+ * questions in two statements where one row answers both here.
+ *
+ * It is how `add` finds out, after a failure it cannot interpret, whether its
+ * transaction committed — and whose commit it is looking at. A membership
+ * carrying the generation this run stamped is this run's; one carrying another
+ * is somebody else's claim of the same account. The exception has no say in
+ * either case.
  */
 async function findActiveMembership(db, organizationId, userId) {
   const [row] = await db`
-    select id, display_name, role, colleague from organization_members
+    select id, display_name, role, colleague, credential_generation from organization_members
     where organization_id = ${organizationId} and user_id = ${userId} and status = 'active'`
   return row ?? null
 }
@@ -397,6 +413,12 @@ async function add(org) {
   let generated = null
   let accountCreated = false
   let passwordReplaced = false
+  // Chosen here rather than by gen_random_uuid() inside the statement, the way
+  // claimAccount does it, and stamped on whichever membership row this add
+  // writes. It is the only thing that identifies this run's commit afterwards:
+  // two owners can add the same address at once, and "there is an active
+  // membership" would then be the other one's — along with another password.
+  const generation = randomUUID()
 
   // Everything that can refuse this add is asked first — before an account is
   // created and before any password is replaced — so a refusal leaves no
@@ -454,8 +476,9 @@ async function add(org) {
 
       // One membership per account per organization, reactivated rather than
       // duplicated; an active one is refused because the caller meant to edit,
-      // not add. Reactivation rotates the credential generation, so nothing
-      // minted before the revoke comes back to life with the row.
+      // not add. Either way the row is stamped with this run's generation, so
+      // reactivation rotates it and nothing minted before the revoke comes
+      // back to life with the row.
       const [existing] = await tx`
         select id, status from organization_members
         where organization_id = ${org.id} and user_id = ${account.id} for update`
@@ -472,12 +495,12 @@ async function add(org) {
         ? await tx`
             update organization_members
             set status = 'active', revoked_at = null, role = ${role}, email = ${account.email}, display_name = ${displayName}, colleague = ${colleague},
-                credential_generation = gen_random_uuid()
+                credential_generation = ${generation}
             where id = ${existing.id} and organization_id = ${org.id}
             returning id`
         : await tx`
-            insert into organization_members (organization_id, user_id, role, email, display_name, colleague)
-            values (${org.id}, ${account.id}, ${role}, ${account.email}, ${displayName}, ${colleague})
+            insert into organization_members (organization_id, user_id, role, email, display_name, colleague, credential_generation)
+            values (${org.id}, ${account.id}, ${role}, ${account.email}, ${displayName}, ${colleague}, ${generation})
             returning id`
 
       // The password comes after the membership write and before the cuts,
@@ -505,10 +528,12 @@ async function add(org) {
     // An account was created or a password replaced, and then something
     // failed — possibly only the acknowledgement of a commit that landed.
     // Ask the database, the way addMemberFlow does, rather than trust the
-    // exception: an active membership means the add went through after all,
-    // and the password this run is holding is the one to hand over.
+    // exception — and ask for THIS run's commit rather than for any
+    // membership: only a row carrying the generation stamped above is the one
+    // this add wrote, and only then is the password it is holding the
+    // account's.
     const settled = await findActiveMembership(sql, org.id, account.id).catch(() => null)
-    if (settled) {
+    if (settled && settled.credential_generation === generation) {
       console.log(
         `\n[khyte] The add committed after all: ${settled.display_name} <${email}> is an active ${settled.role} of\n` +
           `  ${org.name}${settled.colleague ? `, known on the roster as "${settled.colleague}"` : ''} — only the acknowledgement was lost (${reasonOf(cause)}).\n` +
@@ -516,6 +541,24 @@ async function add(org) {
       )
       if (generated) showOnce(generated)
       return
+    }
+
+    // An active membership that is not this run's: somebody else — another
+    // owner in Settings, or another run of this script — added the same person
+    // while this add was waiting on Supabase Auth. Their claim held the account
+    // lock after this one let go of it, so the account carries the password
+    // they issued, and this run's is stale and is never printed.
+    if (settled) {
+      refuse(
+        `${settled.display_name} <${email}> was added to ${org.name} by somebody else while this add was\n` +
+          `  waiting on Supabase Auth, so this one did not commit: ${reasonOf(cause)}\n` +
+          `  They are already an active ${settled.role} of ${org.name}, and the account carries the password\n` +
+          `  that add issued. ${generated
+            ? 'The password this run generated was never printed, so nobody has it.'
+            : "The password passed with --password is not the account's."}\n` +
+          '  Nothing is missing: they have a way in. If it has to come from you, hand them a fresh\n' +
+          '  password with `reset-password`.'
+      )
     }
 
     // Now the state a rollback could not repair, because it lives in Supabase

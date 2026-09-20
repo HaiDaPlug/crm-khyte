@@ -18,7 +18,8 @@
     "backfill:events": "node scripts/backfill-events.mjs",
     "org:members": "node scripts/org-members.mjs",
     "supabase": "node scripts/supabase.mjs",
-    "db:link": "node scripts/supabase.mjs link"
+    "db:link": "node scripts/supabase.mjs link",
+    "test:postgres": "node scripts/pg-concurrency.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

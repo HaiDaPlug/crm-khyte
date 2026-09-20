@@ -9,6 +9,7 @@ import {
   assertCanAddMember,
   claimAccount,
   findActiveMembership,
+  findActiveMembershipWithGeneration,
   hasCredentialGeneration,
   resetCredentials,
 } from './members'
@@ -29,10 +30,16 @@ import {
  * commit, or merely the acknowledgement of a commit that landed — leaves
  * the provider's change in place with an unknown database outcome. So after
  * any such failure the flow reads the database again and answers from what
- * it finds: a membership that is there means the claim committed and the
- * owner gets the password after all; a rotated generation means the reset
- * committed. Only when the read says no does the flow report an unfinished
- * state, and it says which one. Nothing is inferred from the exception.
+ * it finds — and it looks for ITS OWN commit, by the generation the claim
+ * chose, never for "any" membership. Two owners adding the same new address
+ * at once is the case that rule exists for: the first is still waiting for
+ * the account service when the second claims the account and sets its own
+ * password; the first then meets already_member, and the membership it
+ * sees is not its own. Its password is stale, and it must say so
+ * (`claim_superseded`) rather than hand it over. Only when the read finds
+ * no membership at all does the flow report an unfinished state
+ * (`membership_unsaved`); a reset likewise answers from the generation it
+ * chose. Nothing is inferred from the exception.
  */
 
 export type MemberActionError =
@@ -50,6 +57,7 @@ export type MemberActionError =
   | 'belongs_elsewhere'
   | 'shared_account'
   | 'membership_unsaved'
+  | 'claim_superseded'
   | 'reset_unconfirmed'
   | 'not_found'
   | 'failed'
@@ -145,6 +153,9 @@ export async function addMemberFlow(
   const email = request.email.trim().toLowerCase()
   let userId: string | null = null
   let externalSideEffect = false
+  /** The generation claimAccount stamped on the membership it wrote — the
+   *  only thing that identifies this operation's commit afterwards. */
+  let claimed: string | null = null
 
   try {
     const account = await identity.findAccountByEmail(db, email)
@@ -176,7 +187,10 @@ export async function addMemberFlow(
         colleague: request.colleague,
       },
       { actingUserId: admin.userId },
-      async () => {
+      async (_member, generation) => {
+        // Reached only once the membership row is written with this
+        // generation, so from here on a commit is recognisable as ours.
+        claimed = generation
         if (!account) return
         await identity.setPassword(userId!, password)
         externalSideEffect = true
@@ -189,9 +203,25 @@ export async function addMemberFlow(
 
     // The account was created or its password replaced, and then something
     // failed — possibly only the acknowledgement of a commit that landed.
-    // Ask the database rather than trust the exception.
-    const settled = await findActiveMembership(db, admin.organizationId, userId).catch(() => null)
-    if (settled) return { ok: true, member: settled, temporaryPassword: password }
+    // Ask the database rather than trust the exception, and ask for THIS
+    // claim's commit: a membership carrying the generation this claim
+    // stamped is ours, and the password is good.
+    const ownGeneration = claimed as string | null
+    const own = ownGeneration
+      ? await findActiveMembershipWithGeneration(db, admin.organizationId, userId, ownGeneration).catch(() => null)
+      : null
+    if (own) return { ok: true, member: own, temporaryPassword: password }
+
+    // An active membership that is not ours means another operation took
+    // this account in while this one was waiting on the account service —
+    // typically a second owner adding the same address. Their password is
+    // the one the account has; this one's is stale and must not be shown.
+    const other = await findActiveMembership(db, admin.organizationId, userId).catch(() => null)
+    if (other) {
+      console.error('[khyte] add superseded by a concurrent claim of the same account:', cause instanceof Error ? cause.message : String(cause))
+      return { ok: false, error: 'claim_superseded' }
+    }
+
     console.error('[khyte] account created/updated but membership not saved:', cause instanceof Error ? cause.message : String(cause))
     return { ok: false, error: 'membership_unsaved' }
   }

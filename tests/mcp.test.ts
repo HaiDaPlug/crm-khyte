@@ -30,7 +30,7 @@ import { addMember, assertCanAddMember, claimAccount, hasActiveMembershipElsewhe
 // Server Action around them (app/actions/members.ts) is the gate, and reads a
 // session; scopeMatches is the half of that gate which is pure.
 import { addMemberFlow, resetPasswordFlow, scopeMatches,
-  type AddMemberRequest, type Administrator, type IdentityProvider } from '../lib/org/administration'
+  type AddMemberRequest, type Administrator, type IdentityProvider, type MemberResult } from '../lib/org/administration'
 import { IdentityError } from '../lib/auth/identity'
 import { applyMigrations, finishRollout } from './support/migrations'
 import { register } from '../instrumentation'
@@ -1258,7 +1258,9 @@ test('acceptance 6 — an administration is re-checked against its acting owner 
  *       tests/mcp-postgres.test.ts; what is here is the sequential outcome.
  *   R3  a revoked token stops the next tool write.
  *   R4  after a failure that follows an external side effect, the flow reads
- *       the database and answers from what it finds.
+ *       the database and answers from what it finds — and it looks for ITS
+ *       OWN commit, by the generation its claim chose, which is the third
+ *       review's finding and the race below.
  */
 
 /**
@@ -1390,6 +1392,100 @@ test('R4 — a commit whose acknowledgement was lost still hands the owner the p
   assert.equal(created.calls.setPassword, 0, 'a new account is created with the password already set')
   const [account] = await db.query<{ id: string }>('select id from auth.users where email = $1', [email])
   assert.equal(await activeMemberships(account.id), 1)
+})
+
+/**
+ * The third review's finding, as the interleaving that produced it.
+ *
+ * Two owners add the same new address in the same moment. Owner A is first
+ * into the account service and is still waiting for its reply when owner B
+ * finds the account A has just created, claims it, and replaces its password
+ * with one of B's own. A then meets `already_member` — with an account
+ * creation behind it that SQL cannot undo — and has to decide what to tell
+ * its owner. "There is an active membership, so mine committed" was the
+ * answer that was wrong: the password it hands over is A's, and the one the
+ * account has is B's. The generation A's claim stamped is what tells the two
+ * memberships apart.
+ */
+test('R4 — a claim overtaken by another owner reports it rather than handing over the stale password', async () => {
+  const ownerA = await member(KHYTE, { role: 'owner', displayName: 'Racing Owner A' })
+  const ownerB = await member(KHYTE, { role: 'owner', displayName: 'Racing Owner B' })
+  const adminA: Administrator = { organizationId: KHYTE, userId: ownerA.userId }
+  const adminB: Administrator = { organizationId: KHYTE, userId: ownerB.userId }
+  const email = freshEmail()
+
+  // One account service for both owners, so `passwords` holds what the
+  // account actually has rather than what either owner believes it has.
+  const service = fakeIdentity()
+  // What owner B's run produced, in an array because it is assigned from
+  // inside the provider callback.
+  const byB: Array<{ result: MemberResult; generation: string }> = []
+
+  // The interleaving itself, made deterministic rather than hoped for: B's
+  // whole flow runs inside A's account creation — after the account exists
+  // and before A's claim has begun.
+  const racing: IdentityProvider = {
+    ...service.provider,
+    async createAccount(input) {
+      const created = await service.provider.createAccount(input)
+      const result = await addMemberFlow(db, service.provider, adminB, addRequest(email), 'password-b')
+      byB.push({ result, generation: (await membership(created.userId, KHYTE)).credentialGeneration })
+      return created
+    },
+  }
+
+  const a = await addMemberFlow(db, racing, adminA, addRequest(email), 'password-a')
+
+  // B won, and B's owner is told so: the claim committed and the password B
+  // was given is the one the person will use.
+  const [b] = byB
+  assert.ok(b, "owner B's add ran inside the account service's reply")
+  assert.equal(b.result.ok, true)
+  assert.equal(b.result.ok && b.result.temporaryPassword, 'password-b')
+
+  // A lost, and says which way it lost. Not a plain refusal — the account it
+  // created is still there — and above all not success.
+  assert.deepEqual(a, { ok: false, error: 'claim_superseded' })
+
+  const [account] = await db.query<{ id: string }>('select id from auth.users where email = $1', [email])
+  assert.ok(account, 'the address has the one account A created')
+  assert.equal(service.calls.createAccount, 1, 'one account for the address, not one per owner')
+  assert.equal(await activeMemberships(account.id), 1, 'and one membership')
+  const now = await membership(account.id, KHYTE)
+  assert.equal(now.memberId, b.result.ok && b.result.member.id, "the membership on the roster is B's")
+  assert.equal(now.credentialGeneration, b.generation, "carrying the generation B's claim wrote, not A's")
+
+  // What the finding comes down to: A's password was never the account's, and
+  // A was never handed it to pass on.
+  assert.equal(service.calls.setPassword, 1, "only B's claim replaced a password")
+  assert.equal(service.passwords.get(account.id), 'password-b')
+})
+
+test('R4 — an account that is already a member is refused before the account service is touched', async () => {
+  const owner = await member(KHYTE, { role: 'owner', displayName: 'Already Member Owner' })
+  const admin: Administrator = { organizationId: KHYTE, userId: owner.userId }
+  const person = await member(KHYTE, { displayName: 'Already On The Roster' })
+  const before = await membership(person.userId, KHYTE)
+  const session = await login(person.userId, KHYTE)
+
+  // The other way a flow meets `already_member`, and the one with nothing
+  // behind it: the pre-check refuses the add before an account is created or
+  // a password replaced. No external side effect, so nothing is reconciled —
+  // the flow answers from the exception, and the reconciliation above never
+  // runs to mistake somebody else's membership for its own.
+  const { provider, calls, passwords } = fakeIdentity()
+  const result = await addMemberFlow(db, provider, admin, addRequest(person.email), 'never-handed-over')
+  assert.deepEqual(result, { ok: false, error: 'already_member' })
+  assert.equal(calls.findAccountByEmail, 1)
+  assert.equal(calls.createAccount, 0, 'the address already has an account')
+  assert.equal(calls.setPassword, 0, 'which keeps the password it had')
+  assert.equal(passwords.size, 0)
+
+  // And nothing moved: the same membership, on the generation it already
+  // carried, with the person still logged in behind it.
+  assert.equal(await activeMemberships(person.userId), 1)
+  assert.deepEqual(await membership(person.userId, KHYTE), before)
+  assert.equal((await resolveAuthContext(db, session.cookie))?.viewer.memberId, person.memberId)
 })
 
 test('R4 — a reset answers from the generation it chose, not from the exception', async () => {

@@ -220,13 +220,16 @@ lost.** Add and reset write the membership first, call Supabase Auth second,
 and revoke old credentials last, so a failed password call rolls the
 membership back and nothing has changed. After a failure that follows the
 external call, the flow asks the database instead of trusting the
-exception: an active membership for that account means the claim committed
-and the owner receives the result and the password after all; for a reset,
-the generation the call chose is either on the row (committed) or not. Only
-when the read says no is an unfinished state reported, and it says which:
-`membership_unsaved` (the account exists; if the person now shows on the
-roster use Reset password, otherwise add again) or `reset_unconfirmed` (run
-Reset password once more). The flows live in `lib/org/administration.ts`
+exception, and it asks for its own commit: a claim stamps the membership
+with a generation it chose before starting, so an active membership
+carrying that generation means this claim committed and the owner receives
+the result and the password after all; one carrying a different generation
+means another owner took the account in meanwhile, which is reported as
+`claim_superseded` without the stale password. A reset likewise compares
+the generation it chose. Only when the read finds nothing is an unfinished
+state reported: `membership_unsaved` (the account exists; if the person now
+shows on the roster use Reset password, otherwise add again) or
+`reset_unconfirmed` (run Reset password once more). The flows live in `lib/org/administration.ts`
 behind an injectable identity provider so the suite drives every one of
 these paths with a fake account service.
 
@@ -325,12 +328,12 @@ never redeploying the legacy build.
 | --- | --- | --- |
 | Typecheck | `npx tsc --noEmit` | 0 errors |
 | Production build | `npm run build` | passes |
-| Service, OAuth, MCP, sessions, members, isolation, wallpaper links, credential generation, revocation mid-request, account claims, recovery, token revocation | `npm run test:mcp` | 42 / 42, none skipped |
+| Service, OAuth, MCP, sessions, members, isolation, wallpaper links, credential generation, revocation mid-request, account claims, recovery (including the competing add), token revocation | `npm run test:mcp` | 44 / 44, none skipped |
 | Migration rehearsal, rollout guard and follow-up (both layouts) | `npm run test:org` | 7 / 7 |
 | Structural scoping lint over actions and data modules | `npm run test:scoping` | 3 / 3 |
 | Client identity boundary (store refuses a foreign snapshot) | `npm run test:store` | 2 / 2 |
 | HTTP boundaries against the built server | `npm run test:mcp:http` | 3 / 3 |
-| Real multi-connection concurrency (opt-in, needs `MCP_TEST_DATABASE_URL`) | `tests/mcp-postgres.test.ts` | written, not run here |
+| Real multi-connection concurrency on a disposable PostgreSQL 18.4 with the cleanup applied: owner vs owner, claim vs claim, exchange vs revoke, commit vs token revoke | `npm run test:postgres` | 4 / 4, no deadlock |
 
 **Review history.** An adversarial review on the first cut confirmed three
 gaps (shared-account takeover via add plus reset; wallpaper links outliving
@@ -357,6 +360,17 @@ side effect reads the database back instead of inferring from the
 exception, covering both the created-account case and the lost
 acknowledgement. The client identity test now runs under its own command
 instead of skipping.
+
+Astra's third review of `14b1ba2` found one remaining recovery bug: the
+add flow's reconciliation accepted any active membership as proof of its
+own commit, so an owner whose account creation was overtaken by a second
+owner adding the same address received a password the account no longer
+had. A claim now stamps the membership with a generation it chose itself
+and reconciles against exactly that; another operation's membership is
+reported as `claim_superseded` and the stale password is never shown. The
+CLI mirrors it, a deterministic competing-add test reproduces the
+reviewer's interleaving, and the real-PostgreSQL concurrency suite was
+executed for the first time (table above).
 
 What the suites establish:
 
@@ -407,14 +421,16 @@ predicate; it is a lint, not proof). The client identity boundary runs under
 Not exercised here: a real browser session against a live Supabase Auth
 project, the Server Actions end to end (the member gate is covered through
 `scopeMatches` and the flows, not through a cookie), the display routes over
-HTTP with a live database, and genuine multi-connection concurrency. The
-lock protocol is verified by reading and by the opt-in
-`tests/mcp-postgres.test.ts`, which holds the owner-versus-owner,
+HTTP with a live database. Genuine multi-connection concurrency is covered
+by `tests/mcp-postgres.test.ts`, which holds the owner-versus-owner,
 claim-versus-claim, exchange-versus-revoke and commit-versus-token-revoke
-scenarios with explicit barriers on two connections. It needs a real
-PostgreSQL (`MCP_TEST_DATABASE_URL`) and could not be run on this machine:
-the local PostgreSQL 18 install has no server libraries and there is no
-Docker. Run it against a disposable instance before accepting Stage 1.
+scenarios with explicit barriers on two connections. `npm run test:postgres`
+(after a one-time `npm install --no-save embedded-postgres`) starts a
+disposable PostgreSQL in a temp directory, migrates it the way the PGlite
+suites do including the rollout follow-up, runs the suite and deletes the
+server; it ran here on PostgreSQL 18.4 with all four scenarios executing,
+no deadlock and no skip. The same suite runs against any migrated
+PostgreSQL through `MCP_TEST_DATABASE_URL`.
 
 Unresolved identity mappings: the table under *Members*.
 
