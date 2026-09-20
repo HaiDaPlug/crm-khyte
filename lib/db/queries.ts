@@ -11,8 +11,6 @@ import {
   countEventsByColleagueSince,
   countEventsSince,
   loadDerivedTotals,
-  loadMeetingsBookedNow,
-  loadMeetingsBookedNowByColleague,
   weekStart,
 } from './board-metrics'
 import { mockCompanies } from '@/lib/mock-data/companies'
@@ -194,21 +192,19 @@ export async function loadGoals(): Promise<GoalsSnapshot> {
 
   // The counted numbers are read in the same pass as the rows they belong to,
   // so a goal and its count always describe the same instant.
-  const [goals, metrics, personalGoals, eventCounts, totals, meetingsBookedNow] =
+  const [goals, metrics, personalGoals, weeklyCounts, totals] =
     await withDbErrors('goals read', () =>
       Promise.all([
         sql`select * from goals order by section, sort_order`,
         sql`select * from goal_metrics order by sort_order`,
         sql`select * from personal_goals order by colleague, sort_order`,
+        // Every kind, meeting_booked included, counted from the event log
+        // within this week — see the header on ./board-metrics for why that
+        // one moved back here from a stage-occupancy count.
         countEventsSince(weekStart(now)),
         loadDerivedTotals(),
-        loadMeetingsBookedNow(),
       ])
     )
-
-  // meeting_booked is current state (opportunities sitting in that stage right
-  // now), not an event tally — see loadMeetingsBookedNow in ./board-metrics.
-  const weeklyCounts = { ...eventCounts, meeting_booked: meetingsBookedNow }
 
   return {
     goals: (goals as unknown as GoalRow[]).map(fromGoalRow),
@@ -260,7 +256,11 @@ export async function loadWeeklyProgress(): Promise<WeeklyProgress> {
   const dayStart = new Date(now)
   dayStart.setHours(0, 0, 0, 0)
 
-  const [goals, weekEvents, dayEvents, weekByColleague, dayByColleague, meetingsBookedNow, meetingsBookedNowByColleague] =
+  // Every kind comes from the event log now, meeting_booked included — see the
+  // header on ./board-metrics. "Today" and "this week" are therefore genuinely
+  // different windows for it, where they used to be the same stage-occupancy
+  // number printed twice.
+  const [goals, counts, today, byColleague, todayByColleague] =
     await withDbErrors('weekly progress read', () =>
       Promise.all([
         sql`select * from goals where section = 'weekly' order by sort_order`,
@@ -268,19 +268,8 @@ export async function loadWeeklyProgress(): Promise<WeeklyProgress> {
         countEventsSince(dayStart),
         countEventsByColleagueSince(weekStart(now)),
         countEventsByColleagueSince(dayStart),
-        loadMeetingsBookedNow(),
-        loadMeetingsBookedNowByColleague(),
       ])
   )
-
-  // meeting_booked is current state, not an event tally — see
-  // loadMeetingsBookedNow in ./board-metrics. "Today" and "this week" both
-  // read the same live number: a stage a card sits in has no window to be
-  // counted within, unlike an event that either happened in one or didn't.
-  const counts = { ...weekEvents, meeting_booked: meetingsBookedNow }
-  const today = { ...dayEvents, meeting_booked: meetingsBookedNow }
-  const byColleague = { ...weekByColleague, meeting_booked: meetingsBookedNowByColleague }
-  const todayByColleague = { ...dayByColleague, meeting_booked: meetingsBookedNowByColleague }
 
   return {
     goals: (goals as unknown as GoalRow[]).map(fromGoalRow),

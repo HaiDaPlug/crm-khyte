@@ -209,7 +209,15 @@ export interface Goal {
   /** Optional supporting line, rendered smaller beneath the title. */
   detail: string
   status: GoalStatus
-  /** 0–100, or undefined for "no bar" — a principle has no progress. */
+  /**
+   * RETIRED — use `metricCurrent`/`metricTarget`.
+   *
+   * A hand-typed 0–100 with no denominator, which is what made it impossible
+   * to be wrong about and therefore worthless. Still mapped from the column so
+   * the old estimate can be shown as a hint while a goal has no target yet;
+   * nothing writes it any more. See
+   * supabase/migrations/20260915120000_goal_metric_current.sql.
+   */
   progress?: number
   /**
    * `YYYY-MM-DD`, `goal`-section only. Same convention as
@@ -220,11 +228,24 @@ export interface Goal {
   targetDate?: string
   /**
    * When set, this goal's number is counted from CRM activity of this kind for
-   * the current week rather than read from `progress`. That is what makes a
-   * weekly non-negotiable unable to drift from reality.
+   * the current week rather than read from `metricCurrent`. That is what makes
+   * a weekly non-negotiable unable to drift from reality.
    */
   metricKind?: CrmEventKind
-  /** The week's target for a counted goal, e.g. 15 meetings. */
+  /**
+   * The X in "X of Y", for a goal nothing counts automatically — "1 av 3
+   * externa bolag". Entered by hand, but a count rather than an estimate, so
+   * it can be checked against the world.
+   *
+   * Ignored when `metricKind` is set: a counted goal reads its X from the
+   * event log. See lib/goal-measure.ts, which is where the two are resolved.
+   */
+  metricCurrent?: number
+  /**
+   * The Y. A week's target for a counted goal (15 meetings), or the goal's own
+   * target for a typed one (3 companies). Undefined means nobody put a number
+   * on it, which draws no bar rather than an empty one.
+   */
   metricTarget?: number
   order: number
 }
@@ -260,7 +281,14 @@ export interface PersonalGoal {
   title: string
   /** `YYYY-MM-DD`. The board renders it as a countdown, not a date. */
   targetDate?: string
-  /** 0–100, or undefined for "no bar" — same contract as `Goal.progress`. */
+  /**
+   * 0–100, or undefined for "no bar".
+   *
+   * Unused by every surface: the wallpaper deliberately draws no bar for a
+   * personal goal, and the editor offers only a date. Left in place because
+   * the column is — this is the private layer and it was never part of the
+   * company `Goal` measurement that `metricCurrent` replaced.
+   */
   progress?: number
   done: boolean
   order: number
