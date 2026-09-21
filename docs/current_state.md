@@ -50,6 +50,11 @@ Validation and exit evidence for this stage are recorded in
 [organization-foundation.md](organization-foundation.md) once the branch is
 verified; this section is the pointer, not the record.
 
+Stage 1 was accepted as code on 2026-09-21 (commit `4a95dc5`). The handoff
+for whoever builds Stage 2 — process rules, the invariants to keep, the
+notes-to-Journal investigation and the questions to settle first — is
+[donna-handoff-after-stage-1.md](donna-handoff-after-stage-1.md).
+
 ## Session update — prospect export connected in ChatGPT (2026-09-10)
 
 `export_prospects` is deployed through PR #22, merge commit
