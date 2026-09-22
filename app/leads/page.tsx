@@ -271,7 +271,7 @@ function LeadDrawer({ lead, onClose, onPromote, onDelete }: LeadDrawerProps) {
                   </p>
                 ) : (
                   <p onClick={beginEditNotes} className="cursor-pointer text-[13.5px] text-foreground/60 hover:text-accent transition-colors">
-                    {t.crm.notes.empty}
+                    {t.leads.notesEmpty}
                   </p>
                 )}
               </div>

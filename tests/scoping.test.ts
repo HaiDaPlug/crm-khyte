@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { readSql, rolloutCleanupPath } from './support/migrations'
 
@@ -116,20 +116,46 @@ function endOfCall(source: string, open: number): number {
 
 /* ———— what counts as organization-owned ———— */
 
+const MIGRATIONS = 'supabase/migrations'
+
 /**
- * The nineteen tables the rollout follow-up takes the default off — read from
- * that file rather than copied here, so the list cannot drift from the schema
- * and a twentieth table joins this lint the day it joins the migration.
+ * Every organization-owned table, from two sources, because neither alone is
+ * the whole list.
+ *
+ * (a) The nineteen tables the rollout follow-up takes the default off — read
+ * from that file rather than copied here, so the list cannot drift from the
+ * schema. The count is asserted because that file is the rollout's own record:
+ * a table quietly dropped from it is a table left with a default.
+ *
+ * (b) Every table whose `create table` block in supabase/migrations/ declares
+ * an `organization_id` column. A table born *after* the rollout carries the
+ * column from the start and needs no default taken off it, so it will never
+ * appear in (a) — and read from (a) alone this lint would silently stop
+ * covering every table added from here on. (b) is what makes a new table join
+ * this lint the day its migration lands.
  */
 async function organizationTables(): Promise<string[]> {
   const sql = await readSql(await rolloutCleanupPath())
   const tables = [...sql.matchAll(/alter table (?:public\.)?([a-z_]+)\s+alter column organization_id drop default/g)].map(m => m[1])
   assert.equal(tables.length, 19, 'the rollout follow-up must still name every organization-owned table')
-  return tables
+
+  const owned = new Set(tables)
+  for (const file of (await readdir(MIGRATIONS)).filter(f => f.endsWith('.sql')).sort()) {
+    const migration = await readSql(`${MIGRATIONS}/${file}`)
+    for (const match of migration.matchAll(/create table (?:if not exists )?(?:public\.)?([a-z_]+)\s*\(/gi)) {
+      // The column list, to the end of the statement — so an `organization_id`
+      // belonging to a *later* statement in the same file is not read as this
+      // table's.
+      const end = migration.indexOf(';', match.index)
+      const body = migration.slice(match.index, end === -1 ? migration.length : end)
+      if (body.includes('organization_id')) owned.add(match[1].toLowerCase())
+    }
+  }
+  return [...owned].sort()
 }
 
 const ACTION_FILES = ['app/actions/crm.ts', 'app/actions/goals.ts']
-const SQL_FILES = ['lib/db/queries.ts', 'lib/db/board-metrics.ts', 'lib/db/events.ts', 'lib/crm/service.ts', 'lib/mcp/export.ts']
+const SQL_FILES = ['lib/db/queries.ts', 'lib/db/board-metrics.ts', 'lib/db/events.ts', 'lib/crm/service.ts', 'lib/mcp/export.ts', 'lib/journal/service.ts']
 
 test('lint: every Server Action write names its organization in the chain it builds', async () => {
   const tables = await organizationTables()
@@ -168,11 +194,18 @@ test('lint: every Server Action write names its organization in the chain it bui
   for (const table of seen) {
     assert.ok(tables.includes(table), `${ACTION_FILES.join(' / ')}: ${table} is not one of the organization-owned tables`)
   }
-  console.log(`[scoping] ${checked} Supabase statements checked across ${ACTION_FILES.length} Server Action files, over ${seen.size} tables`)
+  console.log(`[scoping] ${checked} Supabase statements checked across ${ACTION_FILES.length} Server Action files, ` +
+    `over ${seen.size} tables, against ${tables.length} organization-owned tables`)
   // A floor, not a target: if the scanner above ever stops finding statements
   // — a syntax it cannot follow, a file renamed — this lint would pass by
   // checking nothing at all, which is the one way it could mislead.
-  assert.ok(checked >= 39, `only ${checked} statements found; the lint has stopped seeing the code`)
+  //
+  // Re-based from 39 when createNote/updateNote/deleteNote left
+  // app/actions/crm.ts for the Journal (Stage 2): 36 statements today, three
+  // fewer than the 39 before, and a floor two below that so an ordinary edit
+  // does not move it while a file dropping out still fails loudly.
+  assert.ok(checked >= 34,
+    `only ${checked} statements found, below the 34 expected of the two action files (36 today, after the three note actions moved to the Journal); the lint has stopped seeing the code`)
 })
 
 test('lint: every SQL statement against an organization-owned table names organization_id', async () => {
@@ -206,9 +239,17 @@ test('lint: every SQL statement against an organization-owned table names organi
     }
   }
 
-  console.log(`[scoping] ${checked} SQL statements checked across ${SQL_FILES.length} files; ` +
+  console.log(`[scoping] ${checked} SQL statements checked across ${SQL_FILES.length} files ` +
+    `against ${tables.length} organization-owned tables; ` +
     `${interpolated} more have an interpolated table name and are covered by the helper check below, not by this one`)
-  assert.ok(checked >= 60, `only ${checked} statements found; the lint has stopped seeing the code`)
+  // Re-based twice: from 60 when lib/journal/service.ts joined SQL_FILES, and
+  // again when the Journal reached lib/db/queries.ts — the two `notes`
+  // statements (the snapshot read and its version arm) went, and
+  // loadJournalVersion's three union arms arrived. 89 statements today, and a
+  // floor two below that so an ordinary edit does not move it while a file
+  // dropping out still fails loudly.
+  assert.ok(checked >= 87,
+    `only ${checked} statements found, below the 87 expected of the six files (89 today, 27 of them the Journal service); the lint has stopped seeing the code`)
 })
 
 test('lint: the service layer stamps and filters the organization in the helpers every plan goes through', async () => {

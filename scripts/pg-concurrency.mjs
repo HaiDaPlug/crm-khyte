@@ -68,9 +68,26 @@ try {
     await sql.unsafe(`create role anon; create role authenticated; create schema auth;
       create table auth.users (id uuid primary key, email text);
       create function auth.uid() returns uuid language sql as $$ select null::uuid $$;`)
-    const files = (dir) => readdirSync(join(root, dir)).filter((f) => f.endsWith('.sql')).sort().map((f) => join(root, dir, f))
+    const files = (dir) => {
+      let names
+      try {
+        names = readdirSync(join(root, dir))
+      } catch (error) {
+        // The directory may not exist at all once the follow-up has been promoted.
+        if (error.code !== 'ENOENT') throw error
+        return []
+      }
+      return names.filter((f) => f.endsWith('.sql')).sort().map((f) => join(root, dir, f))
+    }
+    // Both follow-ups are excluded from the ordinary loop wherever they sort,
+    // the way tests/support/migrations.ts excludes them: a promoted file must
+    // not be applied as if it were a migration, and a migration sorting after
+    // one still has to run. The rollout cleanup is then applied deliberately
+    // below; the notes drop is NOT — this suite exercises the lock protocol and
+    // has no reason to be without public.notes.
     const cleanup = (name) => name.endsWith('drop_organization_rollout.sql')
-    for (const file of files('supabase/migrations').filter((f) => !cleanup(f))) await sql.unsafe(readFileSync(file, 'utf8'))
+    const notesDrop = (name) => name.endsWith('drop_notes.sql')
+    for (const file of files('supabase/migrations').filter((f) => !cleanup(f) && !notesDrop(f))) await sql.unsafe(readFileSync(file, 'utf8'))
     const followups = [...files('supabase/followups'), ...files('supabase/migrations')].filter(cleanup)
     if (followups.length === 0) throw new Error('rollout follow-up not found in supabase/followups or supabase/migrations')
     await sql.unsafe(readFileSync(followups[0], 'utf8'))

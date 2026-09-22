@@ -7,7 +7,6 @@ import type {
   Contact,
   Lead,
   Stage,
-  Note,
   Opportunity,
   StrategyBoard,
   StrategyCard,
@@ -17,6 +16,7 @@ import type {
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase/server'
 import { isRetryableWrite, withRetry } from '@/lib/db/retry'
 import { requireAuth, type AuthContext } from '@/lib/auth/guard'
+import { scopeMismatch } from '@/lib/actions/scope'
 import {
   PIPELINE_START,
   eventsForArrival,
@@ -31,8 +31,6 @@ import {
   toContactUpdate,
   toLeadInsert,
   toLeadUpdate,
-  toNoteInsert,
-  toNoteUpdate,
   toOpportunityInsert,
   toOpportunityUpdate,
   toStrategyCardInsert,
@@ -106,30 +104,15 @@ export type ActionResult = { ok: true } | { ok: false; error: string }
 const OK: ActionResult = { ok: true }
 
 /**
- * What a scope disagreement is reported as. Part of the contract with the
- * client store (lib/store/store.ts), which reads it as "this tab is finished"
- * and reloads the page rather than showing a toast and leaving the draft up.
- */
-const CONTEXT_MISMATCH = 'context_mismatch'
-
-/**
- * Compares what the caller thought it was with what the session says it is.
+ * The scope comparison itself lives in lib/actions/scope.ts, imported here and
+ * by ./goals and ./journal.
  *
- * Returns the refusal to hand straight back, or null when the two agree. Called
- * immediately after requireAuth() and before anything touches the database, so
- * a write submitted under a stale identity is not partly applied, not merely
- * mis-scoped, but never started.
- *
- * Comparison only. The organization and the user every query below is scoped
- * by still come from `context` alone, so the worst a made-up scope can do is
- * refuse a write its sender was entitled to make.
+ * It cannot simply be exported from this file: a `'use server'` module turns
+ * every export into a POST endpoint returning a promise, so a synchronous
+ * helper has nowhere to live in one. Everything it did here it still does, in
+ * the same order and with the same contract — `context_mismatch`, returned
+ * rather than thrown, before anything reads a row.
  */
-function scopeMismatch(context: AuthContext, scope: ActionScope): ActionResult | null {
-  if (scope.organizationId === context.organizationId && scope.userId === context.userId) {
-    return null
-  }
-  return { ok: false, error: CONTEXT_MISMATCH }
-}
 
 /**
  * Without credentials the app runs on in-memory demo data, so writes have
@@ -639,54 +622,11 @@ export async function deleteLead(id: string, scope: ActionScope): Promise<Action
   )
 }
 
-// --- notes -----------------------------------------------------------------
-
-export async function createNote(note: Note, scope: ActionScope): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk(scope)
-  return run('notes', scope, async (context) =>
-    getSupabase()
-      .from('notes')
-      .insert({ ...toNoteInsert(note), organization_id: context.organizationId })
-  )
-}
-
-export async function updateNote(
-  id: string,
-  updates: Partial<Note>,
-  scope: ActionScope
-): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk(scope)
-  const payload = toNoteUpdate(updates)
-  if (Object.keys(payload).length === 0) return guardedOk(scope)
-  return run(
-    'notes',
-    scope,
-    async (context) =>
-      getSupabase()
-        .from('notes')
-        .update(payload)
-        .eq('id', id)
-        .eq('organization_id', context.organizationId)
-        .select('id'),
-    'row'
-  )
-}
-
-export async function deleteNote(id: string, scope: ActionScope): Promise<ActionResult> {
-  if (skipUnconfigured()) return guardedOk(scope)
-  return run(
-    'notes',
-    scope,
-    async (context) =>
-      getSupabase()
-        .from('notes')
-        .delete()
-        .eq('id', id)
-        .eq('organization_id', context.organizationId)
-        .select('id'),
-    'row'
-  )
-}
+// The three note actions that stood here are gone. Written text now goes
+// through app/actions/journal.ts, which writes a capture, an entry, its
+// revision and its links in one transaction — see lib/journal/service.ts. The
+// `notes` table itself is left standing and read by nothing until the
+// follow-up migration drops it (decision 2).
 
 // --- strategy boards ---------------------------------------------------------
 

@@ -111,13 +111,14 @@ however many events it has.
 | `won_date` | When the deal was won. Currently empty for every row — see caveats. |
 | `last_contacted` | Most recent recorded interaction, maintained by hand. |
 | `follow_up_date` | The scheduled next touch. Empty means unscheduled, **not** overdue. |
-| `last_note_date` | Date of the most recent note. |
-| `last_activity_date` | Most recent evidence of anything — contact, note, or logged event. |
+| `last_note_date` | Date of the most recent Journal entry written by a person. System-generated lines (next-step changes, logged outreach) do not move it. |
+| `last_activity_date` | Most recent evidence of anything — contact, a person's Journal entry, or a logged event. |
 
 ### What the history is worth
 | Column | Meaning |
 | --- | --- |
 | `history_quality` | `observed` / `logged` / `backfilled` / `none` — the best tier available for this row. `none` means no events at all, which is different from a thin history. |
+| `journal_quality` | `ok` / `unavailable` — whether the Journal could be read when the file was generated. `unavailable` means the note columns below are **blank because nothing could be read**, not because nothing was written. |
 | `event_count` | How many events are on the log for this prospect. |
 | `event_day_count` | How many **distinct days** those events span. A 1 means no duration is computable from this row. |
 | `stage_path` | The witnessed transitions, oldest first, as `YYYY-MM-DD:From>To`, separated by ` \| `. Empty where no transition was witnessed — never reconstructed. |
@@ -126,23 +127,31 @@ however many events it has.
 | Column | Meaning |
 | --- | --- |
 | `days_since_contact` | Days since `last_contacted`. Higher = gone quieter. |
-| `days_since_any_activity` | Days since `last_activity_date`. The better "gone quiet" signal — a prospect with an old contact date but a recent note has not gone quiet. |
+| `days_since_any_activity` | Days since `last_activity_date`. The better "gone quiet" signal — a prospect with an old contact date but a recent Journal entry from a person has not gone quiet. Donna's own system lines are not activity. |
 | `days_until_follow_up` | Days until `follow_up_date`. **Negative means overdue.** |
 | `follow_up_status` | `overdue` / `due_today` / `scheduled` / `none`. Precomputed so you needn't infer it. |
 | `days_in_pipeline` | First recorded contact → `exported_on`. Lower bound; see caveats. |
 | `days_contacted_to_meeting` | Contact → first meeting, **only where both dates are `observed`.** Empty otherwise, on purpose. Do not reconstruct it from the raw dates. |
-| `engagement_depth` | 0–5, counting distinct evidence of a relationship: a recorded contact, a meeting, more than one note, an open task, and a witnessed transition. A deliberately coarse count, not a weighted score — the data does not support finer precision. |
+| `engagement_depth` | 0–5, counting distinct evidence of a relationship: a recorded contact, a meeting, more than one Journal entry written by a person, an open task, and a witnessed transition. System-generated lines are not counted. A deliberately coarse count, not a weighted score — the data does not support finer precision. |
 
 ### The written record
 | Column | Meaning |
 | --- | --- |
 | `next_step` | The operator's own note on what happens next. |
-| `note_count` | Number of notes, excluding ones the operator dismissed. |
+| `note_count` | Number of Journal entries written by a person, excluding deleted and dismissed ones. System-generated lines (next-step changes, logged outreach) are not counted: they restate columns this file already carries. |
 | `open_task_count` | Open, unarchived tasks attached to this company. |
 | `open_tasks` | Those tasks as `title (due YYYY-MM-DD)`, separated by ` \| `. |
 | `tags` | Opportunity tags, separated by ` \| `. |
 | `notes` | The opportunity's own free-text note field. Whitespace collapsed to one line. |
-| `note_history` | The dated note timeline, **oldest first**, as `YYYY-MM-DD: text`, separated by ` \| `. Dismissed notes are excluded — the team explicitly rejected those, so don't reason from them. |
+| `note_history` | The dated Journal timeline, **oldest first**, as `YYYY-MM-DD: text`, separated by ` \| `. Person-written entries only — dismissed ones are excluded because the team explicitly rejected them, and system-generated lines are excluded because nobody wrote them. |
+
+When `journal_quality` is `unavailable`, `note_count`, `last_note_date` and
+`note_history` are **blank, not zero and not empty-because-empty** — the Journal
+could not be read at all, so the file has nothing to say about what anyone
+wrote. A `0` there would be a claim this file cannot make, and
+`engagement_depth` drops the person-written-entry point for the same reason. Do
+not read blank note columns as a team that writes nothing down; check
+`journal_quality` first.
 
 ### Provenance
 | Column | Meaning |

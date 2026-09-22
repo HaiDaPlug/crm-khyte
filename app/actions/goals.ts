@@ -4,6 +4,7 @@ import type { ActionScope, PersonalGoal, Goal, GoalMetric } from '@/lib/types'
 import { getSupabase, isSupabaseConfigured } from '@/lib/supabase/server'
 import { isRetryableWrite, withRetry } from '@/lib/db/retry'
 import { requireAuth, type AuthContext } from '@/lib/auth/guard'
+import { scopeMismatch } from '@/lib/actions/scope'
 import {
   toPersonalGoalInsert,
   toPersonalGoalUpdate,
@@ -50,21 +51,13 @@ export type ActionResult = { ok: true } | { ok: false; error: string }
 
 const OK: ActionResult = { ok: true }
 
-/** The same string ./crm reports, so one client-side contract covers both. */
-const CONTEXT_MISMATCH = 'context_mismatch'
-
 /**
- * What the caller thought it was against what the session says it is — the
- * refusal to return, or null when they agree. See ./crm for the full why; the
- * short version is that this compares and nothing more, so the organization
- * every write below is scoped by still comes from `context` alone.
+ * The scope comparison is lib/actions/scope.ts, the same function ./crm and
+ * ./journal call — it reports the same `context_mismatch`, so one client-side
+ * contract still covers all three. It compares and nothing more: the
+ * organization every write below is scoped by still comes from `context`
+ * alone.
  */
-function scopeMismatch(context: AuthContext, scope: ActionScope): ActionResult | null {
-  if (scope.organizationId === context.organizationId && scope.userId === context.userId) {
-    return null
-  }
-  return { ok: false, error: CONTEXT_MISMATCH }
-}
 
 /** See ./crm — writes have nowhere to go on demo data, so report success. */
 function skipUnconfigured(): boolean {

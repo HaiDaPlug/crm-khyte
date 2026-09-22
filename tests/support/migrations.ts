@@ -10,13 +10,25 @@ import { readdir, readFile } from 'node:fs/promises'
  * is the cleanup applied — from wherever it lives.
  *
  * WHY "WHEREVER IT LIVES". supabase/followups/ is outside supabase/migrations/
- * so `db:push` cannot apply the cleanup ahead of the code that writes
- * organization_id explicitly; that ordering is the one this arrangement
- * exists to prevent. Once the build is verified live the file is *moved* into
- * supabase/migrations/ and pushed. Both layouts are therefore real, and the
- * suites have to pass in both without an edit: the file is found by its name
- * ending rather than by its directory, and the migration list stops before it
- * so a promoted cleanup is never applied as an ordinary migration.
+ * so `db:push` cannot apply a follow-up ahead of the code it depends on; that
+ * ordering is the one this arrangement exists to prevent. Once the build is
+ * verified live the file is *moved* into supabase/migrations/ and pushed. Both
+ * layouts are therefore real, and the suites have to pass in both without an
+ * edit: each follow-up is found by its name ending rather than by its
+ * directory, and is excluded from the ordinary migration list wherever it
+ * sorts, then applied deliberately — so a promoted follow-up is never applied
+ * as an ordinary migration, and a migration sorting after it still runs.
+ *
+ * TWO FOLLOW-UPS NOW, with different preconditions and a strict order between
+ * them:
+ *
+ *   drop_organization_rollout.sql — Stage 1 step 5. Drops the organization_id
+ *     defaults and the old week index; applied by finishRollout(), which first
+ *     asserts the guard that stands until it runs.
+ *   drop_notes.sql — Stage 2 step 4. Re-runs the notes backfill, refuses to
+ *     drop while any notes row has no entry, then drops public.notes and the
+ *     backfill function; applied by dropNotes(). It must come AFTER the
+ *     cleanup, because the cleanup still names public.notes.
  *
  * No .env files, remote database, production credentials, or network access.
  */
@@ -27,6 +39,11 @@ const FOLLOWUPS = 'supabase/followups'
 /** The cleanup's filename ending. The timestamp in front of it may change
  *  when the file is promoted; this part is what identifies it. */
 export const ROLLOUT_CLEANUP_SUFFIX = 'drop_organization_rollout.sql'
+
+/** The notes-drop follow-up's filename ending, identified the same way and for
+ *  the same reason. Distinct from the cleanup's ending, so neither suffix can
+ *  match the other's file. */
+export const NOTES_DROP_SUFFIX = 'drop_notes.sql'
 
 /** Anything that can run SQL — PGlite itself, or a transaction of it. */
 export interface Execer {
@@ -51,14 +68,22 @@ async function findBySuffix(directory: string, suffix: string): Promise<string |
 }
 
 /**
- * Every migration to apply, in filename order, stopping before the rollout
- * cleanup should it have been promoted into supabase/migrations/. A suite
- * applies these, asserts the guard, and then finishes the rollout deliberately.
+ * Every migration to apply, in filename order, with BOTH follow-ups excluded
+ * wherever they sort should either have been promoted into
+ * supabase/migrations/ — they are applied deliberately by finishRollout() and
+ * dropNotes() instead. A suite applies these, asserts the guard, finishes the
+ * rollout, and drops notes only if it means to.
+ *
+ * Excluded rather than truncated at: a migration whose timestamp sorts *after*
+ * a promoted follow-up is an ordinary migration and must still run —
+ * 20261001120000_journal.sql is exactly that, and is required to sort after the
+ * cleanup. Truncating would drop it silently, which is the one failure this
+ * list cannot afford. scripts/pg-concurrency.mjs filters the same way.
  */
 export async function migrationFiles(): Promise<string[]> {
-  const files = (await readdir(MIGRATIONS)).filter(f => f.endsWith('.sql')).sort()
-  const promoted = files.findIndex(f => f.endsWith(ROLLOUT_CLEANUP_SUFFIX))
-  return promoted === -1 ? files : files.slice(0, promoted)
+  return (await readdir(MIGRATIONS))
+    .filter(f => f.endsWith('.sql') && !f.endsWith(ROLLOUT_CLEANUP_SUFFIX) && !f.endsWith(NOTES_DROP_SUFFIX))
+    .sort()
 }
 
 /**
@@ -100,4 +125,33 @@ export async function finishRollout(pg: Execer, probeOrganizationId: string): Pr
     /rollout finished/
   )
   await pg.exec(await readSql(await rolloutCleanupPath()))
+}
+
+/** Where the notes-drop follow-up is today: the follow-up directory, or the
+ *  migrations directory once it has been promoted. Mirrors
+ *  rolloutCleanupPath() exactly, because a promoted file must need no test
+ *  edit. */
+export async function notesDropPath(): Promise<string> {
+  const path = (await findBySuffix(FOLLOWUPS, NOTES_DROP_SUFFIX)) ?? (await findBySuffix(MIGRATIONS, NOTES_DROP_SUFFIX))
+  assert.ok(path, `a file ending in ${NOTES_DROP_SUFFIX} must exist in ${FOLLOWUPS} or ${MIGRATIONS}`)
+  return path
+}
+
+/**
+ * Applies the notes-drop follow-up: step 4 of the Stage 2 deploy order.
+ *
+ * ONLY AFTER finishRollout(). The rollout cleanup still names `public.notes`
+ * in its list of defaults to drop, so dropping the table first would make the
+ * cleanup fail on a missing relation — the same ordering the file's own header
+ * states. Only a suite that is deliberately rehearsing the drop calls this;
+ * every other suite leaves `notes` standing, which is what the deployed Stage 2
+ * build does too.
+ *
+ * The file re-runs public.journal_migrate_notes() before it drops anything, so
+ * rows the old build wrote after the journal migration landed arrive as entries
+ * here rather than being lost, and it raises rather than drops if any notes row
+ * still has no matching entry.
+ */
+export async function dropNotes(pg: Execer): Promise<void> {
+  await pg.exec(await readSql(await notesDropPath()))
 }

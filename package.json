@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "test": "npm run test:mcp && npm run test:org && npm run test:scoping && npm run test:store",
+    "test": "npm run test:mcp && npm run test:org && npm run test:scoping && npm run test:store && npm run test:journal:migration && npm run test:journal",
     "test:mcp": "node --conditions=react-server --import tsx --test tests/mcp.test.ts",
     "test:org": "node --conditions=react-server --import tsx --test tests/organization-migration.test.ts",
+    "test:journal": "node --conditions=react-server --import tsx --test tests/journal.test.ts",
+    "test:journal:migration": "node --conditions=react-server --import tsx --test tests/journal-migration.test.ts",
     "test:scoping": "node --conditions=react-server --import tsx --test tests/scoping.test.ts",
     "test:store": "node --import tsx --require ./tests/support/client-preload.cjs --test tests/store.test.ts",
     "test:mcp:http": "node --test tests/mcp-http.test.mjs",

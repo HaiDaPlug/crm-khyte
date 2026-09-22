@@ -1,5 +1,14 @@
 # AI Logic — Khyte CRM
 
+> **Superseded (2026-09-22).** This is the pre-Donna extraction design. The
+> product is now defined by
+> [Donna-Product-Architecture-and-Fable-Handoff-v1.md](Donna-Product-Architecture-and-Fable-Handoff-v1.md),
+> whose Section 5 replaces the pipeline below; Stage 1 is recorded in
+> [organization-foundation.md](organization-foundation.md) and Stage 2 in
+> [journal.md](journal.md). The mock extraction this document describes
+> (`CaptureBox`, `SuggestionPreviewCard`, `applyNote`) was retired in Stage 2.
+> Kept for history; nothing below describes the current code.
+
 ## North Star
 
 Turn messy human input — a voice note, a rough transcript, a brain-dump — into structured CRM data with minimal friction. The human stays in control; the AI does the extraction and routing.

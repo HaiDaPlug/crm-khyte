@@ -129,7 +129,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  *
  * The snapshot goes straight into the store, so a login page's HTML or a
  * truncated body arriving here would empty every screen at once. Checking that
- * all eight collections are arrays, and that the workspace carries an
+ * all seven collections are arrays, and that the workspace carries an
  * organization, a viewer and a roster, costs nothing and makes that
  * impossible — the chrome reads `workspace.viewer` on every render, so a
  * snapshot without one would take the sidebar down with it.
@@ -141,7 +141,6 @@ function isSnapshot(value: unknown): value is CRMSnapshot {
     'contacts',
     'opportunities',
     'leads',
-    'notes',
     'strategyColumns',
     'strategyCards',
     'tasks',

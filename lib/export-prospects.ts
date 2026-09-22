@@ -2,12 +2,12 @@ import type {
   Company,
   Contact,
   CrmEventKind,
-  Note,
   Opportunity,
   Stage,
   Task,
 } from '@/lib/types'
 import type { CrmEventRecord } from '@/lib/db/events'
+import type { ExportJournalEntry } from '@/lib/journal/contracts'
 import { STAGES } from '@/lib/stage-config'
 
 /**
@@ -145,6 +145,7 @@ export interface ExportRow {
   lastActivityDate: string
   /* — what the history is worth — */
   historyQuality: string
+  journalQuality: string
   eventCount: string
   eventDayCount: string
   stagePath: string
@@ -289,6 +290,7 @@ const HEADERS: Array<{ key: keyof ExportRow; label: string }> = [
   { key: 'lastActivityDate', label: 'last_activity_date' },
 
   { key: 'historyQuality', label: 'history_quality' },
+  { key: 'journalQuality', label: 'journal_quality' },
   { key: 'eventCount', label: 'event_count' },
   { key: 'eventDayCount', label: 'event_day_count' },
   { key: 'stagePath', label: 'stage_path' },
@@ -315,12 +317,37 @@ const HEADERS: Array<{ key: keyof ExportRow; label: string }> = [
 /**
  * Everything the export can say about history, beyond the opportunity itself.
  *
- * Optional so the signature stays usable from a caller that has no note or task
- * store to hand — an omitted list costs those columns and nothing else.
+ * Tasks are optional so the signature stays usable from a caller that has no
+ * task store to hand — an omitted list costs those columns and nothing else.
  */
 export interface ExportContext {
   colleagueName: (id: string | undefined) => string
-  notes?: Note[]
+  /**
+   * The Journal, keyed by opportunity id — from app/actions/journal.ts
+   * (`loadExportJournal`) in the browser, or the same service read on the MCP
+   * side. Person-written entries only, not deleted, not dismissed; an entry
+   * linked to the prospect's company as well as to the prospect appears once.
+   *
+   * REQUIRED, unlike the old `notes` list. The Journal left the client store in
+   * Stage 2, so a caller that forgets it would otherwise compile clean and ship
+   * a CSV whose note_count, note_history and engagement_depth are quietly
+   * wrong. A caller with nothing to say passes `{}` on purpose.
+   */
+  journal: Record<string, ExportJournalEntry[]>
+  /**
+   * Whether `journal` is the Journal or a stand-in for one that could not be
+   * read. The same admission `historyQuality` makes about the event log, and
+   * for the same reason: a caller whose Journal read failed passes `{}`, and
+   * without this the file would say `note_count = 0` and an empty
+   * `note_history` for every prospect — indistinguishable from a team that has
+   * never written anything down, and a model handed that concludes exactly
+   * that. `unavailable` blanks the note columns instead of zeroing them, so
+   * the gap reads as a gap.
+   *
+   * Defaults to `ok`, which is the truth for every caller that has a Journal
+   * to pass.
+   */
+  journalQuality?: 'ok' | 'unavailable'
   tasks?: Task[]
   /**
    * The activity log, keyed by opportunity id — from app/actions/export.ts.
@@ -377,17 +404,16 @@ function historyQualityOf(events: CrmEventRecord[]): string {
   return 'backfilled'
 }
 
-/** Notes for one prospect, oldest first — a timeline reads forward. */
-function notesFor(notes: Note[], row: ContactedRow): Note[] {
-  return notes
-    .filter(
-      (note) =>
-        (note.opportunityId && note.opportunityId === row.opportunity.id) ||
-        (note.companyId && note.companyId === row.company.id)
-    )
-    // Dismissed suggestions are noise the operator explicitly rejected; carrying
-    // them would have a model reason from things the team decided against.
-    .filter((note) => !note.dismissed)
+/**
+ * Journal entries for one prospect, oldest first — a timeline reads forward.
+ *
+ * The grouping by opportunity, the company-link lookup and the person-only,
+ * not-deleted, not-dismissed filters all happened in the read that produced
+ * `journal` (lib/journal/service.ts `listExportEntries`); this only orders.
+ */
+function journalFor(journal: Record<string, ExportJournalEntry[]>, row: ContactedRow): ExportJournalEntry[] {
+  return (journal[row.opportunity.id] ?? [])
+    .slice()
     .sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''))
 }
 
@@ -413,7 +439,10 @@ export function buildExportRows(
   rows: ContactedRow[],
   context: ExportContext
 ): ExportRow[] {
-  const { colleagueName, notes = [], tasks = [], events = {}, today = new Date() } = context
+  const { colleagueName, journal, journalQuality = 'ok', tasks = [], events = {}, today = new Date() } = context
+  // One decision for the whole file, not per row: either the Journal was read
+  // or it was not.
+  const journalRead = journalQuality === 'ok'
 
   // One local midnight for the whole file, so every interval is measured from
   // the same instant. Recomputing per row would let a long export straddle
@@ -428,7 +457,7 @@ export function buildExportRows(
     .sort((a, b) => (b.opportunity.lastInteraction ?? '').localeCompare(a.opportunity.lastInteraction ?? ''))
     .map((row) => {
       const opp = row.opportunity
-      const rowNotes = notesFor(notes, row)
+      const rowNotes = journalFor(journal, row)
       const rowTasks = openTasksFor(tasks, row)
       const rowEvents = events[opp.id] ?? []
 
@@ -561,7 +590,10 @@ export function buildExportRows(
         // relationship exists, not how well it is currently going.
         // `meetingBookedStatus` is where the reversal shows.
         meetingEvent !== null,
-        rowNotes.length > 1,
+        // Only where the Journal was actually read. An unread Journal is not
+        // evidence of a thin relationship, and counting its absence as a
+        // missing point would quietly push every row's depth down by one.
+        journalRead && rowNotes.length > 1,
         rowTasks.length > 0,
         rowEvents.some((event) => event.provenance === 'observed'),
       ].filter(Boolean).length
@@ -606,10 +638,13 @@ export function buildExportRows(
         // input, and an ISO date is the one form that never reads as ambiguous.
         lastContacted,
         followUpDate,
-        lastNoteDate: lastNoteDay,
+        // Blank, never a date, when the Journal could not be read — see
+        // `journalQuality` above and `noteCount` below.
+        lastNoteDate: journalRead ? lastNoteDay : '',
         lastActivityDate: lastActivityAt ? isoDate(lastActivityAt) : '',
 
         historyQuality,
+        journalQuality,
         eventCount: String(rowEvents.length),
         // How many *distinct days* the log touches. The load-bearing number for
         // whether any interval derived from this prospect means anything: a 1
@@ -628,7 +663,10 @@ export function buildExportRows(
         engagementDepth: String(engagementDepth),
 
         nextStep: flatten(opp.nextStep),
-        noteCount: String(rowNotes.length),
+        // Blank rather than '0' when the Journal could not be read. A 0 is a
+        // claim — "nobody has written anything about this company" — and it is
+        // the one claim this row cannot make.
+        noteCount: journalRead ? String(rowNotes.length) : '',
         openTaskCount: String(rowTasks.length),
         // Each task dated inline, so the string stays readable as a list without
         // needing a second file to join against.
@@ -641,9 +679,11 @@ export function buildExportRows(
         // is legal inside a quoted CSV field but breaks the record visually for
         // anything reading the file as plain text, which is the likeliest way a
         // model will meet it.
-        noteHistory: rowNotes
-          .map((note) => `${isoDayOf(note.createdAt)}: ${flatten(note.raw)}`)
-          .join(' | '),
+        noteHistory: journalRead
+          ? rowNotes
+              .map((entry) => `${isoDayOf(entry.createdAt)}: ${flatten(entry.body)}`)
+              .join(' | ')
+          : '',
 
         // Every interval above is relative to this date. Without it the numbers
         // silently rot — a file read a month later would have a model reasoning

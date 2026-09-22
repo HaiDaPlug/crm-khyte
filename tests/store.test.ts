@@ -1,8 +1,26 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { test } from 'node:test'
-import type { CRMSnapshot, OrganizationMember, Workspace } from '../lib/types'
-import { createCRMStore } from '../lib/store/store'
+import type {
+  Company,
+  Contact,
+  CRMSnapshot,
+  Opportunity,
+  OrganizationMember,
+  Workspace,
+} from '../lib/types'
+import { createCRMStore, type JournalApi } from '../lib/store/store'
+import type { JournalEntryView } from '../lib/journal/contracts'
+import {
+  clearDraft,
+  clearDraftsFor,
+  readDraft,
+  sweepForeignDrafts,
+  writeDraft,
+  type DraftStorage,
+} from '../lib/journal/drafts'
+import { formatJournalDate, formatJournalDateTime } from '../lib/journal/format'
+import { buildExportRows } from '../lib/export-prospects'
 
 /**
  * The client store, run as a client module.
@@ -29,7 +47,7 @@ const workspaceFor = (organizationId: string, userId: string): Workspace => ({
 })
 
 const snapshotFor = (workspace: Workspace): CRMSnapshot => ({
-  workspace, companies: [], contacts: [], opportunities: [], leads: [], notes: [],
+  workspace, companies: [], contacts: [], opportunities: [], leads: [],
   strategyBoards: [], strategyBoardOpportunities: [], strategyColumns: [], strategyCards: [], tasks: [],
 })
 
@@ -72,4 +90,645 @@ test('markIdentityChanged is the same conclusion reached from a refused write', 
   assert.equal(store.getState().identityChanged, false)
   store.getState().markIdentityChanged()
   assert.equal(store.getState().identityChanged, true)
+})
+
+/* ————————————————————————————————————————————————————————————————————————
+   The Journal client: the store slice, the drafts, and the date formatting.
+
+   Everything below runs under the same harness as the two tests above —
+   plain Node, no `--conditions=react-server`, tests/support/client-preload
+   blanking the `server-only` marker — because every module involved is a
+   client module by construction (lib/journal/contracts, drafts and format
+   carry no `server-only`, deliberately).
+
+   The Server Actions are faked through `createCRMStore`'s second argument.
+   That seam exists for exactly this: a real `createJournalEntry` needs a
+   session and a database, and the behaviour worth proving here is what the
+   STORE does with each answer — whether the draft survives a refusal, which
+   views a new entry reaches, whether two views holding one entry agree.
+   ———————————————————————————————————————————————————————————————————————— */
+
+/** A localStorage stand-in. Plain object, no DOM, inspectable. */
+class FakeStorage implements DraftStorage {
+  private map = new Map<string, string>()
+  get length(): number { return this.map.size }
+  key(index: number): string | null { return [...this.map.keys()][index] ?? null }
+  getItem(key: string): string | null { return this.map.get(key) ?? null }
+  setItem(key: string, value: string): void { this.map.set(key, value) }
+  removeItem(key: string): void { this.map.delete(key) }
+}
+
+/** Storage that is present but refuses everything — a private window. */
+const hostileStorage: DraftStorage = {
+  get length(): number { throw new Error('denied') },
+  key() { throw new Error('denied') },
+  getItem() { throw new Error('denied') },
+  setItem() { throw new Error('denied') },
+  removeItem() { throw new Error('denied') },
+}
+
+/** A minimal entry view — only the fields the store and the tests read. */
+const entryFor = (id: string, body: string, links: JournalEntryView['links'] = []): JournalEntryView => ({
+  id,
+  organizationId: 'org',
+  captureId: randomUUID(),
+  authorId: null,
+  authorName: 'Viewer',
+  performer: null,
+  origin: 'person',
+  kind: 'update',
+  title: null,
+  body,
+  occurredPrecision: 'exact',
+  occurredOn: '2026-09-22',
+  occurredAt: '2026-09-22T08:00:00.000Z',
+  revision: 1,
+  source: 'typed',
+  processingState: 'not_requested',
+  legacyKind: null,
+  legacyDismissed: false,
+  legacyApplied: false,
+  deletedAt: null,
+  createdAt: '2026-09-22T08:00:00.000Z',
+  updatedAt: '2026-09-22T08:00:00.000Z',
+  links,
+})
+
+/** Every action refuses unless the case overrides it. */
+const journalApiWith = (overrides: Partial<JournalApi>): JournalApi => ({
+  createJournalEntry: async () => ({ ok: false, error: 'unavailable' }),
+  editJournalEntry: async () => ({ ok: false, error: 'unavailable' }),
+  deleteJournalEntry: async () => ({ ok: false, error: 'unavailable' }),
+  loadJournalPage: async () => ({ ok: false, error: 'unavailable' }),
+  logNextStepEntry: async () => ({ ok: false, error: 'unavailable' }),
+  ...overrides,
+})
+
+const pageOf = (entries: JournalEntryView[]) => ({
+  ok: true as const,
+  page: {
+    entries,
+    nextCursor: null,
+    coverage: {
+      returned: entries.length,
+      hasMore: false,
+      oldestCreatedAt: entries.at(-1)?.createdAt ?? null,
+      loadedAt: '2026-09-22T09:00:00.000Z',
+    },
+  },
+})
+
+test('a failed submitCapture keeps the draft and reports the error', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const storage = new FakeStorage()
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({ createJournalEntry: async () => ({ ok: false, error: 'boom' }) }),
+    draftStorage: storage,
+  })
+
+  // The composer writes the draft before it submits; the store never touches
+  // it. This is that draft.
+  const requestKey = randomUUID()
+  writeDraft(org, user, 'journal', { text: 'the call went well', requestKey, kind: 'update', occurredOn: null }, storage)
+
+  const result = await store.getState().submitCapture(
+    { requestKey, text: 'the call went well' },
+    { surface: 'journal' }
+  )
+
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error, 'boom', 'the failure is reported, not swallowed')
+
+  // The one thing that must not happen: losing the words.
+  const kept = readDraft(org, user, 'journal', storage)
+  assert.equal(kept?.text, 'the call went well')
+  assert.equal(kept?.requestKey, requestKey,
+    'and the same key, so a retry of a save that did land returns the original entry')
+
+  // A failure the composer does not explain in place earns a toast.
+  assert.ok(store.getState().toasts.some((t) => t.message === 'Save entry — boom'))
+})
+
+test('request_key_conflict surfaces the entry the key already produced', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const storage = new FakeStorage()
+  const existing = entryFor(randomUUID(), 'the text that was saved first')
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({
+      createJournalEntry: async () => ({ ok: false, error: 'request_key_conflict', existing }),
+    }),
+    draftStorage: storage,
+  })
+
+  const requestKey = randomUUID()
+  writeDraft(org, user, 'journal', { text: 'edited afterwards', requestKey, kind: 'update', occurredOn: null }, storage)
+
+  const result = await store.getState().submitCapture(
+    { requestKey, text: 'edited afterwards' },
+    { surface: 'journal' }
+  )
+
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error, 'request_key_conflict')
+  assert.equal(result.ok === false && result.existing?.id, existing.id,
+    'the composer needs the entry to be able to link to it')
+  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'edited afterwards',
+    'the edited text is not lost to a collision')
+  // The composer says "already saved" in place; a toast on top would be noise.
+  assert.equal(store.getState().toasts.length, 0)
+})
+
+test('an entry held by two views is edited once and both views agree', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const opportunityId = randomUUID()
+  const link = {
+    id: randomUUID(),
+    targetType: 'opportunity' as const,
+    targetId: opportunityId,
+    targetLabel: 'Meridian Labs',
+    relationship: 'about',
+  }
+  const id = randomUUID()
+  const original = entryFor(id, 'first wording', [link])
+  const edited = { ...original, body: 'second wording', revision: 2 }
+
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({
+      loadJournalPage: async () => pageOf([original]),
+      editJournalEntry: async () => ({ ok: true, entry: edited }),
+    }),
+    draftStorage: new FakeStorage(),
+  })
+
+  // The global feed and the prospect's own drawer, both holding this entry.
+  await store.getState().loadJournalView('journal')
+  await store.getState().loadJournalView(`prospect:${opportunityId}`, {
+    targets: [{ type: 'opportunity', id: opportunityId }],
+  })
+  assert.deepEqual(store.getState().journal.views['journal'].ids, [id])
+  assert.deepEqual(store.getState().journal.views[`prospect:${opportunityId}`].ids, [id])
+
+  const result = await store.getState().editJournalEntry(id, { body: 'second wording', expectedRevision: 1 })
+  assert.equal(result.ok, true)
+
+  // Normalized: one copy, so there is nowhere for the two to disagree.
+  assert.equal(store.getState().journal.entries[id].body, 'second wording')
+  assert.equal(store.getState().journal.entries[id].revision, 2)
+  assert.deepEqual(store.getState().journal.views['journal'].ids, [id])
+  assert.deepEqual(store.getState().journal.views[`prospect:${opportunityId}`].ids, [id])
+})
+
+test('a new entry is filed into every view its links satisfy, and no others', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const mine = randomUUID(), other = randomUUID()
+  const id = randomUUID()
+  const entry = entryFor(id, 'said yes to the pilot', [
+    { id: randomUUID(), targetType: 'opportunity', targetId: mine, targetLabel: 'Meridian Labs', relationship: 'about' },
+  ])
+
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({
+      loadJournalPage: async () => pageOf([]),
+      createJournalEntry: async () => ({ ok: true, entry }),
+    }),
+    draftStorage: new FakeStorage(),
+  })
+
+  await store.getState().loadJournalView('journal')
+  await store.getState().loadJournalView(`prospect:${mine}`, { targets: [{ type: 'opportunity', id: mine }] })
+  await store.getState().loadJournalView(`prospect:${other}`, { targets: [{ type: 'opportunity', id: other }] })
+
+  await store.getState().submitCapture(
+    { requestKey: randomUUID(), text: 'said yes to the pilot' },
+    { surface: `prospect:${mine}` }
+  )
+
+  assert.deepEqual(store.getState().journal.views['journal'].ids, [id], 'the global feed takes everything')
+  assert.deepEqual(store.getState().journal.views[`prospect:${mine}`].ids, [id])
+  assert.deepEqual(store.getState().journal.views[`prospect:${other}`].ids, [],
+    'a prospect this entry says nothing about does not gain a line')
+})
+
+/* ————————————————————————————————————————————————————————————————————————
+   When a Server Action REJECTS instead of answering.
+
+   Every fake above resolves `{ ok: false }`, which is what an action does for
+   anything it can see: a missing row, a stale revision, no database. These
+   three are the other half. The promise rejects — the browser is offline, the
+   route returned a 500, a deploy rotated the action id this bundle holds,
+   `requireAuth()` threw on a session that expired between the page load and
+   the click — and the store must reach the same place it reaches for a
+   refusal. Nothing below catches: the whole point is that the callers do not
+   have to.
+   ———————————————————————————————————————————————————————————————————————— */
+
+/** An action that is unreachable rather than unwilling. */
+const rejecting = (message: string) => async (): Promise<never> => {
+  throw new Error(message)
+}
+
+test('a rejected delete puts the entry back on every feed and says so', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const opportunityId = randomUUID()
+  const link = {
+    id: randomUUID(),
+    targetType: 'opportunity' as const,
+    targetId: opportunityId,
+    targetLabel: 'Meridian Labs',
+    relationship: 'about',
+  }
+  const first = entryFor(randomUUID(), 'first', [link])
+  const middle = entryFor(randomUUID(), 'the one being deleted', [link])
+  const last = entryFor(randomUUID(), 'last', [link])
+
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({
+      loadJournalPage: async () => pageOf([first, middle, last]),
+      deleteJournalEntry: rejecting('Failed to fetch'),
+    }),
+    draftStorage: new FakeStorage(),
+  })
+
+  await store.getState().loadJournalView('journal')
+  await store.getState().loadJournalView(`prospect:${opportunityId}`, {
+    targets: [{ type: 'opportunity', id: opportunityId }],
+  })
+
+  const result = await store.getState().deleteJournalEntry(middle.id)
+
+  // The worst case the try/catch exists for: the entry is removed
+  // optimistically, the rejection skips the restore, and an entry the writer
+  // believes is gone is still in the database with nothing said about it.
+  assert.equal(result.ok, false, 'a rejection is an answer here, not an exception the card must catch')
+  assert.deepEqual(store.getState().journal.views['journal'].ids, [first.id, middle.id, last.id],
+    'back in the position it was removed from')
+  assert.deepEqual(store.getState().journal.views[`prospect:${opportunityId}`].ids,
+    [first.id, middle.id, last.id], 'in every view that was holding it, not just the one it was deleted from')
+  assert.equal(store.getState().journal.entries[middle.id]?.body, 'the one being deleted')
+  assert.ok(store.getState().toasts.some((t) => t.message === 'Delete entry — Failed to fetch'),
+    'and the writer is told')
+})
+
+test('a rejected read leaves the feed in error, never stuck on loading', async () => {
+  const store = createCRMStore(snapshotFor(workspaceFor(randomUUID(), randomUUID())), {
+    journal: journalApiWith({ loadJournalPage: rejecting('network down') }),
+    draftStorage: new FakeStorage(),
+  })
+
+  await store.getState().loadJournalView('journal')
+
+  // `loading` disables Refresh AND Load more, so a read that rejected and left
+  // it set takes the feed's only two ways out with it for the session.
+  const view = store.getState().journal.views['journal']
+  assert.equal(view.status, 'error', 'not "loading"')
+  assert.equal(view.error, 'network down', 'and the cause is what the feed shows')
+})
+
+test('a rejected save resolves as a refusal, so the composer keeps its words', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const storage = new FakeStorage()
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({ createJournalEntry: rejecting('Failed to fetch') }),
+    draftStorage: storage,
+  })
+
+  const requestKey = randomUUID()
+  writeDraft(org, user, 'journal', { text: 'the call went well', requestKey, kind: 'update', occurredOn: null }, storage)
+
+  const result = await store.getState().submitCapture(
+    { requestKey, text: 'the call went well' },
+    { surface: 'journal' }
+  )
+
+  // The composer branches on the result and does not catch: a throw arriving
+  // here would leave it on `status: 'saving'` for ever, with Save disabled and
+  // the words it is holding unsubmittable.
+  assert.equal(result.ok, false)
+  assert.equal(result.ok === false && result.error, 'Failed to fetch')
+  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'the call went well',
+    'and the one promise the composer makes is kept')
+  assert.ok(store.getState().toasts.some((t) => t.message === 'Save entry — Failed to fetch'))
+})
+
+/* ———— what the coverage line is counting, and what the poller may replace ———— */
+
+/** A page that can say there is more behind it. */
+const pageWith = (
+  entries: JournalEntryView[],
+  options: { nextCursor: string | null; hasMore: boolean }
+) => ({
+  ok: true as const,
+  page: {
+    entries,
+    nextCursor: options.nextCursor,
+    coverage: {
+      returned: entries.length,
+      hasMore: options.hasMore,
+      oldestCreatedAt: entries.at(-1)?.createdAt ?? null,
+      loadedAt: '2026-09-22T09:00:00.000Z',
+    },
+  },
+})
+
+test('coverage counts the whole list, not the last page read', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const a = entryFor(randomUUID(), 'a'), b = entryFor(randomUUID(), 'b')
+  const c = entryFor(randomUUID(), 'c'), d = entryFor(randomUUID(), 'd')
+  const written = entryFor(randomUUID(), 'just typed')
+
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({
+      loadJournalPage: async (input) =>
+        (input as { cursor?: string }).cursor === 'page-2'
+          ? pageWith([c, d], { nextCursor: null, hasMore: false })
+          : pageWith([a, b], { nextCursor: 'page-2', hasMore: true }),
+      createJournalEntry: async () => ({ ok: true, entry: written }),
+    }),
+    draftStorage: new FakeStorage(),
+  })
+
+  await store.getState().loadJournalView('journal')
+  assert.equal(store.getState().journal.views['journal'].coverage?.returned, 2)
+
+  await store.getState().loadMoreJournal('journal')
+  const loaded = store.getState().journal.views['journal']
+  assert.deepEqual(loaded.ids, [a.id, b.id, c.id, d.id])
+  assert.equal(loaded.coverage?.returned, 4,
+    'four cards on screen is "Showing 4" — taking the new page wholesale printed "Showing 2" over them')
+  assert.equal(loaded.coverage?.hasMore, false,
+    'while hasMore is the newest page talking about the tail, which is where it belongs')
+
+  await store.getState().submitCapture(
+    { requestKey: randomUUID(), text: 'just typed' },
+    { surface: 'journal' }
+  )
+  const afterWrite = store.getState().journal.views['journal']
+  assert.equal(afterWrite.ids.length, 5)
+  assert.equal(afterWrite.coverage?.returned, 5, 'a write grows the list, so it grows the count of the list')
+})
+
+test('a poller refresh keeps the pages a reader asked for; an explicit read replaces them', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const a = entryFor(randomUUID(), 'a'), b = entryFor(randomUUID(), 'b')
+  const c = entryFor(randomUUID(), 'c'), d = entryFor(randomUUID(), 'd')
+  const fromColleague = entryFor(randomUUID(), 'written by somebody else')
+
+  let firstPage = [a, b]
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({
+      loadJournalPage: async (input) =>
+        (input as { cursor?: string }).cursor === 'page-2'
+          ? pageWith([c, d], { nextCursor: 'page-3', hasMore: true })
+          : pageWith(firstPage, { nextCursor: 'page-2', hasMore: true }),
+    }),
+    draftStorage: new FakeStorage(),
+  })
+
+  // A feed on screen, showing two pages because somebody pressed Load more.
+  store.getState().acquireJournalView('journal')
+  await store.getState().loadJournalView('journal')
+  await store.getState().loadMoreJournal('journal')
+  assert.deepEqual(store.getState().journal.views['journal'].ids, [a.id, b.id, c.id, d.id])
+
+  // A colleague writes a line; the poller sees the stamp move.
+  firstPage = [fromColleague, a]
+  await store.getState().refreshJournalViews()
+
+  const merged = store.getState().journal.views['journal']
+  assert.deepEqual(merged.ids, [fromColleague.id, a.id, b.id, c.id, d.id],
+    'the new line is prepended and the second page is still there')
+  assert.equal(merged.nextCursor, 'page-3', 'and the cursor still points past the tail')
+  assert.equal(merged.coverage?.hasMore, true, 'which the fresh first page knows nothing about')
+  assert.equal(merged.coverage?.returned, 5)
+
+  // Refresh, pressed. Somebody asked for the newest page, so that is the list.
+  await store.getState().loadJournalView('journal')
+  const replaced = store.getState().journal.views['journal']
+  assert.deepEqual(replaced.ids, [fromColleague.id, a.id])
+  assert.equal(replaced.nextCursor, 'page-2')
+  assert.equal(replaced.coverage?.returned, 2)
+})
+
+test('a released view is dropped, and the poller stops re-reading it', async () => {
+  const org = randomUUID(), user = randomUUID()
+  const entry = entryFor(randomUUID(), 'about a prospect somebody opened once')
+  let reads = 0
+
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), {
+    journal: journalApiWith({
+      loadJournalPage: async () => {
+        reads += 1
+        return pageOf([entry])
+      },
+    }),
+    draftStorage: new FakeStorage(),
+  })
+
+  const key = `prospect:${randomUUID()}`
+  store.getState().acquireJournalView(key)
+  await store.getState().loadJournalView(key)
+  assert.equal(reads, 1)
+
+  await store.getState().refreshJournalViews()
+  assert.equal(reads, 2, 'a feed on screen is kept current')
+
+  // The drawer closes. The store outlives the navigation; the view must not,
+  // or every prospect ever opened is re-read every twelve seconds after it.
+  store.getState().releaseJournalView(key)
+  assert.equal(store.getState().journal.views[key], undefined)
+  assert.equal(store.getState().journal.entries[entry.id]?.body, 'about a prospect somebody opened once',
+    'the entry itself is kept — one cheap copy, and reopening the drawer renders it at once')
+
+  await store.getState().refreshJournalViews()
+  assert.equal(reads, 2, 'and nothing is read on behalf of a feed nobody is looking at')
+})
+
+test('two feeds on one view are counted, so the first to close does not take the other list', async () => {
+  const store = createCRMStore(snapshotFor(workspaceFor(randomUUID(), randomUUID())), {
+    journal: journalApiWith({ loadJournalPage: async () => pageOf([entryFor(randomUUID(), 'shared')]) }),
+    draftStorage: new FakeStorage(),
+  })
+
+  // The dashboard's feed and a drawer opened over it, both on `prospect:<id>`.
+  const key = `prospect:${randomUUID()}`
+  store.getState().acquireJournalView(key)
+  store.getState().acquireJournalView(key)
+  await store.getState().loadJournalView(key)
+
+  store.getState().releaseJournalView(key)
+  assert.ok(store.getState().journal.views[key], 'one is still on screen')
+
+  store.getState().releaseJournalView(key)
+  assert.equal(store.getState().journal.views[key], undefined)
+})
+
+test('identityChanged clears the drafts of the identity the store was built for', () => {
+  const org = randomUUID(), user = randomUUID(), stranger = randomUUID()
+  const storage = new FakeStorage()
+  const store = createCRMStore(snapshotFor(workspaceFor(org, user)), { draftStorage: storage })
+
+  writeDraft(org, user, 'journal', { text: 'mine', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  writeDraft(org, user, 'dashboard', { text: 'also mine', requestKey: 'k2', kind: 'idea', occurredOn: null }, storage)
+  writeDraft(org, stranger, 'journal', { text: 'somebody else', requestKey: 'k3', kind: 'update', occurredOn: null }, storage)
+
+  store.getState().markIdentityChanged()
+
+  assert.equal(store.getState().identityChanged, true)
+  assert.equal(readDraft(org, user, 'journal', storage), null, 'every surface of the finished identity')
+  assert.equal(readDraft(org, user, 'dashboard', storage), null)
+  assert.equal(readDraft(org, stranger, 'journal', storage)?.text, 'somebody else',
+    'and nobody else is touched')
+})
+
+test('signing out clears the leaving identity drafts through the same helper', () => {
+  // The control in AppSidebar / MobileChrome calls exactly this before the
+  // logout form posts.
+  const org = randomUUID(), user = randomUUID(), otherOrg = randomUUID()
+  const storage = new FakeStorage()
+  writeDraft(org, user, 'journal', { text: 'unsent', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  writeDraft(otherOrg, user, 'journal', { text: 'other workspace', requestKey: 'k2', kind: 'update', occurredOn: null }, storage)
+
+  clearDraftsFor(org, user, storage)
+
+  assert.equal(readDraft(org, user, 'journal', storage), null)
+  assert.equal(readDraft(otherOrg, user, 'journal', storage)?.text, 'other workspace',
+    'the same person in another organization is a different identity')
+})
+
+test('the mount sweep removes foreign-identity drafts and keeps the current one', () => {
+  const org = randomUUID(), user = randomUUID(), otherOrg = randomUUID(), otherUser = randomUUID()
+  const storage = new FakeStorage()
+  writeDraft(org, user, 'journal', { text: 'keep me', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  writeDraft(org, user, 'prospect:abc', { text: 'keep me too', requestKey: 'k2', kind: 'update', occurredOn: null }, storage)
+  writeDraft(otherOrg, user, 'journal', { text: 'gone', requestKey: 'k3', kind: 'update', occurredOn: null }, storage)
+  writeDraft(org, otherUser, 'dashboard', { text: 'gone', requestKey: 'k4', kind: 'update', occurredOn: null }, storage)
+  storage.setItem('khyte-settings', '{"theme":"dark"}')
+
+  sweepForeignDrafts(org, user, storage)
+
+  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'keep me')
+  assert.equal(readDraft(org, user, 'prospect:abc', storage)?.text, 'keep me too',
+    'a surface key containing a colon is parsed correctly')
+  assert.equal(readDraft(otherOrg, user, 'journal', storage), null)
+  assert.equal(readDraft(org, otherUser, 'dashboard', storage), null)
+  assert.equal(storage.getItem('khyte-settings'), '{"theme":"dark"}',
+    'and keys outside the draft prefix are none of the sweep business')
+})
+
+test('the draft module survives a storage that throws on every access', () => {
+  const org = randomUUID(), user = randomUUID()
+  // Private mode: `localStorage` exists and every call raises. None of this
+  // may reach a composer as an exception — the cost of a refusal is that the
+  // draft is not remembered, which the composer degrades to component state.
+  assert.doesNotThrow(() =>
+    writeDraft(org, user, 'journal', { text: 'x', requestKey: 'k', kind: 'update', occurredOn: null }, hostileStorage))
+  assert.equal(readDraft(org, user, 'journal', hostileStorage), null)
+  assert.doesNotThrow(() => clearDraft(org, user, 'journal', hostileStorage))
+  assert.doesNotThrow(() => clearDraftsFor(org, user, hostileStorage))
+  assert.doesNotThrow(() => sweepForeignDrafts(org, user, hostileStorage))
+})
+
+test('formatJournalDate never shifts a day, and reads an instant in the organization zone', () => {
+  const options = { timezone: 'Europe/Stockholm', locale: 'sv-SE', unknownLabel: 'Okänt datum' }
+
+  // A day somebody picked. `new Date('2026-09-22')` is midnight UTC, and
+  // formatting that instant anywhere west of Greenwich prints the 21st — the
+  // bug lib/journal/format.ts exists to make impossible. The viewer's own
+  // zone is irrelevant by construction: the parts are formatted directly.
+  const day = formatJournalDate(
+    { occurredPrecision: 'day', occurredOn: '2026-09-22', occurredAt: null },
+    options
+  )
+  assert.match(day, /22/, `the 22nd stays the 22nd, got ${day}`)
+  assert.ok(!day.includes('21'), `and never slides back a day, got ${day}`)
+  assert.match(day, /2026/)
+
+  // Same date, read from a browser on the other side of the world.
+  assert.equal(
+    formatJournalDate(
+      { occurredPrecision: 'day', occurredOn: '2026-09-22', occurredAt: null },
+      { ...options, timezone: 'Pacific/Honolulu' }
+    ),
+    day,
+    'a day carries no instant, so no timezone can move it'
+  )
+
+  // An instant, which genuinely belongs to a zone: 22:30 UTC on the 21st is
+  // half past midnight on the 22nd in Stockholm (decision 7).
+  const exact = formatJournalDate(
+    { occurredPrecision: 'exact', occurredOn: '2026-09-22', occurredAt: '2026-09-21T22:30:00Z' },
+    options
+  )
+  assert.match(exact, /22/, `the Swedish day, got ${exact}`)
+  assert.match(exact, /00[:.]30/, `at half past midnight, got ${exact}`)
+
+  assert.equal(
+    formatJournalDate({ occurredPrecision: 'unknown', occurredOn: null, occurredAt: null }, options),
+    'Okänt datum'
+  )
+})
+
+test('formatJournalDateTime stamps a revision on the organization clock, not the browser one', () => {
+  // The card shows an entry's date and, under History, when each revision was
+  // written. The first was already the organization's zone; the second was
+  // the viewer's, which is how an edit made at 00:30 in Stockholm came to
+  // read as the day before the entry it edited.
+  const stockholm = formatJournalDateTime('2026-09-21T22:30:00Z', {
+    timezone: 'Europe/Stockholm',
+    locale: 'sv-SE',
+  })
+  assert.match(stockholm, /22/, `the Swedish day, got ${stockholm}`)
+  assert.match(stockholm, /00[:.]30/, `at half past midnight, got ${stockholm}`)
+
+  // The zone argument is what decides, not whatever zone this process is in.
+  assert.notEqual(
+    formatJournalDateTime('2026-09-21T22:30:00Z', { timezone: 'Pacific/Honolulu', locale: 'sv-SE' }),
+    stockholm
+  )
+
+  // Same contract as the rest of the module: an unreadable value is shown as
+  // it was stored rather than as "Invalid Date".
+  assert.equal(
+    formatJournalDateTime('not a date', { timezone: 'Europe/Stockholm', locale: 'sv-SE' }),
+    'not a date'
+  )
+})
+
+test('buildExportRows counts the Journal entries a prospect carries', () => {
+  const opportunityId = randomUUID(), companyId = randomUUID(), contactId = randomUUID()
+  const company: Company = {
+    id: companyId, name: 'Meridian Labs', domain: 'meridian.test', industry: 'SaaS',
+    size: '50-200', location: 'Stockholm', tags: [],
+  }
+  const contact: Contact = {
+    id: contactId, companyId, name: 'Elena Hartmann', role: 'COO', email: 'elena@meridian.test',
+  }
+  const opportunity: Opportunity = {
+    id: opportunityId, companyId, contactId, stage: 'Warm', priority: 'high', inPipeline: true,
+    nextStep: 'Book the exec demo', followUpDate: '2026-09-30', lastInteraction: '2026-09-22',
+    tags: [], notes: 'their own free-text field', order: 0,
+  }
+
+  const rows = buildExportRows([{ opportunity, company, contact }], {
+    colleagueName: () => '',
+    journal: {
+      [opportunityId]: [
+        { id: randomUUID(), body: 'Called Elena, budget is locked in', createdAt: '2026-09-20T10:00:00.000Z', occurredOn: '2026-09-20' },
+        { id: randomUUID(), body: 'Sent the SOC 2 report', createdAt: '2026-09-22T09:00:00.000Z', occurredOn: '2026-09-22' },
+      ],
+    },
+    today: new Date('2026-09-22T12:00:00.000Z'),
+  })
+
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].noteCount, '2')
+  assert.match(rows[0].noteHistory, /Called Elena, budget is locked in/)
+  assert.match(rows[0].noteHistory, /Sent the SOC 2 report/)
+  // Oldest first — a timeline reads forward.
+  assert.ok(
+    rows[0].noteHistory.indexOf('Called Elena') < rows[0].noteHistory.indexOf('Sent the SOC 2'),
+    'the history is ordered oldest first'
+  )
+  assert.equal(rows[0].notes, 'their own free-text field',
+    'and the CSV column literally named `notes` is still the opportunity field, untouched')
 })

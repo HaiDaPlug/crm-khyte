@@ -3,8 +3,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X, ExternalLink, Calendar, ArrowRight, ChevronDown, Trash2 } from 'lucide-react'
-import { ColleagueId, Opportunity, Company, Contact, Note, Priority, Stage } from '@/lib/types'
-import { NotesTimeline } from './NotesTimeline'
+import { ColleagueId, Opportunity, Company, Contact, Priority, Stage } from '@/lib/types'
+import { JournalComposer } from '@/components/journal/JournalComposer'
+import { JournalFeed } from '@/components/journal/JournalFeed'
+import { JournalSync } from '@/components/journal/JournalSync'
 import { Button } from './Button'
 import { InlineSelect } from './FormFields'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -13,7 +15,7 @@ import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
 import { STAGES, priorityDot, stageColors } from '@/lib/stage-config'
 import { useDialogBehavior, useMounted } from '@/lib/hooks/useDialog'
 import { useFormat } from '@/lib/hooks/useFormat'
-import { cn, newId } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 const PRIORITIES: Priority[] = ['low', 'medium', 'high', 'critical']
@@ -22,7 +24,6 @@ interface DetailDrawerProps {
   opportunity: Opportunity | null
   company: Company | null
   contact: Contact | null
-  notes: Note[]
   onClose: () => void
 }
 
@@ -30,10 +31,9 @@ interface DrawerPayload {
   opportunity: Opportunity
   company: Company
   contact: Contact
-  notes: Note[]
 }
 
-export function DetailDrawer({ opportunity, company, contact, notes, onClose }: DetailDrawerProps) {
+export function DetailDrawer({ opportunity, company, contact, onClose }: DetailDrawerProps) {
   const { t } = useTranslations()
   const copy = t.crm.detail
   const isOpen = !!opportunity
@@ -53,17 +53,15 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
   const [payload, setPayload] = useState<DrawerPayload | null>(null)
   useEffect(() => {
     if (opportunity && company && contact) {
-      setPayload({ opportunity, company, contact, notes })
+      setPayload({ opportunity, company, contact })
     }
-  }, [opportunity, company, contact, notes])
+  }, [opportunity, company, contact])
 
   const updateOpportunity = useCRMStore((s) => s.updateOpportunity)
   const updateCompany = useCRMStore((s) => s.updateCompany)
   const updateContact = useCRMStore((s) => s.updateContact)
-  const addNote = useCRMStore((s) => s.addNote)
-  const deleteNote = useCRMStore((s) => s.deleteNote)
+  const logNextStep = useCRMStore((s) => s.logNextStep)
   const removeOpportunity = useCRMStore((s) => s.removeOpportunity)
-  const [noteDraft, setNoteDraft] = useState('')
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   // Which single field is mid-edit, if any. Only one at a time — these are
@@ -80,10 +78,10 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
   const [tagsDraft, setTagsDraft] = useState('')
   const [lastInteractionDraft, setLastInteractionDraft] = useState('')
 
-  // Never carry one lead's draft over to another, and drop the editors when
-  // the drawer closes so it reopens in read mode.
+  // Drop the editors when the drawer closes, and when it swaps to another
+  // prospect, so it reopens in read mode. The Journal composer keeps its own
+  // draft — keyed per prospect, so switching between two never mixes them.
   useEffect(() => {
-    setNoteDraft('')
     setEditingField(null)
     setConfirmingDelete(false)
   }, [opportunity?.id, isOpen])
@@ -94,23 +92,6 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
     setConfirmingDelete(false)
     removeOpportunity(id)
     onClose()
-  }
-
-  /** Each submission is its own timeline entry — there's no single "the" note
-   * to overwrite anymore, so this only ever adds. */
-  const addNoteEntry = () => {
-    const id = payload?.opportunity.id
-    const raw = noteDraft.trim()
-    if (!id || !raw) return
-    addNote({ id: newId(), opportunityId: id, raw, createdAt: new Date().toISOString() })
-    setNoteDraft('')
-  }
-
-  const handleNoteKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault()
-      addNoteEntry()
-    }
   }
 
   const beginEditCompanyName = () => {
@@ -252,15 +233,13 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
       return
     }
     if (previous) {
-      // Store update alone is enough — the drawer's `notes` prop is a live
-      // selection from the store (see leads/page.tsx's `drawerNotes`), so it
-      // flows back in and refreshes `payload.notes` on its own.
-      addNote({
-        id: newId(),
-        opportunityId: id,
-        raw: copy.nextStepLogged(previous),
-        createdAt: new Date().toISOString(),
-      })
+      // A system line in the Journal, not a note: `origin: 'system'` is set
+      // server-side (app/actions/journal.ts) so this cannot read as something
+      // a person wrote, and the copy is built here because the dictionary is
+      // on the client. Fired without awaiting — the field commits either way,
+      // and a failed write toasts on its own. The store prepends the returned
+      // entry to this prospect's feed below.
+      void logNextStep(id, copy.nextStepLogged(previous))
     }
     updateOpportunity(id, { nextStep: next })
     setPayload((p) => (p ? { ...p, opportunity: { ...p.opportunity, nextStep: next } } : p))
@@ -290,6 +269,10 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
 
   return createPortal(
     <>
+      {/* Only while the drawer is open: a poller mounted behind a closed panel
+          would keep asking on every page that renders this component. */}
+      {isOpen && <JournalSync />}
+
       <div
         className={cn(
           'fixed inset-0 bg-black/40 backdrop-blur-[3px] z-40 transition-opacity duration-300',
@@ -641,33 +624,36 @@ export function DetailDrawer({ opportunity, company, contact, notes, onClose }: 
                 </div>
               </div>
 
-              {/* Notes — a running, deletable log rather than one field to overwrite */}
+              {/*
+                The Journal for this prospect.
+
+                Filtered on the opportunity AND its company: an entry written
+                about the company belongs on the prospect's timeline, and one
+                linked to both appears once (the any-of filter in
+                lib/journal/service.ts). The composer links only the
+                opportunity — the service resolves the company's name as the
+                label, which is what survives if the prospect is ever deleted.
+              */}
               <div className="px-4 py-4 sm:px-6">
-                <p className="label-mono mb-3">{copy.notes}</p>
+                <p className="label-mono mb-3">{t.crm.journal.title}</p>
 
-                <div className="mb-4">
-                  <textarea
-                    aria-label={copy.addNote}
-                    placeholder={copy.addNote}
-                    value={noteDraft}
-                    onChange={(e) => setNoteDraft(e.target.value)}
-                    onKeyDown={handleNoteKeyDown}
-                    rows={2}
-                    className={cn(
-                      'w-full px-4 py-3.5 bg-background-raised rounded-lg border border-border-subtle',
-                      'text-[16px] text-foreground leading-relaxed resize-y outline-none sm:text-[14px]',
-                      'focus:border-accent/50 transition-[border-color] duration-100 ease-out'
-                    )}
-                  />
-                  <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-                    <span className="w-full text-[11px] text-foreground/50 font-mono sm:mr-auto sm:w-auto">{copy.saveHint}</span>
-                    <Button size="sm" onClick={addNoteEntry} disabled={!noteDraft.trim()}>
-                      {copy.addNote}
-                    </Button>
-                  </div>
-                </div>
+                <JournalComposer
+                  surface={`prospect:${payload.opportunity.id}`}
+                  viewKey={`prospect:${payload.opportunity.id}`}
+                  context={{
+                    links: [{ type: 'opportunity', id: payload.opportunity.id }],
+                    label: payload.company.name,
+                  }}
+                  className="mb-4"
+                />
 
-                <NotesTimeline notes={payload.notes} onDelete={deleteNote} />
+                <JournalFeed
+                  viewKey={`prospect:${payload.opportunity.id}`}
+                  targets={[
+                    { type: 'opportunity', id: payload.opportunity.id },
+                    { type: 'company', id: payload.company.id },
+                  ]}
+                />
               </div>
             </div>
 

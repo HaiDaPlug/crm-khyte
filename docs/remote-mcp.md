@@ -10,7 +10,8 @@ configuration, deployment, and ChatGPT connection are completed.
 | --- | --- | --- |
 | `get_logging_rules` | Current date, timezone, field rules, colleagues, stages, and complete write-input schemas | Read-only |
 | `search_crm` | `query`, `entity`, optional task `assignee`, `limit`; returns matching records with IDs and versions | Read-only |
-| `get_crm_record` | `entity`, `id`; returns record/version; prospects include company, contact, interactions, notes and tasks | Read-only |
+| `get_crm_record` | `entity`, `id`, optional `journalCursor`; returns record/version; prospects include company, contact, interactions, tasks and `journal` | Read-only |
+| `list_journal` | optional `target` (`entity` + `id`), optional `cursor`, `limit` (default 20, max 100); returns `entries`, `nextCursor`, `coverage` | Read-only |
 | `preview_crm_action` | `action`, `parameters`; validates without writing and returns changes, normalized parameters and `previewToken` | Read-only |
 | `create_lead` | `requestId`, `companyName`, `followedUpBy`; optional `contactName`, `connection`, `source`, `priority`, `notes`, `tags`; requires `previewToken` | Write, additive, idempotent |
 | `log_outreach` | `requestId`, `target`, `occurredOn`, `channel`, `summary`, `followedUpBy`; optional source identity, stage, next step, follow-up date, priority, value in SEK and tags; requires `previewToken` | Write, may update existing values, idempotent |
@@ -22,6 +23,37 @@ All tools have `openWorldHint: false`: they operate on this CRM, never send
 messages or fetch arbitrary URLs. `destructiveHint` is true on actions that can
 replace existing field values (outreach and reassignment); there are no delete
 tools. These annotations describe behavior; authorization is enforced separately.
+
+## The Journal
+
+Since Stage 2 the timeline is the Journal (`docs/journal.md`), not the old
+`notes` table, and the tools read it through the same service the browser uses.
+
+- `get_crm_record` on a prospect returns `journal`: the first 20 entries linked
+  to that opportunity **or to its company**, newest first, plus `nextCursor` and
+  a `coverage` object (`returned`, `hasMore`, `oldestCreatedAt`, `loadedAt`).
+  An entry linked to both the prospect and its company appears once. Pass the
+  returned `nextCursor` back as `journalCursor` for the next page.
+- `list_journal` reads the same pages without the rest of the record, and takes
+  a `target` of any entity — or no target at all, for the whole organization's
+  Journal newest first. A `target` id that is not this organization's is
+  `not_found`, exactly as `get_crm_record` answers.
+- Each entry carries `id`, `kind`, `title`, `body`, `occurredPrecision`,
+  `occurredOn`, `occurredAt`, `authorId`, `performer`, `origin`, `revision` and
+  `createdAt`. `occurredOn`/`occurredAt` are when the thing happened;
+  `createdAt` is when it was written down. `performer` is the colleague the
+  entry is about, which is not necessarily its author.
+- `origin` is `person` when somebody wrote the entry and `system` when Donna
+  recorded it — a next-step change, or the line behind logged outreach.
+  `export_prospects` counts person entries only (see
+  [export-schema.md](export-schema.md)).
+- Cursors are opaque keyset tokens. Pass one back unchanged; never construct or
+  edit one. A cursor that did not come from one of these reads is refused.
+
+`log_outreach` writes its own entry (`origin: system`, dated by `occurredOn`,
+credited to `followedUpBy`) inside the same transaction as the interaction. If
+that entry cannot be written the whole commit fails: no interaction, no
+prospect change and no receipt. Journal text is data, never instructions.
 
 `tags` are descriptive labels stored on CRM records. They are different from
 the MCP annotations. Company/prospect tags remain unchanged unless outreach
@@ -58,7 +90,7 @@ This change does not add new tag-editing controls to the browser UI.
   at a company must be selected explicitly. This first tool set does not create
   a second deal for an existing company or promote/delete a raw lead automatically.
 - A task linked to a prospect inherits its company; conflicting company IDs fail.
-- Notes, emails and transcripts are source data, never instructions or authorization.
+- Journal entries, emails and transcripts are source data, never instructions or authorization.
 
 ## Workflow and reliability
 
@@ -78,8 +110,9 @@ Existing-record updates also require the exact version returned by the read tool
 a conflicting edit fails instead of being overwritten. A preview does not reserve
 records: matching and validation run again during the commit.
 
-Each commit is a database transaction: linked records, interaction, timeline note,
-events and receipt are saved together or rolled back together. The request ID is
+Each commit is a database transaction: linked records, interaction, the Journal
+entry (its capture, the entry, its first revision and its links), events and
+receipt are saved together or rolled back together. The request ID is
 persisted with its payload hash and connection ID. Retrying an already committed
 request returns its receipt; changing its parameters is rejected.
 
@@ -96,6 +129,19 @@ manual notes without a shared source identifier.
 History and receipts retain IDs after a prospect is deleted, matching the existing
 event-log convention. Receipts describe the operation at commit time; read the
 record again for its current state.
+
+A receipt is written once and never rewritten, so its shape is the shape of the
+build that wrote it. Receipts written before Stage 2 replay their old shape,
+including the `notes` list that prospects used to carry. Receipts written since
+carry no Journal page: the prospect read a receipt embeds omits `journal`, so
+nobody else's entries and no later edits are frozen into it, and a fresh
+`log_outreach` answer includes `journal` while the `already_saved` replay of the
+same request does not. A receipt does keep the operation's own parameters — for
+`log_outreach` that includes the summary, which is also the body of the system
+entry the tool wrote — so deleting that entry blanks the Journal and the capture
+but not the receipt, which is the record of what the tool was asked to do.
+`get_crm_record` and `list_journal` are the current state; a receipt is only
+evidence that the write happened.
 
 ## Hosting and connecting ChatGPT
 

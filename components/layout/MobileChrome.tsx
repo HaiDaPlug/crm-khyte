@@ -7,6 +7,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Grid2X2, LogOut, Moon, Sun, X } from 'lucide-react'
 import { logout } from '@/app/actions/auth'
+import { clearDraftsFor } from '@/lib/journal/drafts'
 import { useCRMStore } from '@/lib/store'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 import { useDialogBehavior, useMounted } from '@/lib/hooks/useDialog'
@@ -14,7 +15,13 @@ import { cn } from '@/lib/utils'
 import khyteLogo from '@/public/khyte-logo-text-png.png'
 import { MemberAvatar, navItems } from './AppSidebar'
 
-const primaryHrefs = ['/dashboard', '/prospects', '/pipeline', '/tasks'] as const
+/**
+ * The four slots on the bottom bar. Decision 17: `/journal` takes the one
+ * `/pipeline` had — writing something down happens on a phone between
+ * meetings, and dragging a card across a kanban board does not. Pipeline
+ * keeps its place in the full list under More.
+ */
+const primaryHrefs = ['/dashboard', '/journal', '/prospects', '/tasks'] as const
 
 interface MobileChromeProps {
   menuOpen: boolean
@@ -148,7 +155,9 @@ export function MobileChrome({ menuOpen, onMenuOpen, onMenuClose }: MobileChrome
                   <p className="truncate font-mono text-[10.5px] text-muted">{organization.name}</p>
                 </div>
               </div>
-              <form action={logout}>
+              {/* The leaving viewer's unsaved Journal drafts go with them —
+                  same handler as the desktop sidebar's, same reasoning. */}
+              <form action={logout} onSubmit={() => clearDraftsFor(organization.id, viewer.userId)}>
                 <button
                   type="submit"
                   className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3.5 text-[14px] text-foreground/75 transition-colors hover:bg-surface-raised hover:text-foreground"

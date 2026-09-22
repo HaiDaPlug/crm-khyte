@@ -102,20 +102,6 @@ export interface LeadRow {
   updated_at: string
 }
 
-export interface NoteRow {
-  id: string
-  owner_id: string | null
-  organization_id: string
-  opportunity_id: string | null
-  company_id: string | null
-  raw: string
-  ai_extracted: Record<string, unknown> | null
-  dismissed: boolean
-  applied: boolean
-  created_at: string
-  updated_at: string
-}
-
 export interface StrategyBoardRow {
   id: string
   owner_id: string | null

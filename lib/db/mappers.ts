@@ -5,7 +5,6 @@ import type {
   Goal,
   GoalMetric,
   Lead,
-  Note,
   Opportunity,
   StrategyBoard,
   StrategyCard,
@@ -19,7 +18,6 @@ import type {
   GoalMetricRow,
   GoalRow,
   LeadRow,
-  NoteRow,
   OpportunityRow,
   StrategyBoardOpportunityRow,
   StrategyBoardRow,
@@ -258,46 +256,9 @@ export function toLeadUpdate(updates: Partial<Lead>) {
   ])
 }
 
-// --- notes -----------------------------------------------------------------
-
-export function fromNoteRow(row: NoteRow): Note {
-  return {
-    id: row.id,
-    ...(row.opportunity_id ? { opportunityId: row.opportunity_id } : {}),
-    ...(row.company_id ? { companyId: row.company_id } : {}),
-    raw: row.raw,
-    createdAt: isoOrEmpty(row.created_at),
-    ...(row.ai_extracted
-      ? { aiExtracted: row.ai_extracted as Note['aiExtracted'] }
-      : {}),
-    dismissed: row.dismissed,
-    applied: row.applied,
-  }
-}
-
-export function toNoteInsert(note: Note) {
-  return {
-    id: note.id,
-    opportunity_id: note.opportunityId ?? null,
-    company_id: note.companyId ?? null,
-    raw: note.raw,
-    ai_extracted: note.aiExtracted ?? null,
-    dismissed: note.dismissed ?? false,
-    applied: note.applied ?? false,
-    created_at: note.createdAt,
-  }
-}
-
-export function toNoteUpdate(updates: Partial<Note>) {
-  return pickDefined<NoteRow>([
-    ['opportunity_id', updates.opportunityId],
-    ['company_id', updates.companyId],
-    ['raw', updates.raw],
-    ['ai_extracted', updates.aiExtracted],
-    ['dismissed', updates.dismissed],
-    ['applied', updates.applied],
-  ])
-}
+// Notes have no mapper any more: the Journal (lib/journal) replaced them in
+// Donna Stage 2, and the legacy `notes` table is read by nothing until its
+// follow-up drops it — see docs/journal.md.
 
 // --- strategy boards ---------------------------------------------------------
 

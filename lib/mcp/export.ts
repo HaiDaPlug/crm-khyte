@@ -6,8 +6,9 @@ import { stockholmToday } from '@/lib/crm/service'
 import { buildExportRows, hasBeenContacted } from '@/lib/export-prospects'
 import { STAGES } from '@/lib/stage-config'
 import { colleagues } from '@/lib/colleagues'
-import { fromCompanyRow, fromContactRow, fromOpportunityRow, fromNoteRow, fromTaskRow } from '@/lib/db/mappers'
-import type { CompanyRow, ContactRow, OpportunityRow, NoteRow, TaskRow } from '@/lib/db/rows'
+import { fromCompanyRow, fromContactRow, fromOpportunityRow, fromTaskRow } from '@/lib/db/mappers'
+import type { CompanyRow, ContactRow, OpportunityRow, TaskRow } from '@/lib/db/rows'
+import { listExportEntries } from '@/lib/journal/service'
 import type { CrmEventRecord } from '@/lib/db/events'
 import { EXPORT_GROUPS, EXPORT_GUIDANCE } from './export-schema'
 
@@ -66,10 +67,14 @@ export async function exportProspects(db: Queryable, raw: unknown, actor: { orga
   const ids = page.map(row => String(row.id))
   const companyIds = [...new Set(page.map(row => row.company_id))]
   const contactIds = [...new Set(page.map(row => row.contact_id))]
-  const [companyRows, contactRows, noteRows, taskRows] = await Promise.all([
+  const [companyRows, contactRows, journal, taskRows] = await Promise.all([
     db.query('select * from companies where organization_id = $2 and id = any($1::uuid[])', [companyIds, actor.organizationId]),
     db.query('select * from contacts where organization_id = $2 and id = any($1::uuid[])', [contactIds, actor.organizationId]),
-    db.query('select *, created_at::text as created_at from notes where organization_id = $3 and (opportunity_id = any($1::uuid[]) or company_id = any($2::uuid[]))', [ids, companyIds, actor.organizationId]),
+    // Decision 13: person-written entries only, already grouped per prospect
+    // and already covering entries linked to the prospect's company. The
+    // service owns that read, so the browser export and this one count the
+    // same thing (lib/journal/service.ts `listExportEntries`).
+    listExportEntries(db, { organizationId: actor.organizationId }, ids),
     db.query('select *, due_date::text as due_date from tasks where organization_id = $3 and (related_opportunity_id = any($1::uuid[]) or related_company_id = any($2::uuid[]))', [ids, companyIds, actor.organizationId]),
   ])
   let historyAvailable = true
@@ -77,7 +82,6 @@ export async function exportProspects(db: Queryable, raw: unknown, actor: { orga
   try { events = await readEvents(db, actor.organizationId, ids) } catch { historyAvailable = false }
   const companies = new Map(companyRows.map(row => { const value = fromCompanyRow(row as unknown as CompanyRow); return [value.id, value] }))
   const contacts = new Map(contactRows.map(row => { const value = fromContactRow(row as unknown as ContactRow); return [value.id, value] }))
-  const notes = noteRows.map(row => fromNoteRow(row as unknown as NoteRow))
   const tasks = taskRows.map(row => fromTaskRow(row as unknown as TaskRow))
   const [year, month, day] = asOf.split('-').map(Number)
   const today = new Date(year, month - 1, day)
@@ -90,7 +94,10 @@ export async function exportProspects(db: Queryable, raw: unknown, actor: { orga
     const company = companies.get(opportunity.companyId)
     const contact = contacts.get(opportunity.contactId)
     if (!company || !contact) throw new CrmError('incomplete_record', 'A prospect is missing its company or contact. Repair the link before exporting.')
-    const [built] = buildExportRows([{ opportunity, company, contact }], { notes, tasks, events, today,
+    // journalQuality is always 'ok' here: the Journal read above is not
+    // wrapped the way readEvents is, so it either succeeded or this call threw
+    // before reaching a row. There is no degraded state to report.
+    const [built] = buildExportRows([{ opportunity, company, contact }], { journal, journalQuality: 'ok', tasks, events, today,
       colleagueName: id => id && id in colleagues ? colleagues[id as keyof typeof colleagues].name : '' })
     const row: Record<string, unknown> = { prospectId: opportunity.id, companyId: company.id, contactId: contact.id }
     const truncatedFields: string[] = []

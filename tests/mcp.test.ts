@@ -8,8 +8,12 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import type { Database, Queryable, Row } from '../lib/crm/database'
 import type { ColleagueId, MemberRole } from '../lib/types'
 import { actionSchemas, calendarDate } from '../lib/crm/contracts'
-import { commitAction, previewAction, getRecord, searchRecords, safeError,
+import { commitAction, previewAction, generatedId, getRecord, listJournal, searchRecords, safeError,
   previewBulkOutreach, commitBulkOutreach, getBulkResult } from '../lib/crm/service'
+// The Journal's own write path, used here exactly as the composer uses it, so
+// a person-written entry in a fixture is the real thing rather than four rows
+// inserted by hand.
+import { createEntry } from '../lib/journal/service'
 import { createCrmMcpServer } from '../lib/mcp/server'
 import type { CodeIdentity, Principal } from '../lib/mcp/oauth'
 import { authenticateBearer, exchangeToken, issueCode, revokeToken, validateAuthorization, authorizationMetadata } from '../lib/mcp/oauth'
@@ -185,6 +189,19 @@ after(async () => { await pg.close() })
 test('export matches the CSV builder, filters contacted stages, and preserves provenance', async () => {
   const saved = await commitAction(db, 'log_outreach', { ...outreach(), stage: 'Lost' }, actor)
   const id = (saved.record as Row).id as string
+  // Decision 13. The outreach this prospect was born from is a Journal entry
+  // now, but a system one: Donna restating what crm_interactions already
+  // holds. The note columns count what a person wrote, so the fixture says one
+  // thing in somebody's own words and the assertions below prove the system
+  // entry standing beside it is not counted as a second.
+  const written = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+    { requestKey: randomUUID(), text: 'Anna asked for a written quote before the summer.', links: [{ type: 'opportunity', id }] })
+  assert.equal(written.ok, true)
+  const linked = await db.query<{ origin: string }>(
+    `select e.origin from journal_entries e
+       join journal_entry_links l on l.entry_id = e.id and l.organization_id = e.organization_id
+      where e.organization_id = $1 and l.opportunity_id = $2 order by e.origin`, [KHYTE, id])
+  assert.deepEqual(linked.map(row => row.origin), ['person', 'system'], 'both entries are linked to this prospect')
   await db.query('delete from crm_events where subject_id=$1', [id])
   for (const kind of ['prospect_contacted', 'meeting_booked']) {
     await db.query("insert into crm_events (organization_id, kind, subject_id, detail, occurred_at) values ($1,$2::crm_event_kind,$3,'{\"backfilled\":true}'::jsonb,'2026-08-18T00:00:00+02:00')", [KHYTE, kind, id])
@@ -198,8 +215,10 @@ test('export matches the CSV builder, filters contacted stages, and preserves pr
   assert.equal(row.eventDayCount, '1')
   assert.equal(row.daysContactedToMeeting, undefined)
   assert.equal(row.exportedOn, '2026-09-10')
+  // Two entries are linked to this prospect; one of them is a note.
   assert.equal(row.noteCount, '1')
-  assert.ok(row.noteHistory)
+  assert.ok(String(row.noteHistory).includes('Anna asked for a written quote before the summer.'))
+  assert.ok(!String(row.noteHistory).includes('Sent an introduction.'), 'a system entry is not note_history')
   const defaults = await exportProspects(db, { stages: ['Lost'] }, actor)
   assert.equal(defaults.rows.find(row => row.prospectId === id)?.noteHistory, undefined)
   assert.equal((await exportProspects(db, { stages: ['New'] }, actor)).rows.length, 0)
@@ -210,10 +229,58 @@ test('export matches the CSV builder, filters contacted stages, and preserves pr
   const [opp] = await db.query('select *, last_interaction::text as last_interaction, follow_up_date::text as follow_up_date from opportunities where id=$1', [id])
   const [company] = await db.query('select * from companies where id=$1', [opp.company_id])
   const [contact] = await db.query('select * from contacts where id=$1', [opp.contact_id])
-  const [csv] = buildExportRows([{ opportunity: fromOpportunityRow(opp as never), company: fromCompanyRow(company as never), contact: fromContactRow(contact as never) }], { colleagueName: () => 'Erik', today: new Date(2026, 8, 10) })
+  const [csv] = buildExportRows([{ opportunity: fromOpportunityRow(opp as never), company: fromCompanyRow(company as never), contact: fromContactRow(contact as never) }], { journal: {}, colleagueName: () => 'Erik', today: new Date(2026, 8, 10) })
   assert.equal(row.company, csv.company)
   assert.equal(row.lastContacted, csv.lastContacted)
   assert.equal(row.daysSinceContact, csv.daysSinceContact)
+})
+
+test('an unreadable Journal blanks the note columns and says so, rather than reporting zero', async () => {
+  const saved = await commitAction(db, 'log_outreach', outreach(), actor)
+  const id = (saved.record as Row).id as string
+  const { buildExportRows, toCSV } = await import('../lib/export-prospects')
+  const { fromOpportunityRow, fromCompanyRow, fromContactRow } = await import('../lib/db/mappers')
+  const [opp] = await db.query('select *, last_interaction::text as last_interaction, follow_up_date::text as follow_up_date from opportunities where id=$1', [id])
+  const [company] = await db.query('select * from companies where id=$1', [opp.company_id])
+  const [contact] = await db.query('select * from contacts where id=$1', [opp.contact_id])
+  const source = [{ opportunity: fromOpportunityRow(opp as never), company: fromCompanyRow(company as never), contact: fromContactRow(contact as never) }]
+  const today = new Date(2026, 8, 10)
+  const written = {
+    [id]: [
+      { id: randomUUID(), body: 'Anna asked for a quote.', createdAt: '2026-08-19T09:00:00.000Z', occurredOn: '2026-08-19' },
+      { id: randomUUID(), body: 'Anna called back.', createdAt: '2026-08-20T09:00:00.000Z', occurredOn: '2026-08-20' },
+    ],
+  }
+
+  // What a readable Journal says ...
+  const [read] = buildExportRows(source, { journal: written, colleagueName: () => 'Erik', today })
+  assert.equal(read.journalQuality, 'ok')
+  assert.equal(read.noteCount, '2')
+  assert.equal(read.lastNoteDate, '2026-08-20')
+  assert.ok(read.noteHistory.includes('Anna called back.'))
+
+  // ... and what a Journal nobody could read says, which is not '0'. A caller
+  // whose read failed passes {} - the same argument either way - so the file
+  // would otherwise be word for word a prospect nobody has written about.
+  const [gap] = buildExportRows(source, { journal: {}, journalQuality: 'unavailable', colleagueName: () => 'Erik', today })
+  assert.equal(gap.journalQuality, 'unavailable')
+  assert.equal(gap.noteCount, '', 'a 0 here is a claim this row cannot make')
+  assert.equal(gap.lastNoteDate, '')
+  assert.equal(gap.noteHistory, '')
+  assert.equal(Number(gap.engagementDepth), Number(read.engagementDepth) - 1,
+    'the person-written-entry point is dropped, not scored as absent')
+
+  // The column travels beside history_quality, the degradation it mirrors.
+  const header = toCSV([]).split('\r\n')[0].split(',').map(field => field.slice(1, -1))
+  assert.equal(header[header.indexOf('history_quality') + 1], 'journal_quality')
+  assert.ok((EXPORT_GROUPS.provenance as readonly string[]).includes('journalQuality'))
+
+  // The MCP export has no degraded state to report: its Journal read is not
+  // wrapped the way the event read is, so it either succeeds or the whole call
+  // fails before a row is built.
+  const page = await exportProspects(db, { fields: ['written'], asOf: '2026-09-10' }, actor)
+  assert.ok(page.rows.length)
+  assert.ok(page.rows.every(row => row.journalQuality === 'ok'))
 })
 
 test('export cursor survives tied dates and edits without skipping remaining records', async () => {
@@ -342,8 +409,33 @@ test('outreach saves linked records and history, keeps owner and latest date, de
   assert.equal(record.stage, 'Contacted')
   assert.equal(record.followedUpBy, 'erik')
   assert.equal((saved.interactions as Row[]).length, 1)
-  assert.equal((saved.notes as Row[]).length, 1)
+  // The timeline line is a Journal entry now (decision 4), written through the
+  // shared service inside the same transaction: Donna's own words about work a
+  // colleague did, so `origin: system` and `performer: erik`.
+  const entry = (saved.journal as { entries: Row[] }).entries
+  assert.equal(entry.length, 1)
+  assert.equal(entry[0].origin, 'system')
+  assert.equal(entry[0].performer, 'erik')
+  assert.equal(entry[0].body, a.summary)
+  assert.equal(entry[0].occurredOn, a.occurredOn)
+  assert.equal(entry[0].occurredPrecision, 'day')
+  assert.equal(entry[0].id, generatedId(a.requestId, 'note'))
+  assert.equal(saved.notes, undefined, 'the notes table is no longer read')
+  // The rows behind it, under the ids the requestId derives so a retry rebuilds
+  // exactly these and not a second set.
+  const [capture] = await db.query<{ id: string; source: string; request_key: string; author_id: string }>(
+    'select id, source, request_key, author_id from captures where organization_id = $1 and request_key = $2', [KHYTE, a.requestId])
+  assert.equal(capture.id, generatedId(a.requestId, 'capture'))
+  assert.equal(capture.source, 'mcp')
+  assert.equal(capture.request_key, a.requestId)
+  assert.equal(capture.author_id, actor.userId, 'the author is the account behind the connection')
+  const entries = () => db.query('select id from journal_entries where organization_id = $1 and capture_id = $2', [KHYTE, capture.id])
+  assert.deepEqual((await entries()).map(row => row.id), [generatedId(a.requestId, 'note')])
+  assert.deepEqual((await db.query<{ target_type: string }>(
+    'select target_type from journal_entry_links where organization_id = $1 and entry_id = $2 order by target_type',
+    [KHYTE, generatedId(a.requestId, 'note')])).map(row => row.target_type), ['company', 'interaction', 'opportunity'])
   assert.equal((await commitAction(db, 'log_outreach', a, actor)).status, 'already_saved')
+  assert.equal((await entries()).length, 1, 'a replayed requestId writes no second entry')
   const older = { requestId: randomUUID(), target: { kind: 'existing', opportunityId: record.id, expectedVersion: saved.version },
     occurredOn: '2026-08-17', channel: 'phone', followedUpBy: 'hai', summary: 'Hai made the earlier call.', tags: ['call'] }
   const updated = await commitAction(db, 'log_outreach', older, actor)
@@ -360,7 +452,7 @@ test('outreach saves linked records and history, keeps owner and latest date, de
   assert.equal((linkedTask.record as Row).relatedCompanyId, record.companyId)
 })
 
-test('transaction failure rolls back company, contact, prospect, note, event and receipt', async () => {
+test('transaction failure rolls back company, contact, prospect, journal entry, event and receipt', async () => {
   const a = outreach()
   const failing: Database = { ...db, transaction: run => db.transaction(tx => run({
     async query<T extends Row>(sql: string, values: unknown[] = []) {
@@ -371,7 +463,167 @@ test('transaction failure rolls back company, contact, prospect, note, event and
   await assert.rejects(commitAction(failing, 'log_outreach', a, actor), /simulated/)
   assert.equal((await db.query('select id from companies where name = $1', [a.target.company.name])).length, 0)
   assert.equal((await db.query('select request_id from crm_tool_receipts where request_id = $1', [a.requestId])).length, 0)
+  assert.equal((await db.query('select id from captures where organization_id = $1 and request_key = $2', [KHYTE, a.requestId])).length, 0,
+    'the capture rolls back with everything else, which is what frees the key for the retry below')
   assert.equal((await commitAction(db, 'log_outreach', a, actor)).status, 'saved')
+})
+
+test('a previewed outreach lists the Journal entry it would write and writes nothing', async () => {
+  const a = outreach()
+  const preview = await previewAction(db, 'log_outreach', a, actor)
+  const change = preview.changes.find(item => item.entity === 'journal_entry')
+  assert.ok(change, 'the preview must name the entry, or the receipt would describe a write the caller never saw')
+  assert.equal(change.operation, 'create')
+  assert.equal(change.id, generatedId(a.requestId, 'note'))
+  assert.equal(change.fields.body, a.summary)
+  assert.equal(change.fields.origin, 'system')
+  assert.equal(change.fields.kind, 'update')
+  assert.equal(change.fields.occurredOn, a.occurredOn)
+  assert.equal(change.fields.performer, 'erik')
+  // A preview is a read. plan.after is built but never awaited.
+  assert.equal((await db.query('select id from captures where organization_id = $1 and request_key = $2', [KHYTE, a.requestId])).length, 0)
+  assert.equal((await db.query('select id from journal_entries where organization_id = $1 and id = $2', [KHYTE, generatedId(a.requestId, 'note')])).length, 0)
+  // And what the commit receipts is the same change, field for field.
+  const saved = await commitAction(db, 'log_outreach', a, actor)
+  assert.deepEqual((saved.changes as Row[]).find(item => item.entity === 'journal_entry'), change as unknown as Row)
+})
+
+test('an outreach whose request key already belongs to a typed entry saves nothing at all', async () => {
+  const prospect = await commitAction(db, 'log_outreach', outreach(), actor)
+  const record = prospect.record as Row
+  const requestId = randomUUID()
+  // Somebody typed something else under this key first. The MCP path derives
+  // its capture id from the same requestId, so the collision is real rather
+  // than contrived — and the entry that holds the key is not the one the tool
+  // is about to claim it wrote.
+  const held = 'A typed entry that took this key first.'
+  const taken = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+    { requestKey: requestId, text: held })
+  assert.equal(taken.ok, true)
+
+  const summary = 'Outreach that must not survive its refused entry.'
+  await assert.rejects(commitAction(db, 'log_outreach', {
+    requestId, target: { kind: 'existing', opportunityId: record.id, expectedVersion: prospect.version },
+    occurredOn: '2026-08-19', channel: 'phone', summary, followedUpBy: 'hai', tags: [],
+  }, actor), failsWith('journal_write_failed'))
+
+  // No interaction, no prospect change, no receipt: the refusal took the whole
+  // transaction with it rather than leaving outreach the Journal never saw.
+  assert.equal((await db.query('select id from crm_interactions where organization_id = $1 and summary = $2', [KHYTE, summary])).length, 0)
+  assert.equal((await db.query('select request_id from crm_tool_receipts where request_id = $1', [requestId])).length, 0)
+  const after = await getRecord(db, { entity: 'prospect', id: record.id }, actor)
+  assert.equal(after.version, prospect.version, 'the prospect was never written')
+  assert.equal((after.interactions as Row[]).length, (prospect.interactions as Row[]).length)
+  // The entry that held the key is untouched by the attempt.
+  const [existing] = await db.query<{ body: string; origin: string }>(
+    `select e.body, e.origin from journal_entries e
+       join captures c on c.id = e.capture_id and c.organization_id = e.organization_id
+      where e.organization_id = $1 and c.request_key = $2`, [KHYTE, requestId])
+  assert.equal(existing.body, held)
+  assert.equal(existing.origin, 'person')
+})
+
+test('an outreach whose request key is held by a byte-identical typed entry saves nothing at all', async () => {
+  const prospect = await commitAction(db, 'log_outreach', outreach(), actor)
+  const record = prospect.record as Row
+  const requestId = randomUUID()
+  // The near miss the refusal above does not catch. Same account, same key,
+  // same text - so writeEntry finds the key taken by a capture it reads as this
+  // caller's own retry and answers { ok: true, replayed: true } with the TYPED
+  // entry. Nothing is written under generatedId(requestId, 'note'), which is the
+  // id the preview and the receipt both name.
+  const summary = 'Rang Anna about the renewal.'
+  const taken = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+    { requestKey: requestId, text: summary })
+  assert.equal(taken.ok, true)
+
+  await assert.rejects(commitAction(db, 'log_outreach', {
+    requestId, target: { kind: 'existing', opportunityId: record.id, expectedVersion: prospect.version },
+    occurredOn: '2026-08-19', channel: 'phone', summary, followedUpBy: 'hai', tags: [],
+  }, actor), failsWith('journal_write_failed'))
+
+  // No interaction, no prospect change, no receipt - and above all no receipt
+  // claiming a journal_entry create for an id that holds nothing.
+  assert.equal((await db.query('select id from crm_interactions where organization_id = $1 and summary = $2', [KHYTE, summary])).length, 0)
+  assert.equal((await db.query('select request_id from crm_tool_receipts where request_id = $1', [requestId])).length, 0)
+  assert.equal((await db.query('select id from journal_entries where organization_id = $1 and id = $2', [KHYTE, generatedId(requestId, 'note')])).length, 0,
+    'the derived entry id the receipt would have named was never written')
+  const after = await getRecord(db, { entity: 'prospect', id: record.id }, actor)
+  assert.equal(after.version, prospect.version, 'the prospect was never written')
+  assert.equal((after.interactions as Row[]).length, (prospect.interactions as Row[]).length)
+  // The typed entry keeps the key, its text and its own id.
+  const [existing] = await db.query<{ id: string; body: string; origin: string }>(
+    `select e.id, e.body, e.origin from journal_entries e
+       join captures c on c.id = e.capture_id and c.organization_id = e.organization_id
+      where e.organization_id = $1 and c.request_key = $2`, [KHYTE, requestId])
+  assert.equal(existing.body, summary)
+  assert.equal(existing.origin, 'person')
+  assert.notEqual(existing.id, generatedId(requestId, 'note'))
+})
+
+test('a receipt carries the record, never the Journal text filed against it', async () => {
+  const first = await commitAction(db, 'log_outreach', outreach(), actor)
+  const id = (first.record as Row).id as string
+  const secret = `Private context nobody receipted: ${randomUUID()}`
+  const written = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+    { requestKey: randomUUID(), text: secret, links: [{ type: 'opportunity', id }] })
+  assert.equal(written.ok, true)
+
+  const second = await commitAction(db, 'log_outreach', { requestId: randomUUID(),
+    target: { kind: 'existing', opportunityId: id, expectedVersion: first.version },
+    occurredOn: '2026-08-19', channel: 'email', summary: 'A second touch.', followedUpBy: 'erik', tags: [] }, actor)
+  // The tool response carries the Journal …
+  assert.ok((second.journal as { entries: Row[] }).entries.some(item => item.body === secret))
+  // … and the row that outlives it does not. A receipt is never rewritten, so
+  // a copy of an entry here would survive that entry's deletion untouched.
+  const [stored] = await db.query<{ result: string }>(
+    'select result::text as result from crm_tool_receipts where request_id = $1 and organization_id = $2', [second.requestId, KHYTE])
+  assert.ok(!stored.result.includes(secret), 'no receipt may hold Journal text')
+  const replayed = JSON.parse(stored.result) as Row
+  assert.equal(replayed.journal, undefined)
+  assert.equal(replayed.notes, undefined, "Stage 1's receipted notes are retired by the same change")
+  assert.ok(replayed.record && replayed.interactions, 'the record itself is still receipted in full')
+})
+
+test('list_journal pages a prospect Journal with its cursor, and get_crm_record carries the first page', async () => {
+  const saved = await commitAction(db, 'log_outreach', outreach(), actor)
+  const id = (saved.record as Row).id as string
+  const bodies: string[] = []
+  for (let index = 0; index < 3; index += 1) {
+    const text = `Journal page entry ${index} ${randomUUID()}`
+    bodies.push(text)
+    const written = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+      { requestKey: randomUUID(), text, links: [{ type: 'opportunity', id }] })
+    assert.equal(written.ok, true)
+  }
+
+  // Three typed entries and the system outreach line: two pages of two.
+  const first = await listJournal(db, { target: { entity: 'prospect', id }, limit: 2 }, actor)
+  assert.equal((first.entries as Row[]).length, 2)
+  assert.ok(first.nextCursor)
+  assert.equal((first.coverage as Row).hasMore, true)
+  const second = await listJournal(db, { target: { entity: 'prospect', id }, limit: 2, cursor: first.nextCursor }, actor)
+  assert.equal((second.entries as Row[]).length, 2)
+  assert.equal(second.nextCursor, null)
+  assert.equal((second.coverage as Row).hasMore, false)
+  const walked = [...(first.entries as Row[]), ...(second.entries as Row[])].map(item => item.id)
+  assert.equal(new Set(walked).size, 4, 'the cursor walks without repeating or skipping a row')
+  assert.equal((await listJournal(db, { target: { entity: 'prospect', id }, cursor: 'not-a-cursor' }, actor).catch(safeError)).code, 'journal_invalid')
+
+  const record = await getRecord(db, { entity: 'prospect', id }, actor)
+  const journal = record.journal as { entries: Row[]; nextCursor: string | null; coverage: Row }
+  assert.equal(journal.entries.length, 4)
+  assert.equal(journal.nextCursor, null)
+  assert.equal(journal.coverage.returned, 4)
+  for (const body of bodies) assert.ok(journal.entries.some(item => item.body === body), body)
+  // Exactly the fields the tool contract names — no organizationId, captureId
+  // or migration bookkeeping leaking out of the view.
+  assert.deepEqual(Object.keys(journal.entries[0]).sort(),
+    ['authorId', 'body', 'createdAt', 'id', 'kind', 'occurredAt', 'occurredOn', 'occurredPrecision', 'origin', 'performer', 'revision', 'title'])
+  // journalCursor pages the prospect read the same way.
+  const oneDeep = await listJournal(db, { target: { entity: 'prospect', id }, limit: 1 }, actor)
+  const paged = await getRecord(db, { entity: 'prospect', id, journalCursor: oneDeep.nextCursor }, actor)
+  assert.equal((paged.journal as { entries: Row[] }).entries.length, 3)
 })
 
 test('matching blocks company/contact duplicates and task links across companies', async () => {
@@ -468,6 +720,15 @@ test('bulk commit saves ready rows, skips unresolved ones, and replays without d
 
   const created = await db.query("select count(*)::int n from companies where name like 'Bulk Commit%'")
   assert.equal(created[0].n, 2)
+
+  // No Journal page per row. A batch keeps a status and an id and throws the
+  // rest away, so reading one per row - inside the transaction, under the tools
+  // lock - was work nobody could ever see.
+  for (const row of first.saved) assert.equal((row as Row).journal, undefined)
+  const quiet = await commitAction(db, 'log_outreach', outreach(), actor, { includeJournal: false })
+  assert.equal(quiet.journal, undefined, 'includeJournal: false is what the batch passes')
+  assert.ok(quiet.record, 'and it changes nothing else about the answer')
+  assert.equal(quiet.status, 'saved')
 
   // Replaying the same batch is idempotent: same rows, no new records.
   const second = await commitBulkOutreach(db, body, actor)
@@ -589,7 +850,7 @@ test('MCP client discovers annotated schemas, previews then saves a task, and en
   await server.connect(serverTransport); await client.connect(clientTransport)
   try {
     const list = await client.listTools()
-    assert.equal(list.tools.length, 13)
+    assert.equal(list.tools.length, 14)
     assert.equal(list.tools.find(t => t.name === 'export_prospects')?.annotations?.readOnlyHint, true)
     assert.ok((await client.listResources()).resources.some(r => r.uri === 'khyte://export-schema'))
     assert.ok((await client.readResource({ uri: 'khyte://export-schema' })).contents.length)
@@ -632,7 +893,7 @@ test('stateless Streamable HTTP supports fresh servers for initialization, disco
     const data = await response.json()
     assert.equal(data.error, undefined)
     if (call.method === 'initialize') assert.equal(data.result.serverInfo.name, 'khyte-crm')
-    if (call.method === 'tools/list') assert.equal(data.result.tools.length, 13)
+    if (call.method === 'tools/list') assert.equal(data.result.tools.length, 14)
     if (call.method === 'tools/call') assert.equal(data.result.structuredContent.timezone, 'Europe/Stockholm')
   }
 })
@@ -658,6 +919,15 @@ test('organizations are invisible to each other through every read, write, recei
   assert.ok((search.results as Row[]).every(r => (r.matches as Row[]).length === 0), 'search must not leak a match across organizations')
   assert.equal((await exportProspects(db, { countOnly: true }, otherActor)).total, 0)
   assert.ok(!(await exportProspects(db, { fields: ['identity'] }, otherActor)).rows.some(row => row.prospectId === record.id))
+
+  // The Journal answers the same way. A prospect id that is not theirs is not
+  // found, and the whole-workspace feed — which takes no target at all — is
+  // still only ever their own organization's entries.
+  const ours = ((await getRecord(db, { entity: 'prospect', id: record.id }, actor)).journal as { entries: Row[] }).entries.map(item => item.id)
+  assert.ok(ours.length, 'the logged outreach left an entry there to hide')
+  await assert.rejects(listJournal(db, { target: { entity: 'prospect', id: record.id } }, otherActor), failsWith('not_found'))
+  await assert.rejects(listJournal(db, { target: { entity: 'company', id: record.companyId } }, otherActor), failsWith('not_found'))
+  assert.ok(!((await listJournal(db, {}, otherActor)).entries as Row[]).some(item => ours.includes(item.id)))
 
   // Writes against the other organization's ids fail the same way.
   await assert.rejects(commitAction(db, 'assign_task', { requestId: randomUUID(), taskId: (savedTask.record as Row).id, expectedVersion: savedTask.version, assignee: 'abdi' }, otherActor), failsWith('not_found'))
@@ -688,6 +958,7 @@ test('organizations are invisible to each other through every read, write, recei
   await server.connect(st); await client.connect(ct)
   try {
     assert.equal((await client.callTool({ name: 'get_crm_record', arguments: { entity: 'prospect', id: record.id } })).isError, true)
+    assert.equal((await client.callTool({ name: 'list_journal', arguments: { target: { entity: 'prospect', id: record.id } } })).isError, true)
     const receipt = await client.callTool({ name: 'get_operation_result', arguments: { requestId: leadInput.requestId } })
     assert.equal((receipt.structuredContent as Row).status, 'not_found')
     const bulk = await client.callTool({ name: 'get_bulk_operation_result', arguments: { batchId } })

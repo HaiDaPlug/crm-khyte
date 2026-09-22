@@ -84,24 +84,6 @@ export interface Lead {
   createdAt: string
 }
 
-export interface Note {
-  id: string
-  opportunityId?: string
-  companyId?: string
-  raw: string
-  createdAt: string
-  aiExtracted?: {
-    company?: string
-    contact?: string
-    suggestedStage?: Stage
-    painPoints?: string[]
-    nextStep?: string
-    followUpDate?: string
-  }
-  dismissed?: boolean
-  applied?: boolean
-}
-
 /**
  * A shared strategy board — the thing a set of headline lanes belongs to.
  *
@@ -432,7 +414,6 @@ export interface CRMSnapshot {
   contacts: Contact[]
   opportunities: Opportunity[]
   leads: Lead[]
-  notes: Note[]
   strategyBoards: StrategyBoard[]
   /** Which opportunities share which board — see `StrategyBoard`. */
   strategyBoardOpportunities: { boardId: string; opportunityId: string }[]

@@ -268,6 +268,33 @@ sharing a working set now that they can belong to different people.
 
 ---
 
+## Journal (Donna Stage 2)
+
+**Since 2026-09-22 the Journal has its own tables and `notes` is retired.**
+The full design is in [journal.md](journal.md); the short version:
+
+- `captures`, `journal_entries`, `journal_entry_revisions` and
+  `journal_entry_links` are the new tables (`20261001120000_journal.sql`).
+  Every one carries `organization_id` with no default, a `(id, organization_id)`
+  key where it is a parent, and composite same-organization foreign keys to
+  every record it links — `on delete set null (<column>)`, so a deleted record
+  leaves a tombstone link rather than taking the entry with it. RLS is enabled
+  with the same membership policy as every other table. `leads`, `tasks` and
+  `crm_interactions` gained the `(id, organization_id)` key they lacked.
+- Reads and writes go through `lib/journal/service.ts` over the direct pool
+  (`SUPABASE_DB_URL`), never through PostgREST. Every statement names
+  `organization_id` and the scoping lint checks the file. RLS is dormant here
+  as everywhere else.
+- The Journal is not in the snapshot. It has its own paginated read path and
+  its own version signal (`/api/journal/version`).
+- `notes` is left standing, read and written by nothing in the new build,
+  until `supabase/followups/20261101120000_drop_notes.sql` is promoted — only
+  after the deployed build is verified and after the rollout cleanup has run.
+  That follow-up re-runs `public.journal_migrate_notes()` to pick up rows an
+  old build wrote in the meantime, refuses to drop while any note lacks an
+  entry, then drops the table and the function.
+- Deploy order and rollback: [journal.md](journal.md).
+
 ## Known gaps
 
 - ~~**The Server Actions are unauthenticated.**~~ Fixed twice over: the

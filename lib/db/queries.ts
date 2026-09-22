@@ -20,7 +20,6 @@ import { mockCompanies } from '@/lib/mock-data/companies'
 import { mockContacts } from '@/lib/mock-data/contacts'
 import { mockOpportunities } from '@/lib/mock-data/opportunities'
 import { mockLeads } from '@/lib/mock-data/leads'
-import { mockNotes } from '@/lib/mock-data/notes'
 import {
   mockStrategyBoardOpportunities,
   mockStrategyBoards,
@@ -36,7 +35,6 @@ import {
   fromGoalMetricRow,
   fromGoalRow,
   fromLeadRow,
-  fromNoteRow,
   fromOpportunityRow,
   fromStrategyBoardOpportunityRow,
   fromStrategyBoardRow,
@@ -51,7 +49,6 @@ import type {
   GoalMetricRow,
   GoalRow,
   LeadRow,
-  NoteRow,
   OpportunityRow,
   StrategyBoardOpportunityRow,
   StrategyBoardRow,
@@ -119,7 +116,6 @@ async function readSnapshot(context: AuthContext): Promise<CRMSnapshot> {
     contacts,
     opportunities,
     leads,
-    notes,
     strategyBoards,
     strategyBoardOpportunities,
     strategyColumns,
@@ -136,7 +132,6 @@ async function readSnapshot(context: AuthContext): Promise<CRMSnapshot> {
       sql`select * from contacts where organization_id = ${organizationId} order by created_at`,
       sql`select * from opportunities where organization_id = ${organizationId} order by stage, sort_order`,
       sql`select * from leads where organization_id = ${organizationId} order by created_at desc`,
-      sql`select * from notes where organization_id = ${organizationId} order by created_at desc`,
       sql`select * from strategy_boards where organization_id = ${organizationId} order by created_at`,
       sql`select * from strategy_board_opportunities where organization_id = ${organizationId}`,
       sql`select * from strategy_columns where organization_id = ${organizationId} order by board_id, sort_order`,
@@ -151,7 +146,6 @@ async function readSnapshot(context: AuthContext): Promise<CRMSnapshot> {
     contacts: (contacts as unknown as ContactRow[]).map(fromContactRow),
     opportunities: (opportunities as unknown as OpportunityRow[]).map(fromOpportunityRow),
     leads: (leads as unknown as LeadRow[]).map(fromLeadRow),
-    notes: (notes as unknown as NoteRow[]).map(fromNoteRow),
     strategyBoards: (strategyBoards as unknown as StrategyBoardRow[]).map(fromStrategyBoardRow),
     strategyBoardOpportunities: (
       strategyBoardOpportunities as unknown as StrategyBoardOpportunityRow[]
@@ -170,7 +164,7 @@ async function readSnapshot(context: AuthContext): Promise<CRMSnapshot> {
  *
  * Deliberately separate from loadSnapshot rather than another key on it. The
  * wallpaper route at /goals/display/[colleague] repaints on a timer, and it
- * has no use for companies, contacts, opportunities, notes or the strategy
+ * has no use for companies, contacts, opportunities or the strategy
  * boards — folding this into the snapshot would drag the entire CRM working
  * set through Postgres on every refresh, forever, for three small tables.
  *
@@ -450,8 +444,6 @@ export async function loadSnapshotVersion(organizationId: string): Promise<strin
         union all
         select updated_at from leads where organization_id = ${organizationId}
         union all
-        select updated_at from notes where organization_id = ${organizationId}
-        union all
         select updated_at from strategy_boards where organization_id = ${organizationId}
         union all
         select created_at as updated_at from strategy_board_opportunities where organization_id = ${organizationId}
@@ -466,6 +458,58 @@ export async function loadSnapshotVersion(organizationId: string): Promise<strin
         -- every open browser the same way a pipeline edit does.
         select updated_at from organization_members where organization_id = ${organizationId}
       ) as working_set
+    `
+  )
+
+  const { stamp, total } = row as unknown as { stamp: string; total: string | number }
+  return `${stamp}:${total}`
+}
+
+/**
+ * A stamp that changes whenever anything in one organization's Journal does.
+ *
+ * WHY THE JOURNAL HAS ITS OWN SIGNAL rather than joining the union above. The
+ * two are read by different things at different rates: the snapshot stamp
+ * decides whether to pull the whole working set, and the Journal's decides
+ * whether to re-read the first page of whichever feeds happen to be on screen.
+ * Folded together, every entry somebody typed would drag the entire CRM
+ * working set across the wire, and every drag of a pipeline card would re-read
+ * three feeds. Journal entries are never part of the snapshot payload, so a
+ * shared stamp would be a signal about data the snapshot does not carry.
+ *
+ * The construction is `loadGoalsVersion`'s, for its reasons: `max(updated_at)`
+ * alone misses a deletion, `count(*)` alone misses an edit, and every arm is
+ * filtered by organization on its own because the union has no column of its
+ * own to filter on — an unscoped arm would wake this browser on a stranger's
+ * entry and leak how much they write.
+ *
+ * Three tables, not four. `journal_entry_revisions` is append-only and is
+ * written in the same transaction as the entry whose wording it records, so it
+ * can never move without `journal_entries` moving; `captures` is here because
+ * a delete redacts the capture too.
+ */
+export async function loadJournalVersion(organizationId: string): Promise<string> {
+  await connection()
+
+  // Decision 12: without a database the Journal is unavailable rather than
+  // empty, and a constant stamp is what stops the poller asking about it.
+  if (!isSupabaseConfigured || !isDirectDbConfigured) return 'demo'
+
+  const sql = getDb()
+
+  const [row] = await withDbErrors(
+    'journal version read',
+    () => sql`
+      select
+        coalesce(max(updated_at)::text, '') as stamp,
+        count(*)                            as total
+      from (
+        select updated_at from captures where organization_id = ${organizationId}
+        union all
+        select updated_at from journal_entries where organization_id = ${organizationId}
+        union all
+        select updated_at from journal_entry_links where organization_id = ${organizationId}
+      ) as journal
     `
   )
 
@@ -524,7 +568,6 @@ function demoSnapshot(context: AuthContext): CRMSnapshot {
     contacts: mockContacts,
     opportunities: mockOpportunities,
     leads: mockLeads,
-    notes: mockNotes,
     strategyBoards: mockStrategyBoards,
     strategyBoardOpportunities: mockStrategyBoardOpportunities,
     strategyColumns: mockStrategyColumns,
@@ -539,7 +582,6 @@ export type {
   CompanyRow,
   ContactRow,
   LeadRow,
-  NoteRow,
   OpportunityRow,
   StrategyBoardOpportunityRow,
   StrategyBoardRow,

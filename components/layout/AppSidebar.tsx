@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard,
+  NotebookPen,
   Sparkles,
   Table2,
   Kanban,
@@ -19,6 +20,7 @@ import {
   LogOut,
 } from 'lucide-react'
 import { logout } from '@/app/actions/auth'
+import { clearDraftsFor } from '@/lib/journal/drafts'
 import { colleagues } from '@/lib/colleagues'
 import type { ColleagueId } from '@/lib/types'
 import { cn } from '@/lib/utils'
@@ -28,6 +30,7 @@ import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export const navItems = [
   { href: '/dashboard', label: 'dashboard', icon: LayoutDashboard },
+  { href: '/journal', label: 'journal', icon: NotebookPen },
   { href: '/leads', label: 'leads', icon: Sparkles },
   { href: '/prospects', label: 'prospects', icon: Table2 },
   { href: '/pipeline', label: 'pipeline', icon: Kanban },
@@ -229,7 +232,14 @@ export function AppSidebar() {
             <p className="truncate font-mono text-[10.5px] text-muted">{organization.name}</p>
           </div>
         )}
-        <form action={logout}>
+        {/*
+          The unsaved Journal drafts of whoever is leaving go with them.
+          A handler, not a replacement for the form: the action still posts,
+          still revokes the session row and still works before hydration —
+          this only runs first, when scripts are there to run it. Nothing is
+          prevented, so a failure to clear cannot block the sign-out.
+        */}
+        <form action={logout} onSubmit={() => clearDraftsFor(organization.id, viewer.userId)}>
           <button
             type="submit"
             title={t.nav.signOut}

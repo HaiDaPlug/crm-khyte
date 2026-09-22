@@ -1,9 +1,45 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-09-20
+**Date:** 2026-09-22
 **Phase:** MVP + persistence + derived direction board + cross-browser live
-sync + **organization foundation** (Supabase live; individual accounts,
-organization-scoped data — Donna Stage 1, on `feat/organization-foundation`)
+sync + **organization foundation** (Donna Stage 1, PR #31 to master) +
+**Journal** (durable text capture — Donna Stage 2, on `feat/journal`)
+
+## Session update — Journal and durable text capture, Donna Stage 2 (2026-09-22)
+
+**Notes became the Journal.** This is the second stage of the Donna redesign;
+the record — decisions, data model, write and read paths, migration, deploy
+order, rollback and exit evidence — is [journal.md](journal.md). What it means
+for this document:
+
+- The **Notes** described below — the `notes` table, `NotesTimeline`,
+  `addNote`/`applyNote`/`dismissNote`, `CaptureBox`, `SuggestionPreviewCard`
+  and the mock extraction — are retired. Text is captured into `captures` and
+  `journal_entries` through `lib/journal/service.ts` and
+  `app/actions/journal.ts`; entries link to records through
+  `journal_entry_links`; every edit writes a revision; deletion redacts the
+  content and keeps the metadata. Old notes were migrated with their ids and
+  their authors honestly unknown; `notes` stands unread until its follow-up
+  drops it.
+- The **dashboard chat** and its microphone are gone. The dashboard hosts the
+  Journal composer and the five most recent entries; `/journal` is a page and a
+  nav item, and takes pipeline's slot on the mobile bottom bar.
+- The **prospect drawer** shows the prospect's Journal — a filtered view of
+  shared entries, not a copy — with an inline composer that links the entry to
+  the prospect. The line written when a next step changes is a system entry.
+- The **snapshot** no longer carries notes. The Journal has its own paginated
+  read, its own version signal (`/api/journal/version`) and a normalized store
+  slice; unsent drafts persist per organization and viewer.
+- **MCP**: `log_outreach` writes its Journal entry inside the same transaction
+  as the interaction; `get_record` returns a first Journal page with a cursor;
+  the new `list_journal` tool pages the Journal; receipts hold no Journal text.
+  The prospect export counts only entries a person wrote.
+- The AI Assistant design section below and [aiLogic.md](aiLogic.md) predate
+  the blueprint and are superseded by it. The data-honesty rule they state —
+  current state from the tables, counts from events — still holds.
+
+Validation and exit evidence are recorded in [journal.md](journal.md); this
+section is the pointer, not the record.
 
 ## Session update — organization foundation, Donna Stage 1 (2026-09-20)
 

@@ -5,7 +5,6 @@ import {
   Company,
   Contact,
   Lead,
-  Note,
   StrategyBoard,
   StrategyCard,
   StrategyColumn,
@@ -21,11 +20,84 @@ import { DEFAULT_SETTINGS } from '@/lib/settings'
 import { newId } from '@/lib/utils'
 import * as api from '@/app/actions/crm'
 import type { ActionResult } from '@/app/actions/crm'
+import * as journalActions from '@/app/actions/journal'
+import type { JournalActionResult, JournalPageActionResult } from '@/app/actions/journal'
+import { CONTEXT_MISMATCH } from '@/lib/actions/scope'
+import type {
+  CreateEntryInput,
+  EditEntryInput,
+  JournalCoverage,
+  JournalEntryView,
+  JournalOrigin,
+  LinkTarget,
+} from '@/lib/journal/contracts'
+import { clearDraftsFor, type DraftStorage, type JournalSurface } from '@/lib/journal/drafts'
 
 export interface Toast {
   id: string
   kind: 'success' | 'error'
   message: string
+}
+
+/**
+ * One rendered list of Journal entries.
+ *
+ * The slice is normalized — entries in one map, views holding ids — because
+ * the same entry is on screen in two places at once: an entry linked to a
+ * prospect shows on `/journal` AND in that prospect's drawer. Held twice, an
+ * edit made in the drawer would leave the global feed showing the old wording
+ * until the next poll, and the two would disagree on screen in the same
+ * second. One copy, many lists of ids, and an edit writes once.
+ *
+ * `targets` and `origins` are the filter this view was read with, kept so a
+ * refresh, a Load more and the "does this new entry belong here" test all ask
+ * the same question the first page asked.
+ */
+export interface JournalViewState {
+  ids: string[]
+  nextCursor: string | null
+  coverage: JournalCoverage | null
+  status: 'idle' | 'loading' | 'error'
+  error?: string
+  targets?: LinkTarget[]
+  origins?: JournalOrigin[]
+}
+
+export interface JournalState {
+  entries: Record<string, JournalEntryView>
+  /** Keyed `dashboard`, `journal`, `prospect:<opportunityId>`. */
+  views: Record<string, JournalViewState>
+}
+
+/**
+ * The Server Actions the Journal half of the store calls.
+ *
+ * Declared as an interface and injectable (see `createCRMStore`) rather than
+ * reached through the static `import * as` the CRM half uses. The CRM actions
+ * can be left alone in tests because every one of them is fired and forgotten
+ * by `persist`; the Journal's are awaited and their results drive what the
+ * store does next — whether a draft survives, which views a new entry lands
+ * in, whether a delete is rolled back — and none of that is observable without
+ * being able to answer as the server. A real call needs a session and a
+ * database, so a seam is the only way those paths are covered at all.
+ *
+ * The shape is the actions' own, so a change to one of them is a type error
+ * here rather than a fake that has quietly drifted from the thing it fakes.
+ */
+export interface JournalApi {
+  createJournalEntry: (input: unknown, scope: ActionScope) => Promise<JournalActionResult>
+  editJournalEntry: (id: string, patch: unknown, scope: ActionScope) => Promise<JournalActionResult>
+  deleteJournalEntry: (id: string, scope: ActionScope) => Promise<JournalActionResult>
+  loadJournalPage: (input: unknown, scope: ActionScope) => Promise<JournalPageActionResult>
+  logNextStepEntry: (opportunityId: string, body: string, scope: ActionScope) => Promise<JournalActionResult>
+}
+
+/** What a caller may hand `createCRMStore` besides the snapshot. Both exist for
+ *  the suite; production passes neither and gets the real action module and
+ *  `localStorage`. */
+export interface CRMStoreOptions {
+  journal?: JournalApi
+  draftStorage?: DraftStorage
 }
 
 /**
@@ -73,7 +145,6 @@ export interface CRMStore {
   companies: Company[]
   contacts: Contact[]
   leads: Lead[]
-  notes: Note[]
   strategyBoards: StrategyBoard[]
   /** Which opportunities share which board. */
   strategyBoardOpportunities: { boardId: string; opportunityId: string }[]
@@ -147,11 +218,81 @@ export interface CRMStore {
   /** Permanent — for prospects created in error or otherwise no longer wanted. */
   removeOpportunity: (opportunityId: string) => void
 
-  // Actions — Notes
-  addNote: (note: Note) => void
-  dismissNote: (noteId: string) => void
-  applyNote: (noteId: string) => void
-  deleteNote: (noteId: string) => void
+  // Actions — Journal
+  /**
+   * The Journal's entries and the lists that render them.
+   *
+   * Deliberately NOT part of the snapshot and never merged by
+   * `applyRemoteSnapshot`. The snapshot is current state — a few hundred rows
+   * that every screen reads — and the Journal is history, which grows without
+   * bound and is read a page at a time. It has its own version signal and its
+   * own poller (components/journal/JournalSync).
+   */
+  journal: JournalState
+  /**
+   * True while somebody is writing in a composer. `refreshJournalViews`
+   * stands down while it is set, so a background poll cannot re-render the
+   * feed under a half-typed sentence.
+   *
+   * It does NOT touch `pauseRemoteSync`, deliberately. That pause exists for
+   * an interaction holding a reference to a row the merge would rebuild — a
+   * pipeline drag. A composer's text is component state in a subtree the CRM
+   * snapshot does not feed, so pausing the snapshot merge while somebody types
+   * would freeze the whole working set for no reason at all.
+   */
+  journalTyping: boolean
+  setJournalTyping: (typing: boolean) => void
+  /** Reads the first page of `key`. `targets` and `limit` are remembered and
+   *  reused by Load more and by a refresh. */
+  loadJournalView: (
+    key: string,
+    options?: { targets?: LinkTarget[]; origins?: JournalOrigin[]; limit?: number }
+  ) => Promise<void>
+  /** The next page of `key`, appended. No-op without a cursor. */
+  loadMoreJournal: (key: string) => Promise<void>
+  /**
+   * Says that a feed for `key` is on screen, and later that it is not.
+   *
+   * Reference-counted, because the same key can be rendered twice at once —
+   * the dashboard's feed and a drawer opened over it both read
+   * `prospect:<id>` — and the first of the two to close must not take the
+   * other's list with it.
+   *
+   * WHY IT EXISTS. The store outlives navigation, so without this every
+   * prospect drawer ever opened leaves a `prospect:<id>` view behind, and the
+   * poller re-reads all of them every twelve seconds for the rest of the
+   * session. Releasing the last reference drops the view's own state; the
+   * entries themselves stay in `journal.entries`, which is one copy each and
+   * cheap, so reopening the drawer renders instantly and then refreshes.
+   */
+  acquireJournalView: (key: string) => void
+  releaseJournalView: (key: string) => void
+  /**
+   * The first page of every view somebody is currently looking at. Skipped
+   * while `journalTyping`.
+   *
+   * MERGES rather than replaces a view that has been loaded-more — see
+   * `readFirstPage` in createCRMStore for why a poller may not cut a reader
+   * back to one page.
+   */
+  refreshJournalViews: () => Promise<void>
+  /**
+   * Writes what a composer is holding. The result is returned rather than
+   * swallowed: only the composer knows whether the draft may be cleared, and
+   * only `{ ok: true }` earns that.
+   */
+  submitCapture: (
+    input: CreateEntryInput,
+    options: { surface: JournalSurface; context?: { links: LinkTarget[]; label: string } }
+  ) => Promise<JournalActionResult>
+  /** An edit. `revision_conflict` and `deleted` come back to the card, which
+   *  has the wording for both. */
+  editJournalEntry: (id: string, patch: EditEntryInput) => Promise<JournalActionResult>
+  /** Optimistic: the entry leaves every view at once and is put back if the
+   *  write fails. */
+  deleteJournalEntry: (id: string) => Promise<JournalActionResult>
+  /** The system line the drawer files when a next step changes. */
+  logNextStep: (opportunityId: string, body: string) => Promise<JournalActionResult>
 
   // Actions — Strategy
   createStrategyBoard: (board: StrategyBoard) => void
@@ -291,7 +432,38 @@ function shallowEqualSettings(a: Settings, b: Settings): boolean {
  * always going to be a problem once auth landed; it is fixed here because the
  * same change fixes hydration.
  */
-export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
+export function createCRMStore(snapshot: CRMSnapshot, options: CRMStoreOptions = {}): CRMStoreApi {
+  /** The real Server Actions unless a caller supplied stand-ins — see JournalApi. */
+  const journalApi: JournalApi = options.journal ?? journalActions
+  /** `undefined` leaves lib/journal/drafts on its own `localStorage` default. */
+  const draftStorage = options.draftStorage
+
+  /**
+   * The read arguments each view was loaded with.
+   *
+   * Kept beside the state rather than in it because nothing renders them and
+   * `JournalViewState` is a contract with the components: a limit in the view
+   * object would be a fourth field every consumer has to ignore. Load more and
+   * refresh read it so the second page and the re-read ask the same question
+   * the first page did.
+   */
+  const journalLimits = new Map<string, number>()
+
+  /**
+   * How many pages each view is holding. Beside the state for the same reason
+   * `journalLimits` is: nothing renders it. A poller refresh reads it to tell
+   * a one-page feed, which it may simply replace, from a feed somebody has
+   * pressed Load more on, which it may not.
+   */
+  const journalPages = new Map<string, number>()
+
+  /**
+   * How many mounted feeds are holding each view — see `acquireJournalView`.
+   * A key with no live reference is a view nobody is looking at, and the
+   * poller leaves it alone.
+   */
+  const journalRefs = new Map<string, number>()
+
   /**
    * Serialises writes in the order the store made them.
    *
@@ -432,6 +604,24 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
     }
 
     /**
+     * This store belongs to a session that no longer exists here.
+     *
+     * One place rather than three `set({ identityChanged: true })` calls,
+     * because since Stage 2 the conclusion has a second consequence: the
+     * unsaved Journal drafts of the identity this store was built for are
+     * dropped. SnapshotSync turns the flag into a reload, and the page that
+     * comes back belongs to somebody else — offering them this person's
+     * half-written sentence, or leaving it in storage for them to find, is
+     * not something a reload should be able to do.
+     */
+    function finishIdentity(): void {
+      if (get().identityChanged) return
+      const { workspace } = get()
+      clearDraftsFor(workspace.organization.id, workspace.viewer.userId, draftStorage)
+      set({ identityChanged: true })
+    }
+
+    /**
      * Fire a write without blocking the caller, recording any failure.
      * Deliberately not awaited — the optimistic update has already landed.
      *
@@ -462,8 +652,8 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             // built on is gone and another has replaced it. The write was
             // refused before it touched anything (see run() in the actions),
             // and this store must not submit again — reload instead of toast.
-            if (result.error === 'context_mismatch') {
-              set({ identityChanged: true })
+            if (result.error === CONTEXT_MISMATCH) {
+              finishIdentity()
               return
             }
             pushToast('error', `${label} — ${result.error}`)
@@ -494,6 +684,221 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             window.dispatchEvent(new CustomEvent('khyte:crm-write'))
           }
         })
+    }
+
+    /* ———— Journal ———— */
+
+    /** A view nobody has read yet. */
+    function emptyView(): JournalViewState {
+      return { ids: [], nextCursor: null, coverage: null, status: 'idle' }
+    }
+
+    /** Replaces fields on one view, leaving the rest of the slice alone. */
+    function patchView(key: string, patch: Partial<JournalViewState>): void {
+      set((state) => ({
+        journal: {
+          ...state.journal,
+          views: { ...state.journal.views, [key]: { ...(state.journal.views[key] ?? emptyView()), ...patch } },
+        },
+      }))
+    }
+
+    /** Files entries into the one map they are held in. Overwrites by id —
+     *  a later read of the same entry is the fresher wording. */
+    function fileEntries(entries: JournalEntryView[]): void {
+      if (entries.length === 0) return
+      set((state) => {
+        const next = { ...state.journal.entries }
+        for (const entry of entries) next[entry.id] = entry
+        return { journal: { ...state.journal, entries: next } }
+      })
+    }
+
+    /**
+     * Does this entry belong in this view?
+     *
+     * The same question the server's `targets` filter answers, asked locally
+     * so a just-written entry appears on the right feeds without a round-trip.
+     * A view with no targets is a global feed and takes everything; a view
+     * with targets takes an entry sharing at least one of them, which is the
+     * any-of rule listEntries uses. `origins` is honoured for the same reason.
+     */
+    function viewAccepts(view: JournalViewState, entry: JournalEntryView): boolean {
+      if (view.origins && !view.origins.includes(entry.origin)) return false
+      if (!view.targets || view.targets.length === 0) return true
+      return view.targets.some((target) =>
+        entry.links.some((link) => link.targetType === target.type && link.targetId === target.id)
+      )
+    }
+
+    /**
+     * Puts a freshly written entry at the top of every list it belongs on.
+     *
+     * `surface` is the composer that produced it. A prospect drawer's composer
+     * links the opportunity, so the prospect's own view would accept it
+     * anyway; naming the surface means it lands there even if the view was
+     * loaded with a filter the new links do not obviously satisfy — the writer
+     * must see their own sentence appear in the box they typed it into.
+     */
+    function prependEntry(entry: JournalEntryView, surface?: string): void {
+      fileEntries([entry])
+      set((state) => {
+        const views: Record<string, JournalViewState> = {}
+        for (const [key, view] of Object.entries(state.journal.views)) {
+          const belongs = key === surface || viewAccepts(view, entry)
+          if (!belongs || view.ids.includes(entry.id)) {
+            views[key] = view
+            continue
+          }
+          views[key] = {
+            ...view,
+            ids: [entry.id, ...view.ids],
+            // The list grew, so the count of it grows too. Without this the
+            // feed's own line reads "Showing 5" over six cards the moment
+            // somebody writes one — the coverage would still be describing
+            // the page that was read before the write.
+            coverage: view.coverage
+              ? { ...view.coverage, returned: view.coverage.returned + 1 }
+              : view.coverage,
+          }
+        }
+        return { journal: { ...state.journal, views } }
+      })
+    }
+
+    /**
+     * What a refused Journal call means.
+     *
+     * `context_mismatch` is the store being finished, exactly as in persist();
+     * everything else is reported and handed back so the caller can decide
+     * what to do with it — the composer keeps its draft, the card shows the
+     * conflict, the feed shows an error state.
+     */
+    function journalRefused(error: string): void {
+      if (error === CONTEXT_MISMATCH) finishIdentity()
+    }
+
+    /**
+     * Awaits a Journal Server Action, turning a REJECTION into a refusal.
+     *
+     * A Server Action answers `{ ok: false, error }` for everything it can
+     * see — a missing row, a stale revision, no database. It REJECTS for
+     * everything it cannot: the browser is offline, the route returned a 500,
+     * a deploy rotated the action id this bundle holds, `requireAuth()` threw
+     * on a session that expired between the page load and the click. Nothing
+     * below distinguishes the two cases, and it must not have to: an entry
+     * that is deleted on screen because the network dropped is gone as far as
+     * the person who deleted it is concerned.
+     *
+     * So the cause is reported the way persist() reports one — console, with
+     * the label — and handed back in the shape every caller here already
+     * branches on, which is what puts a rejection through the same restore,
+     * the same toast and the same error state a refusal goes through.
+     */
+    async function journalCall<T>(
+      label: string,
+      run: () => Promise<T>
+    ): Promise<T | { ok: false; error: string }> {
+      try {
+        return await run()
+      } catch (cause: unknown) {
+        const message = cause instanceof Error ? cause.message : String(cause)
+        console.error(`[khyte] ${label} failed:`, message)
+        return { ok: false, error: message }
+      }
+    }
+
+    /**
+     * Reads the first page of a view.
+     *
+     * `mode` is the whole difference between the two things that ask for one.
+     *
+     * An explicit read — a feed mounting, a Refresh press — REPLACES the
+     * list: somebody asked for the newest page and that is what the newest
+     * page is.
+     *
+     * The poller MERGES. A reader who pressed Load more twice is looking at
+     * three pages, and replacing their list the first time a colleague writes
+     * a line would silently undo the two presses it took to get there. The
+     * merge prepends the ids the fresh page has and this view does not, keeps
+     * everything already held in the order it was held, and leaves the tail
+     * alone — `nextCursor` and `hasMore` describe entries older than this
+     * read looked at, so this read has nothing to say about them. Entries the
+     * fresh page did return are rewritten by `fileEntries`, which is how an
+     * edit made elsewhere reaches a card already on screen.
+     *
+     * A view still on its first page is replaced either way: there is nothing
+     * below the fold to lose, and a replace also drops what a colleague
+     * deleted.
+     */
+    async function readFirstPage(
+      key: string,
+      options: { targets?: LinkTarget[]; origins?: JournalOrigin[]; limit?: number } | undefined,
+      mode: 'replace' | 'merge'
+    ): Promise<void> {
+      const existing = get().journal.views[key]
+      const targets = options?.targets ?? existing?.targets
+      const origins = options?.origins ?? existing?.origins
+      if (options?.limit !== undefined) journalLimits.set(key, options.limit)
+      const limit = journalLimits.get(key)
+
+      // The previous page stays on screen while the new one is read. A feed
+      // that empties itself to show a spinner loses the reader's place on
+      // every refresh, and a refresh happens every time the poller sees the
+      // stamp move.
+      patchView(key, { status: 'loading', error: undefined, targets, origins })
+
+      const result = await journalCall('Read the Journal', () =>
+        journalApi.loadJournalPage(
+          { targets, origins, ...(limit === undefined ? {} : { limit }) },
+          scope()
+        )
+      )
+      if (!result.ok) {
+        // Whatever went wrong, `loading` has to come off: Refresh and Load
+        // more are both disabled while it is set, so a read that failed and
+        // left it behind takes the feed's two controls with it.
+        journalRefused(result.error)
+        patchView(key, { status: 'error', error: result.error })
+        return
+      }
+      fileEntries(result.page.entries)
+
+      const fresh = result.page.entries.map((entry) => entry.id)
+      const held = get().journal.views[key]?.ids ?? []
+      const merging = mode === 'merge' && (journalPages.get(key) ?? 1) > 1
+
+      if (!merging) {
+        journalPages.set(key, 1)
+        patchView(key, {
+          ids: fresh,
+          nextCursor: result.page.nextCursor,
+          coverage: result.page.coverage,
+          status: 'idle',
+          error: undefined,
+          targets,
+          origins,
+        })
+        return
+      }
+
+      const known = new Set(held)
+      const added = fresh.filter((id) => !known.has(id))
+      const tail = get().journal.views[key]?.coverage
+      patchView(key, {
+        ids: [...added, ...held],
+        // `nextCursor` is deliberately not patched: it points past the last
+        // page this view loaded, which this read did not touch.
+        coverage: {
+          ...result.page.coverage,
+          hasMore: tail?.hasMore ?? result.page.coverage.hasMore,
+          returned: held.length + added.length,
+        },
+        status: 'idle',
+        error: undefined,
+        targets,
+        origins,
+      })
     }
 
     return {
@@ -543,17 +948,21 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       contacts: snapshot.contacts,
       opportunities: snapshot.opportunities,
       leads: snapshot.leads,
-      notes: snapshot.notes,
       strategyBoards: snapshot.strategyBoards,
       strategyBoardOpportunities: snapshot.strategyBoardOpportunities,
       strategyColumns: snapshot.strategyColumns,
       strategyCards: snapshot.strategyCards,
       tasks: snapshot.tasks,
 
+      // The Journal starts empty on every page load: it is read per surface,
+      // a page at a time, not shipped with the working set.
+      journal: { entries: {}, views: {} },
+      journalTyping: false,
+
       // Sync state
       toasts: [],
       identityChanged: false,
-      markIdentityChanged: () => set({ identityChanged: true }),
+      markIdentityChanged: () => finishIdentity(),
 
       dismissToast: (id) =>
         set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
@@ -570,7 +979,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           snapshot.workspace.organization.id !== workspace.organization.id ||
           snapshot.workspace.viewer.userId !== workspace.viewer.userId
         ) {
-          set({ identityChanged: true })
+          finishIdentity()
           return false
         }
 
@@ -605,7 +1014,6 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           contacts: mergeCollection('contacts', state.contacts, snapshot.contacts),
           opportunities: mergeCollection('opportunities', state.opportunities, snapshot.opportunities),
           leads: mergeCollection('leads', state.leads, snapshot.leads),
-          notes: mergeCollection('notes', state.notes, snapshot.notes),
           strategyBoards: mergeCollection('strategyBoards', state.strategyBoards, snapshot.strategyBoards),
           // No single `id` to key protection on — falls back to whatever
           // pendingWrites already caught, same as before this change.
@@ -706,10 +1114,6 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         )
       },
 
-      // The database cascades notes; the local set has to be pruned by hand or
-      // it would linger tied to a prospect that no longer exists — see
-      // removeStrategyColumn for the same shape.
-      //
       // A strategy board can now be shared by more than one prospect, so this
       // opportunity's board(s) only disappear locally when it was the LAST
       // prospect linked to them — mirrors the server-side cleanup in
@@ -735,8 +1139,12 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           )
 
           return {
+            // Journal entries are NOT pruned here. Deleting a prospect
+            // tombstones its links and keeps the entries (decision 3) — what
+            // somebody wrote about a company survives the CRM row it was
+            // filed against. The next read of any open feed shows them with a
+            // muted, "removed" chip; nothing local has to be swept.
             opportunities: state.opportunities.filter((o) => o.id !== opportunityId),
-            notes: state.notes.filter((n) => n.opportunityId !== opportunityId),
             strategyBoardOpportunities: remainingLinks,
             strategyBoards: state.strategyBoards.filter((b) => !orphanedBoardIds.has(b.id)),
             strategyColumns: state.strategyColumns.filter(
@@ -755,78 +1163,238 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         )
       },
 
-      // Notes
-      addNote: (note) => {
-        set((state) => ({ notes: [note, ...state.notes] }))
-        persist('Save note', { collection: 'notes', id: note.id }, () =>
-          api.createNote(note, scope())
-        )
+      // Journal
+      setJournalTyping: (typing) => set({ journalTyping: typing }),
+
+      // Somebody asked for this list, so this list is what they get: the
+      // newest page, replacing whatever was held. The poller's own read is
+      // the merging one — see `readFirstPage`.
+      loadJournalView: async (key, options) => readFirstPage(key, options, 'replace'),
+
+      acquireJournalView: (key) => {
+        journalRefs.set(key, (journalRefs.get(key) ?? 0) + 1)
       },
 
-      dismissNote: (noteId) => {
-        set((state) => ({
-          notes: state.notes.map((n) =>
-            n.id === noteId ? { ...n, dismissed: true } : n
-          ),
-        }))
-        persist('Dismiss note', { collection: 'notes', id: noteId }, () =>
-          api.updateNote(noteId, { dismissed: true }, scope())
-        )
+      releaseJournalView: (key) => {
+        const remaining = (journalRefs.get(key) ?? 0) - 1
+        if (remaining > 0) {
+          journalRefs.set(key, remaining)
+          return
+        }
+        journalRefs.delete(key)
+        journalLimits.delete(key)
+        journalPages.delete(key)
+        // The VIEW goes; the entries do not. They are one normalized copy
+        // each, they are what another view already on screen is rendering,
+        // and keeping them means reopening this drawer shows its lines
+        // immediately and then refreshes rather than starting from a
+        // skeleton. What had to stop is the poller re-reading a feed nobody
+        // has been looking at since three navigations ago.
+        set((state) => {
+          if (!(key in state.journal.views)) return {}
+          const views = { ...state.journal.views }
+          delete views[key]
+          return { journal: { ...state.journal, views } }
+        })
       },
 
-      applyNote: (noteId) => {
-        const state = get()
-        const note = state.notes.find((n) => n.id === noteId)
-        if (!note?.aiExtracted) return
+      loadMoreJournal: async (key) => {
+        const view = get().journal.views[key]
+        if (!view?.nextCursor || view.status === 'loading') return
+        const limit = journalLimits.get(key)
+        patchView(key, { status: 'loading', error: undefined })
 
-        const ai = note.aiExtracted
-
-        // If the note references a company, find the matching opportunity and work
-        // out which fields the extraction actually changes.
-        let targetId: string | null = null
-        let changes: Partial<Opportunity> = {}
-
-        if (ai.company) {
-          const company = state.companies.find(
-            (c) => c.name.toLowerCase() === ai.company!.toLowerCase()
+        const result = await journalCall('Read the Journal', () =>
+          journalApi.loadJournalPage(
+            { targets: view.targets, origins: view.origins, cursor: view.nextCursor, ...(limit === undefined ? {} : { limit }) },
+            scope()
           )
-          if (company) {
-            const opp = state.opportunities.find((o) => o.companyId === company.id)
-            if (opp) {
-              targetId = opp.id
-              changes = {
-                ...(ai.suggestedStage && { stage: ai.suggestedStage }),
-                ...(ai.nextStep && { nextStep: ai.nextStep }),
-                ...(ai.followUpDate && { followUpDate: ai.followUpDate }),
-              }
+        )
+        if (!result.ok) {
+          journalRefused(result.error)
+          patchView(key, { status: 'error', error: result.error })
+          return
+        }
+        fileEntries(result.page.entries)
+        // Deduplicated on append: an entry written between the two reads
+        // shifts the keyset window, and the same id arriving twice would
+        // render twice and break React's keys.
+        const held = get().journal.views[key]?.ids ?? []
+        const seen = new Set(held)
+        const added = result.page.entries.map((entry) => entry.id).filter((id) => !seen.has(id))
+        const previous = get().journal.views[key]?.coverage
+        journalPages.set(key, (journalPages.get(key) ?? 1) + 1)
+        patchView(key, {
+          ids: [...held, ...added],
+          nextCursor: result.page.nextCursor,
+          // Coverage after a Load more is about BOTH pages. `hasMore`,
+          // `loadedAt` and `oldestCreatedAt` come from the newest read —
+          // they describe the tail, which is what the newest read reached —
+          // but `returned` is a count of the list, and the list is now every
+          // page held. Taking the new page's count wholesale is what made
+          // the feed say "Showing 10" over seventy cards.
+          coverage: {
+            ...result.page.coverage,
+            returned: (previous?.returned ?? held.length) + added.length,
+          },
+          status: 'idle',
+          error: undefined,
+        })
+      },
+
+      refreshJournalViews: async () => {
+        // Somebody is mid-sentence. The poller will ask again in twelve
+        // seconds; re-rendering the feed under a composer is worse than being
+        // twelve seconds behind.
+        if (get().journalTyping) return
+        // Only the feeds somebody is actually looking at. A view with no live
+        // reference belongs to a drawer that was closed or a page that was
+        // navigated away from, and re-reading it is a database round-trip
+        // nobody will see the result of.
+        const keys = Object.keys(get().journal.views).filter(
+          (key) => (journalRefs.get(key) ?? 0) > 0
+        )
+        // In parallel: three feeds on a dashboard are three independent reads,
+        // and a serial loop made the last one wait for the first two.
+        await Promise.all(keys.map((key) => readFirstPage(key, undefined, 'merge')))
+      },
+
+      submitCapture: async (input, options) => {
+        // The composer's context is folded in here rather than trusted to
+        // every caller: a drawer composer that forgot its link would file an
+        // entry against nothing, and the prospect it was typed into would not
+        // show it. An input that names its own links wins — a caller with
+        // something specific to say is not overruled by the surface.
+        const links = input.links?.length ? input.links : options.context?.links ?? []
+        const result = await journalCall('Save entry', () =>
+          journalApi.createJournalEntry({ ...input, links }, scope())
+        )
+
+        if (!result.ok) {
+          // `context_mismatch` means this tab is finished — the same
+          // conclusion persist() reaches, and SnapshotSync turns it into a
+          // reload. Nothing is toasted for it: the page is about to go.
+          if (result.error === CONTEXT_MISMATCH) {
+            journalRefused(result.error)
+            return result
+          }
+          // `request_key_conflict` and `unavailable` are the composer's to
+          // explain in its own words, in place, next to the text they concern.
+          if (result.error !== 'request_key_conflict' && result.error !== 'unavailable') {
+            pushToast('error', `Save entry — ${result.error}`)
+          }
+          return result
+        }
+
+        // THE DRAFT IS NOT CLEARED HERE. The composer owns it and clears it on
+        // exactly this result — see lib/journal/drafts.ts on why a draft that
+        // outlives a failed save is the whole point.
+        prependEntry(result.entry, options.surface)
+        return result
+      },
+
+      editJournalEntry: async (id, patch) => {
+        const result = await journalCall('Save entry', () =>
+          journalApi.editJournalEntry(id, patch, scope())
+        )
+        if (!result.ok) {
+          journalRefused(result.error)
+          // `revision_conflict` and `deleted` are answers, not faults: the
+          // card says what happened and offers the way forward. Anything else
+          // is a failure worth a toast.
+          if (
+            result.error !== 'revision_conflict' &&
+            result.error !== 'deleted' &&
+            result.error !== 'not_found' &&
+            result.error !== CONTEXT_MISMATCH
+          ) {
+            pushToast('error', `Save entry — ${result.error}`)
+          }
+          return result
+        }
+        // Written once, into the one copy every view renders — which is what
+        // keeps the drawer and /journal from disagreeing about the wording.
+        fileEntries([result.entry])
+        return result
+      },
+
+      deleteJournalEntry: async (id) => {
+        const removed = get().journal.entries[id]
+        const removedFrom: Record<string, number> = {}
+        set((state) => {
+          const entries = { ...state.journal.entries }
+          delete entries[id]
+          const views: Record<string, JournalViewState> = {}
+          for (const [key, view] of Object.entries(state.journal.views)) {
+            const at = view.ids.indexOf(id)
+            if (at === -1) {
+              views[key] = view
+              continue
+            }
+            removedFrom[key] = at
+            views[key] = {
+              ...view,
+              ids: view.ids.filter((entryId) => entryId !== id),
+              // Same rule as prependEntry's: the count describes the list.
+              coverage: view.coverage
+                ? { ...view.coverage, returned: Math.max(0, view.coverage.returned - 1) }
+                : view.coverage,
             }
           }
-        }
+          return { journal: { entries, views } }
+        })
 
-        set((current) => ({
-          opportunities: targetId
-            ? current.opportunities.map((o) =>
-                o.id === targetId ? { ...o, ...changes } : o
-              )
-            : current.opportunities,
-          notes: current.notes.map((n) =>
-            n.id === noteId ? { ...n, applied: true } : n
-          ),
-        }))
-
-        persist('Apply note', { collection: 'notes', id: noteId }, () =>
-          api.updateNote(noteId, { applied: true }, scope())
+        const result = await journalCall('Delete entry', () =>
+          journalApi.deleteJournalEntry(id, scope())
         )
-        if (targetId && Object.keys(changes).length > 0) {
-          persist('Apply note to lead', { collection: 'opportunities', id: targetId }, () =>
-            api.updateOpportunity(targetId!, changes, scope())
-          )
+        if (!result.ok) {
+          journalRefused(result.error)
+          // Put it back where it was. Unlike the CRM collections — where a
+          // failed write is left on screen for the next merge to correct —
+          // nothing re-reads the Journal on its own promptly enough, and an
+          // entry that vanished because a delete failed is an entry the writer
+          // believes is gone.
+          if (removed) {
+            set((state) => {
+              const views: Record<string, JournalViewState> = { ...state.journal.views }
+              for (const [key, at] of Object.entries(removedFrom)) {
+                const view = views[key]
+                if (!view || view.ids.includes(id)) continue
+                const ids = [...view.ids]
+                ids.splice(Math.min(at, ids.length), 0, id)
+                views[key] = {
+                  ...view,
+                  ids,
+                  coverage: view.coverage
+                    ? { ...view.coverage, returned: view.coverage.returned + 1 }
+                    : view.coverage,
+                }
+              }
+              return { journal: { entries: { ...state.journal.entries, [id]: removed }, views } }
+            })
+          }
+          pushToast('error', `Delete entry — ${result.error}`)
         }
+        return result
       },
 
-      deleteNote: (noteId) => {
-        set((state) => ({ notes: state.notes.filter((n) => n.id !== noteId) }))
-        persist('Delete note', null, () => api.deleteNote(noteId, scope()))
+      logNextStep: async (opportunityId, body) => {
+        const result = await journalCall('Save entry', () =>
+          journalApi.logNextStepEntry(opportunityId, body, scope())
+        )
+        if (!result.ok) {
+          journalRefused(result.error)
+          if (result.error !== CONTEXT_MISMATCH && result.error !== 'unavailable') {
+            pushToast('error', `Save entry — ${result.error}`)
+          }
+          return result
+        }
+        // Filed through the same rule a typed entry uses, naming the prospect's
+        // own view: the line is about this prospect, and it is also a Journal
+        // entry like any other, so a global feed already on screen shows it too
+        // rather than contradicting the drawer until the next poll.
+        prependEntry(result.entry, `prospect:${opportunityId}`)
+        return result
       },
 
       // Strategy

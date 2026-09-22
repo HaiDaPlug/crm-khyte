@@ -1,11 +1,13 @@
 import 'server-only'
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { actionSchemas, type ActionName, searchSchema, recordSchema,
+import { actionSchemas, type ActionName, searchSchema, recordSchema, journalSchema,
   bulkPreviewSchema, bulkCommitSchema, BULK_MAX_ROWS, type bulkRowSchema } from './contracts'
 import type { Database, Queryable, Row } from './database'
 import { CrmError } from './errors'
 import { eventsForArrival } from '@/lib/db/events'
+import type { LinkTarget, LinkTargetType } from '@/lib/journal/contracts'
+import { listEntries, writeEntry, type JournalPageResult } from '@/lib/journal/service'
 import type { Stage } from '@/lib/types'
 import { fromCompanyRow, fromContactRow, fromLeadRow, fromOpportunityRow, fromTaskRow } from '@/lib/db/mappers'
 import type { CompanyRow, ContactRow, LeadRow, OpportunityRow, TaskRow } from '@/lib/db/rows'
@@ -17,7 +19,16 @@ type Entity = keyof typeof tables
 // receipt claiming a save that never happened.
 type Statement = { sql: string; values: unknown[]; mustAffect?: boolean }
 type Change = { entity: string; id: string; operation: 'create' | 'update'; fields: Row }
-type Plan = { statements: Statement[]; changes: Change[]; entity: Entity; id: string; actor: Actor }
+/**
+ * `after` is the escape hatch for a write this file does not know how to build
+ * as a `Statement`: the Journal entry behind logged outreach is four rows in
+ * another module's transaction-aware service (lib/journal/service.ts
+ * `writeEntry`), not one templated insert. commitAction awaits it inside the
+ * same transaction, so a refused entry takes the interaction, the prospect
+ * change and the receipt down with it — there is no state where the CRM says
+ * outreach happened and the Journal has never heard of it.
+ */
+type Plan = { statements: Statement[]; changes: Change[]; entity: Entity; id: string; actor: Actor; after?: (tx: Queryable) => Promise<void> }
 /**
  * Who a tool call acts as: the connection, the account that approved it and
  * the organization it was approved for. It comes from the OAuth principal
@@ -34,7 +45,13 @@ export function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
 }
 
-function generatedId(requestId: string, kind: string): string {
+/**
+ * A UUID derived from a request id, so a retried tool call rebuilds the same
+ * rows rather than a second set. Exported because the Journal ids of a logged
+ * outreach — its capture, its entry — are derived the same way and a test
+ * cannot assert on them without recomputing them identically.
+ */
+export function generatedId(requestId: string, kind: string): string {
   const hex = fingerprint(`${requestId}:${kind}`).slice(0, 32)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20)}`
 }
@@ -59,19 +76,103 @@ async function load(db: Queryable, entity: Entity, id: string, actor: Actor, loc
   return row
 }
 
-export async function getRecord(db: Queryable, input: unknown, actor: Actor) {
-  const { entity, id } = recordSchema.parse(input)
+/* ———— the Journal, as a tool sees it ———— */
+
+/** How a CRM entity is named on a Journal link. A prospect is an opportunity;
+ *  the other four carry their own name. */
+const journalTargets: Record<'company' | 'contact' | 'prospect' | 'lead' | 'task', LinkTargetType> = {
+  company: 'company', contact: 'contact', prospect: 'opportunity', lead: 'lead', task: 'task',
+}
+
+/**
+ * One page of the Journal, reduced to what a tool response should carry.
+ *
+ * `JournalEntryView` (lib/journal/contracts.ts) is the card's shape and holds
+ * more than a model needs: `organizationId` and `captureId` are internal,
+ * `authorName`/`links` restate records the response already names, and the
+ * `legacy*`/`source`/`processingState` fields describe the migration and Stage
+ * 3, not the entry. What is kept is the spec's list, one for one:
+ * id, kind, title, body, occurredPrecision, occurredOn, occurredAt, authorId,
+ * performer, origin, revision, createdAt — every name unchanged from the view.
+ *
+ * A refusal is thrown rather than returned: every other read in this file
+ * signals failure with a CrmError, and `run()` in lib/mcp/server.ts turns one
+ * into the tool error the model sees.
+ */
+function journalPage(result: JournalPageResult): Row {
+  if (!result.ok) {
+    throw new CrmError(`journal_${result.error}`,
+      result.error === 'invalid'
+        ? 'That Journal request was not valid. Read the first page again rather than reusing a cursor from another read.'
+        : 'The Journal could not be read.')
+  }
+  const { entries, nextCursor, coverage } = result.page
+  return {
+    entries: entries.map(entry => ({
+      id: entry.id, kind: entry.kind, title: entry.title, body: entry.body,
+      occurredPrecision: entry.occurredPrecision, occurredOn: entry.occurredOn, occurredAt: entry.occurredAt,
+      authorId: entry.authorId, performer: entry.performer, origin: entry.origin,
+      revision: entry.revision, createdAt: entry.createdAt,
+    })),
+    nextCursor, coverage,
+  }
+}
+
+/**
+ * The Journal of one record, or of the whole organization.
+ *
+ * A prospect widens to two targets — the opportunity and its company — which
+ * is the same any-of filter the drawer uses, and `listEntries` returns an
+ * entry linked to both exactly once. Resolving the company also means a
+ * prospect id from another organization is `not_found` here before any Journal
+ * row is read, the same answer `get_crm_record` gives.
+ */
+export async function listJournal(db: Queryable, input: unknown, actor: Actor) {
+  const args = journalSchema.parse(input)
+  let targets: LinkTarget[] | undefined
+  if (args.target) {
+    if (args.target.entity === 'prospect') {
+      const row = await load(db, 'prospect', args.target.id, actor)
+      targets = [{ type: 'opportunity', id: args.target.id }, { type: 'company', id: String(row.data.company_id) }]
+    } else {
+      await load(db, args.target.entity, args.target.id, actor)
+      targets = [{ type: journalTargets[args.target.entity], id: args.target.id }]
+    }
+  }
+  return journalPage(await listEntries(db, { organizationId: actor.organizationId },
+    { limit: args.limit, ...(targets ? { targets } : {}), ...(args.cursor ? { cursor: args.cursor } : {}) }))
+}
+
+/**
+ * One record and its history.
+ *
+ * `forReceipt` is set only by commitAction's in-transaction call. A receipt is
+ * a permanent copy of what a write returned, and the Journal is text people
+ * wrote about other things entirely — a second copy of it inside
+ * `crm_tool_receipts.result` would outlive an entry's deletion and be reached
+ * by nothing that redacts. The tool response is built from the same function
+ * without the flag and still carries the Journal.
+ */
+export async function getRecord(db: Queryable, input: unknown, actor: Actor, options: { forReceipt?: boolean } = {}) {
+  const { entity, id, journalCursor } = recordSchema.parse(input)
   const row = await load(db, entity, id, actor)
   const result: Row = { entity, record: publicRecord(entity, row.data), version: row.version }
   if (entity === 'prospect') {
     // The composite foreign keys already keep a prospect's company and contact
     // in its organization; the filter is repeated so the rule is visible here
     // rather than relying on the reader knowing the schema.
-    result.company = publicRecord('company', (await load(db, 'company', String(row.data.company_id), actor)).data)
+    const companyId = String(row.data.company_id)
+    result.company = publicRecord('company', (await load(db, 'company', companyId, actor)).data)
     result.contact = publicRecord('contact', (await load(db, 'contact', String(row.data.contact_id), actor)).data)
     result.interactions = (await db.query(`select id, occurred_on, channel, summary, followed_up_by, source_system, source_message_id
       from crm_interactions where opportunity_id = $1 and organization_id = $2 order by occurred_on desc, created_at desc limit 20`, [id, actor.organizationId])).map(camel)
-    result.notes = (await db.query(`select id, raw, created_at from notes where opportunity_id = $1 and organization_id = $2 and not dismissed order by created_at desc limit 20`, [id, actor.organizationId])).map(camel)
+    if (!options.forReceipt) {
+      result.journal = journalPage(await listEntries(db, { organizationId: actor.organizationId }, {
+        limit: 20,
+        targets: [{ type: 'opportunity', id }, { type: 'company', id: companyId }],
+        ...(journalCursor ? { cursor: journalCursor } : {}),
+      }))
+    }
     result.tasks = (await db.query<{ data: Row }>(`select to_jsonb(t) as data from tasks t where related_opportunity_id = $1 and organization_id = $2 and archived_at is null order by created_at desc limit 20`, [id, actor.organizationId])).map(r => publicRecord('task', r.data))
   }
   return result
@@ -275,9 +376,60 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
   insert(plan, 'crm_interactions', 'interaction', { id: generatedId(a.requestId, 'interaction'), opportunity_id: plan.id, company_id: companyId, contact_id: contactId,
     occurred_on: a.occurredOn, channel: a.channel, summary: a.summary, followed_up_by: a.followedUpBy, connection_id: actor.connectionId,
     source_system: a.source?.system ?? null, source_account: a.source?.account ?? null, source_message_id: a.source?.messageId ?? null })
-  // Also populate the existing timeline; no frontend fork is needed to see the saved outreach.
-  insert(plan, 'notes', 'note', { id: generatedId(a.requestId, 'note'), opportunity_id: plan.id, company_id: companyId,
-    raw: `[${a.occurredOn} · ${a.channel} · ${a.followedUpBy ?? 'unassigned'}] ${a.summary}` })
+  // The timeline line, which is now a Journal entry rather than a `notes` row
+  // (decision 4). It is Donna writing on someone's behalf, so `origin: system`:
+  // the export counts person-written entries only, and a model must not read
+  // the CRM's own restatement of an interaction back as a second note.
+  //
+  // The change is pushed by hand because the entry is not one templated insert
+  // — `writeEntry` writes a capture, the entry, its first revision and three
+  // links — but previewAction must still list it and the receipt must still
+  // agree with what was written. `operation: 'create'`, because Change's union
+  // has no 'insert'.
+  const entryId = generatedId(a.requestId, 'note')
+  plan.changes.push({ entity: 'journal_entry', id: entryId, operation: 'create',
+    fields: camel({ kind: 'update', origin: 'system', body: a.summary, occurred_on: a.occurredOn, performer: a.followedUpBy ?? null }) })
+  plan.after = async tx => {
+    // The interaction link resolves against the row the statement loop has
+    // already inserted in this same transaction.
+    const written = await writeEntry(tx, { organizationId: actor.organizationId, userId: actor.userId, source: 'mcp' }, {
+      requestKey: a.requestId,
+      text: a.summary,
+      kind: 'update',
+      occurredPrecision: 'day',
+      occurredOn: a.occurredOn,
+      performer: a.followedUpBy,
+      links: [
+        { type: 'opportunity', id: plan.id },
+        { type: 'company', id: companyId },
+        { type: 'interaction', id: generatedId(a.requestId, 'interaction') },
+      ],
+    }, { origin: 'system', captureId: generatedId(a.requestId, 'capture'), entryId })
+    // Fail the whole commit. A refusal here means the request key is already
+    // held by different text, or a link target is not this organization's:
+    // either way the outreach must not be recorded as saved with no entry
+    // behind it, so the interaction, the prospect change and the receipt go
+    // with it. commitAction is still one transaction; nothing is reordered.
+    if (!written.ok) {
+      throw new CrmError('journal_write_failed',
+        'The Journal entry for this outreach could not be written, so nothing was saved. Retry with the same requestId, or use a new one if this key already belongs to a different note.',
+        { reason: written.error })
+    }
+    // `ok` is not yet proof that THIS entry exists. `writeEntry` answers
+    // `{ ok: true, replayed: true }` when the request key is already held by a
+    // capture with the same author and byte-identical text — which a typed
+    // entry can be, since the composer and this tool write as the same account
+    // into the same key space. Nothing is then written under `entryId`, while
+    // the preview above and the receipt below both claim a `journal_entry`
+    // create for exactly that id. Fail the commit rather than receipt an entry
+    // this call never wrote and hand the caller somebody else's note as its
+    // outreach line.
+    if (written.entry.id !== entryId) {
+      throw new CrmError('journal_write_failed',
+        'This requestId already belongs to a Journal entry with the same text, so no entry was written for this outreach and nothing was saved. Retry with a new requestId.',
+        { reason: 'request_key_held_by_existing_entry', expectedEntryId: entryId, existingEntryId: written.entry.id })
+    }
+  }
   event(plan, a.requestId, 'prospect_contacted', plan.id, a.followedUpBy, a.occurredOn, { loggedVia: 'crm_tool', interactionId: generatedId(a.requestId, 'interaction') })
   for (const arrival of eventsForArrival(previousStage, stage, { subjectId: plan.id })) {
     // Imported stage timing is reported evidence, not a transition witnessed on
@@ -465,7 +617,9 @@ export async function commitBulkOutreach(db: Database, raw: unknown, actor: Acto
     const parameters = row.parameters as Row
     if (receipts.has(String(parameters.requestId))) continue
     try {
-      const result = await commitAction(db, 'log_outreach', parameters, actor)
+      // The per-row answer keeps a status and an id; a Journal page read here
+      // would be built and thrown away once per row.
+      const result = await commitAction(db, 'log_outreach', parameters, actor, { includeJournal: false })
       saved.push({ ref: row.ref, index: row.index, requestId: parameters.requestId, status: result.status, prospectId: result.id ?? null })
     } catch (error) {
       // Fail closed per row: a version conflict or duplicate stops that row only.
@@ -514,10 +668,22 @@ export async function previewAction(db: Database, action: ActionName, raw: unkno
     guidance: 'No records have been saved. Review these changes and use the matching write tool with the same parameters.' }
 }
 
-export async function commitAction(db: Database, action: ActionName, raw: unknown, actor: Actor): Promise<Row> {
+/**
+ * Write one action, once.
+ *
+ * `includeJournal` decides whether the ANSWER carries the record's Journal
+ * page. It defaults to true for the single-record tools, where the caller
+ * would otherwise need a second round trip to see the entry its own write just
+ * produced. commitBulkOutreach passes false: it keeps only the status and the
+ * prospect id of each row and throws the rest away, so a Journal page read per
+ * row is two hundred reads nobody ever sees. It changes nothing that is
+ * stored — the receipt is built and inserted the same way either way.
+ */
+export async function commitAction(db: Database, action: ActionName, raw: unknown, actor: Actor,
+  options: { includeJournal?: boolean } = {}): Promise<Row> {
   const input = actionSchemas[action].parse(raw)
   const hash = fingerprint({ action, input })
-  return db.transaction(async tx => {
+  const committed = await db.transaction(async tx => {
     // Serializes tool writes across processes: name matching and first-time creation cannot race.
     // Existing UI updates are protected by row locks and expectedVersion checks on the affected records.
     await tx.query("select pg_advisory_xact_lock(hashtext('khyte:crm-tools'))")
@@ -550,7 +716,10 @@ export async function commitAction(db: Database, action: ActionName, raw: unknow
       if (receipt.payload_hash !== hash || receipt.connection_id !== actor.connectionId || receipt.organization_id !== actor.organizationId) {
         throw new CrmError('request_id_conflict', 'This request ID already belongs to another operation. Do not reuse it with different parameters.')
       }
-      return { ...receipt.result, status: 'already_saved' }
+      // No `journal` on a replay: the stored receipt never held one, and this
+      // path deliberately answers with the receipt rather than a fresh read
+      // (docs/remote-mcp.md).
+      return { result: { ...receipt.result, status: 'already_saved' } as Row, prospectId: null }
     }
     const plan = await prepare(tx, action, input, actor, true)
     for (const statement of plan.statements) {
@@ -559,12 +728,35 @@ export async function commitAction(db: Database, action: ActionName, raw: unknow
       // that matched nothing must never be receipted as a save.
       if (statement.mustAffect && !affected.length) throw new CrmError('not_found', 'The record no longer exists. Search again.')
     }
-    const record = await getRecord(tx, { entity: plan.entity, id: plan.id }, actor)
+    // After every statement — the Journal entry's interaction link needs the
+    // interaction row to exist — and before the read: a plan that cannot write
+    // its entry must not reach the receipt.
+    if (plan.after) await plan.after(tx)
+    // forReceipt: the stored result carries the record, not the Journal.
+    const record = await getRecord(tx, { entity: plan.entity, id: plan.id }, actor, { forReceipt: true })
     const result = { status: 'saved', action, requestId: input.requestId, changes: plan.changes, ...record }
     await tx.query(`insert into crm_tool_receipts (request_id, organization_id, action, payload_hash, connection_id, result) values ($1,$2,$3,$4,$5,$6::text::jsonb)`,
       [input.requestId, actor.organizationId, action, hash, actor.connectionId, JSON.stringify(result)])
-    return result
+    return { result: result as Row, prospectId: plan.entity === 'prospect' ? plan.id : null }
   })
+  // The receipt is the row inserted above and is never rewritten. The answer to
+  // THIS call reads the Journal the commit just wrote, so the caller sees its
+  // entry without a second round trip — the same page `get_crm_record` returns.
+  //
+  // Read AFTER the transaction, not inside it. It is a read for the response
+  // and nothing else: the receipt does not hold it, and a batch discards it
+  // entirely, so holding the tools advisory lock and the prospect's row lock
+  // open across a twenty-entry Journal page bought nothing and blocked every
+  // other tool write — and the UI behind them — for the length of it. The rows
+  // it reads are committed, so the page is the one the transaction would have
+  // seen plus anything a concurrent writer added in between, which is no less
+  // true than the page `get_crm_record` returns a moment later. If this read
+  // fails the write has still landed; retrying the same requestId answers
+  // `already_saved` from the stored receipt, which has no `journal` — the
+  // documented difference between a save and a replay (docs/remote-mcp.md),
+  // not a second shape of the truth.
+  if (options.includeJournal === false || !committed.prospectId) return committed.result
+  return { ...committed.result, journal: await listJournal(db, { target: { entity: 'prospect', id: committed.prospectId } }, actor) }
 }
 
 export function safeError(error: unknown) {

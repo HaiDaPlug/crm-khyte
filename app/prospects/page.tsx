@@ -14,7 +14,7 @@ import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
 import { useBoardPan } from '@/lib/hooks/useBoardPan'
-import { Stage, Priority, Note, ColleagueId } from '@/lib/types'
+import { Stage, Priority, ColleagueId } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { Plus, Download } from 'lucide-react'
 import { STAGES, stageColors, stageDot, priorityDot } from '@/lib/stage-config'
@@ -27,6 +27,7 @@ import {
   toCSV,
 } from '@/lib/export-prospects'
 import { loadExportEvents } from '@/app/actions/export'
+import { loadExportJournal } from '@/app/actions/journal'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 
 export default function ProspectsPage() {
@@ -35,9 +36,13 @@ export default function ProspectsPage() {
   const opportunities = useCRMStore((s) => s.opportunities)
   const companies = useCRMStore((s) => s.companies)
   const contacts = useCRMStore((s) => s.contacts)
-  const notes = useCRMStore((s) => s.notes)
   // Read for the export only — the table itself shows no tasks.
   const tasks = useCRMStore((s) => s.tasks)
+  // The Journal is read server-side for the export (see handleExport); the
+  // store holds only what the open feeds have paged in, which cannot answer
+  // for every prospect in the file.
+  const organizationId = useCRMStore((s) => s.workspace.organization.id)
+  const userId = useCRMStore((s) => s.workspace.viewer.userId)
 
   // Local to this page, not the store's global `searchQuery` — that one field is
   // shared by every page that reads it, so a query typed here would follow you
@@ -71,26 +76,58 @@ export default function ProspectsPage() {
   )
 
   const [exporting, setExporting] = useState(false)
+  /**
+   * Whether the last export went out without the Journal.
+   *
+   * An inline notice rather than a toast: the store's `pushToast` is private to
+   * lib/store/store.ts and nothing on the outside can reach it, so this is the
+   * honest way to surface it from here. It matters more than a console line —
+   * the whole point of the file is to be handed to a model, and a reader who
+   * does not know the note columns are missing will read their blankness as a
+   * fact about the team.
+   */
+  const [journalGap, setJournalGap] = useState(false)
 
   const handleExport = async () => {
     if (exporting) return
     setExporting(true)
     try {
-      // The activity log is server-side, so the dated history is fetched here
-      // rather than read from the store — see app/actions/export.ts. A failed
-      // read still exports: the history columns degrade to `history_quality =
-      // none` and every other column is unaffected.
-      const history = await loadExportEvents(contactedRows.map((row) => row.opportunity.id))
+      const opportunityIds = contactedRows.map((row) => row.opportunity.id)
+
+      // Both halves of the history are server-side, so both are fetched here
+      // rather than read from the store — see app/actions/export.ts and
+      // app/actions/journal.ts. Read together: the file is one round of
+      // waiting either way, and neither read depends on the other.
+      //
+      // A failed read still exports. The columns that need no history are
+      // unaffected; the ones that do degrade visibly (`history_quality = none`
+      // for the log, `journal_quality = unavailable` with the note columns left
+      // blank) rather than looking like a pipeline nobody has touched.
+      const [history, journal] = await Promise.all([
+        loadExportEvents(opportunityIds),
+        loadExportJournal(opportunityIds, { organizationId, userId }),
+      ])
       if (!history.ok) {
         console.error('[khyte] exporting without event history:', history.error)
       }
+      // Two different failures, one consequence: `ok: false` is a read that
+      // failed, `unavailable` is a deployment with no database behind the
+      // Journal. Neither can be reported as an empty Journal.
+      const journalOk = journal.ok && !journal.unavailable
+      if (!journalOk) {
+        console.error('[khyte] exporting without Journal entries:',
+          journal.ok ? 'unavailable' : journal.error)
+      }
+      setJournalGap(!journalOk)
 
-      // Notes and tasks come along too, so each row carries its written record
-      // beside the log — see the header of lib/export-prospects.ts.
+      // The Journal and the tasks come along too, so each row carries its
+      // written record beside the log — see the header of
+      // lib/export-prospects.ts.
       const rows = buildExportRows(contactedRows, {
         colleagueName: (id) =>
           id && id in colleagues ? colleagues[id as ColleagueId].name : '',
-        notes,
+        journal: journal.ok ? journal.journal : {},
+        journalQuality: journalOk ? 'ok' : 'unavailable',
         tasks,
         events: history.ok ? history.events : {},
       })
@@ -176,14 +213,6 @@ export default function ProspectsPage() {
     }
   }, [colleagueFilter, selectedStages, selectedPriorities, quickFilters, searchQuery, t])
 
-  const drawerNotes = useMemo((): Note[] => {
-    if (!selectedRow) return []
-    return notes.filter(n =>
-      n.companyId === selectedRow.company.id ||
-      n.opportunityId === selectedRow.opportunity.id
-    )
-  }, [selectedRow, notes])
-
   const rowsByStage = useMemo(() => {
     const grouped: Record<string, TableRow[]> = {}
     STAGES.forEach(s => grouped[s] = [])
@@ -231,6 +260,26 @@ export default function ProspectsPage() {
             </Button>
           </div>
         </div>
+
+        {journalGap && (
+          // Announced, not just drawn: the export is a keyboard action and the
+          // notice appears well below the button that started it.
+          <div
+            role="status"
+            className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-border bg-surface/60 px-4 py-3"
+          >
+            <p className="text-[13.5px] leading-snug text-foreground/70">
+              {t.prospects.exportJournalGap}
+            </p>
+            <button
+              type="button"
+              onClick={() => setJournalGap(false)}
+              className="shrink-0 rounded-lg px-2 py-1 text-[13px] font-medium text-accent transition-colors hover:bg-accent-light"
+            >
+              {t.common.dismiss}
+            </button>
+          </div>
+        )}
 
         {/* One control cluster: everything that narrows the table on the left,
             the counts describing it anchored right. Previously these were three
@@ -375,7 +424,6 @@ export default function ProspectsPage() {
         opportunity={selectedRow?.opportunity ?? null}
         company={selectedRow?.company ?? null}
         contact={selectedRow?.contact ?? null}
-        notes={drawerNotes}
         onClose={() => setSelectedRow(null)}
       />
     </>

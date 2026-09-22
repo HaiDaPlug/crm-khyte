@@ -2,6 +2,8 @@
 
 import { useMemo } from 'react'
 import { useCRMStore } from '@/lib/store'
+import { useTranslations } from '@/lib/hooks/useTranslations'
+import { formatJournalDate, formatJournalDateTime, type JournalDateParts } from '@/lib/journal/format'
 import {
   convertFromBase,
   convertToBase,
@@ -21,6 +23,12 @@ import {
  */
 export function useFormat() {
   const settings = useCRMStore((s) => s.settings)
+  // The Journal dates in the ORGANIZATION's timezone, not the browser's
+  // (decision 7): three colleagues reading one entry must read the same day
+  // off it. Everything else here stays on the viewer's own clock.
+  const timezone = useCRMStore((s) => s.workspace.organization.timezone)
+  const { t } = useTranslations()
+  const unknownLabel = t.crm.journal.unknownDate
 
   return useMemo(
     () => ({
@@ -43,8 +51,23 @@ export function useFormat() {
       /** Bare symbol for input prefixes and adornments. */
       symbol: currencySymbol(settings),
       dateTime: (value: string) => formatDateTime(value, settings),
+      /**
+       * A Journal entry's event time, honouring its precision — a day stays a
+       * day rather than being turned into midnight somewhere. See
+       * lib/journal/format.ts.
+       */
+      journalDate: (entry: JournalDateParts) =>
+        formatJournalDate(entry, { timezone, locale: settings.locale, unknownLabel }),
+      /**
+       * A moment the Journal recorded about itself — a revision's timestamp.
+       * The organization's zone, so a card does not carry two clocks. Use
+       * `dateTime` above for the CRM's own columns, which stay on the
+       * viewer's.
+       */
+      journalDateTime: (value: string) =>
+        formatJournalDateTime(value, { timezone, locale: settings.locale }),
       number: (value: number) => formatNumber(value, settings),
     }),
-    [settings]
+    [settings, timezone, unknownLabel]
   )
 }

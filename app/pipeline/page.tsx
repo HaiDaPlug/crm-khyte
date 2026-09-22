@@ -8,7 +8,6 @@ import { PipelineBoard, PipelineRow } from '@/components/crm/PipelineBoard'
 import { DetailDrawer } from '@/components/crm/DetailDrawer'
 import { useCRMStore } from '@/lib/store'
 import { useFormat } from '@/lib/hooks/useFormat'
-import { Note } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { priorityDot } from '@/lib/stage-config'
 import { useTranslations } from '@/lib/hooks/useTranslations'
@@ -19,7 +18,6 @@ export default function PipelinePage() {
   const opportunities = useCRMStore((s) => s.opportunities)
   const companies = useCRMStore((s) => s.companies)
   const contacts = useCRMStore((s) => s.contacts)
-  const notes = useCRMStore((s) => s.notes)
   const moveOpportunityCard = useCRMStore((s) => s.moveOpportunityCard)
   const addToPipeline = useCRMStore((s) => s.addToPipeline)
 
@@ -48,14 +46,6 @@ export default function PipelinePage() {
       }))
       .filter(r => r.company && r.contact)
   }, [opportunities, companies, contacts])
-
-  const drawerNotes = useMemo((): Note[] => {
-    if (!selectedRow) return []
-    return notes.filter(n =>
-      n.companyId === selectedRow.company.id ||
-      n.opportunityId === selectedRow.opportunity.id
-    )
-  }, [selectedRow, notes])
 
   const totalValue = useMemo(() => {
     return opportunities
@@ -151,7 +141,6 @@ export default function PipelinePage() {
         opportunity={selectedRow?.opportunity ?? null}
         company={selectedRow?.company ?? null}
         contact={selectedRow?.contact ?? null}
-        notes={drawerNotes}
         onClose={() => setSelectedRow(null)}
       />
     </>
