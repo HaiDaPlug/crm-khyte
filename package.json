@@ -3,7 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "test": "npm run test:mcp && npm run test:org && npm run test:scoping && npm run test:store",
     "test:mcp": "node --conditions=react-server --import tsx --test tests/mcp.test.ts",
+    "test:org": "node --conditions=react-server --import tsx --test tests/organization-migration.test.ts",
+    "test:scoping": "node --conditions=react-server --import tsx --test tests/scoping.test.ts",
+    "test:store": "node --import tsx --require ./tests/support/client-preload.cjs --test tests/store.test.ts",
     "test:mcp:http": "node --test tests/mcp-http.test.mjs",
     "dev": "next dev",
     "build": "next build",
@@ -12,8 +16,10 @@
     "db:status": "node scripts/db-push.mjs --dry-run",
     "db:skew": "node scripts/skew-probe.mjs",
     "backfill:events": "node scripts/backfill-events.mjs",
+    "org:members": "node scripts/org-members.mjs",
     "supabase": "node scripts/supabase.mjs",
-    "db:link": "node scripts/supabase.mjs link"
+    "db:link": "node scripts/supabase.mjs link",
+    "test:postgres": "node scripts/pg-concurrency.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

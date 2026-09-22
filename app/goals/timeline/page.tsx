@@ -37,9 +37,11 @@ const STATUS_DOT: Record<GoalStatus, string> = {
 }
 
 export default async function GoalsTimelinePage() {
-  await requireSession()
+  // The session is the gate and the scope: the goals listed below are the
+  // ones belonging to the organization it is acting in, nothing else.
+  const context = await requireSession()
 
-  const { goals } = await loadGoals()
+  const { goals } = await loadGoals(context.organizationId)
   const now = new Date()
 
   const dated = goals.filter((g) => g.section === 'goal')

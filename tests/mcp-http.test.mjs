@@ -14,13 +14,16 @@ before(async () => {
   const port = socket.address().port
   await new Promise(resolve => socket.close(resolve))
   origin = `http://127.0.0.1:${port}`
+  // No database and no identity provider on purpose: this suite is about
+  // what the gate does BEFORE either is consulted. There is no shared
+  // password any more, so nothing here can log in.
   server = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
     windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, NODE_ENV: 'production', AUTH_SECRET: secret, AUTH_PASSWORD: 'test-password',
+    env: { ...process.env, NODE_ENV: 'production', AUTH_SECRET: secret,
       MCP_PUBLIC_URL: 'https://crm.example.test', MCP_SECRET: 'test-only-signing-key-at-least-32-characters',
       MCP_CLIENT_ID: 'test-chatgpt', MCP_CLIENT_SECRET: 'test-only-client-secret-at-least-32-characters',
       MCP_REDIRECT_URIS: 'https://chatgpt.com/connector_platform_oauth_redirect',
-      SUPABASE_DB_URL: '', SUPABASE_SECRET_KEY: '', NEXT_PUBLIC_SUPABASE_URL: '' },
+      SUPABASE_DB_URL: '', SUPABASE_SECRET_KEY: '', NEXT_PUBLIC_SUPABASE_URL: '', NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: '' },
   })
   server.stdout.on('data', chunk => { startup += chunk.toString() })
   server.stderr.on('data', chunk => { startup += chunk.toString() })
@@ -66,40 +69,37 @@ test('MCP requires bearer auth, rejects foreign origins and never redirects prot
   assert.ok(snapshot.headers.get('location').endsWith('/login'))
 })
 
-test('authorization requires the shared session and explicit same-origin consent', async () => {
+test('authorization and the app need a real session: no cookie and an unknown cookie both go to login', async () => {
   const params = new URLSearchParams({ response_type: 'code', client_id: 'test-chatgpt', redirect_uri: 'https://chatgpt.com/connector_platform_oauth_redirect',
     state: 'opaque-test-state', resource: 'https://crm.example.test/mcp', code_challenge: createHash('sha256').update('a'.repeat(64)).digest('base64url'),
     code_challenge_method: 'S256', scope: 'crm:read crm:tasks:write' })
   const url = `${origin}/oauth/authorize?${params}`
   const unauthenticated = await fetch(url, { redirect: 'manual' })
   assert.equal(unauthenticated.status, 303)
-  assert.equal(new URL(unauthenticated.headers.get('location')).pathname, '/login')
-  const expires = String(Date.now() + 60000)
-  const cookie = `khyte_session=${expires}.${createHmac('sha256', secret).update(expires).digest('base64url')}`
-  const page = await fetch(url, { headers: { cookie } })
-  assert.equal(page.status, 200)
-  assert.equal(page.headers.get('x-frame-options'), 'DENY')
-  // Under 'no-referrer' the browser serializes this page's own same-origin form
-  // POST as 'Origin: null' (Fetch, "append a request Origin header"), which the
-  // consent handler then refuses as invalid_origin. 'same-origin' still withholds
-  // the referrer from the cross-origin callback, but keeps a real Origin here.
-  assert.equal(page.headers.get('referrer-policy'), 'same-origin')
-  // Chrome applies form-action to the redirect that follows the submission, so
-  // the callback origin must be listed or approval navigates nowhere at all.
-  const csp = page.headers.get('content-security-policy')
-  assert.ok(csp.includes("form-action 'self' https://chatgpt.com;"), csp)
-  assert.ok(csp.includes("frame-ancestors 'none'"), csp)
-  const html = await page.text()
-  assert.ok(html.includes('Ni kan fortfarande logga för varandra'))
-  const approval = /name="approval" value="([^"]+)"/.exec(html)[1]
-  const form = new URLSearchParams({ approval, decision: 'deny' })
-  const missingOrigin = await fetch(`${origin}/oauth/authorize`, { method: 'POST', headers: { cookie }, body: form, redirect: 'manual' })
-  assert.equal(missingOrigin.status, 400)
-  const nulledOrigin = await fetch(`${origin}/oauth/authorize`, { method: 'POST', headers: { cookie, origin: 'null' }, body: form, redirect: 'manual' })
-  assert.equal(nulledOrigin.status, 400)
-  const denied = await fetch(`${origin}/oauth/authorize`, { method: 'POST', headers: { cookie, origin: 'https://crm.example.test' }, body: form, redirect: 'manual' })
-  assert.equal(denied.status, 303)
-  const callback = new URL(denied.headers.get('location'))
-  assert.equal(callback.searchParams.get('error'), 'access_denied')
-  assert.equal(callback.searchParams.get('state'), 'opaque-test-state')
+  const login = new URL(unauthenticated.headers.get('location'))
+  assert.equal(login.pathname, '/login')
+  assert.ok(login.searchParams.get('returnTo').startsWith('/oauth/authorize?'), 'consent resumes after login')
+
+  // A cookie this server would have signed, for a session it never minted:
+  // `<token>.<expiry>.<hmac>` (lib/auth/session.ts). The signature is the
+  // optimistic check Proxy makes without I/O, so it passes Proxy; the
+  // consent route then asks the database for the session and, with none
+  // configured, finds nobody — the same answer a revoked session gets. The
+  // old shared-password cookie used to be enough to reach the consent page;
+  // it no longer can be, because a page that names whose identity the
+  // connection will carry needs a person to name.
+  const token = 'a'.repeat(43), expires = String(Date.now() + 60000)
+  const cookie = `khyte_session=${token}.${expires}.${createHmac('sha256', secret).update(`${token}.${expires}`).digest('base64url')}`
+  const unknown = await fetch(url, { headers: { cookie }, redirect: 'manual' })
+  assert.equal(unknown.status, 303)
+  assert.equal(new URL(unknown.headers.get('location')).pathname, '/login')
+  // The same cookie opens no data either: Proxy forwards it, the route
+  // resolves no session, and the answer is 401 rather than a redirect
+  // (a fetch from the app, not a navigation).
+  const snapshot = await fetch(`${origin}/api/snapshot`, { headers: { cookie }, redirect: 'manual' })
+  assert.equal(snapshot.status, 401)
+  // Without any cookie the app itself redirects to the gate.
+  const bare = await fetch(`${origin}/api/snapshot`, { redirect: 'manual' })
+  assert.equal(bare.status, 307)
+  assert.ok(bare.headers.get('location').endsWith('/login'))
 })

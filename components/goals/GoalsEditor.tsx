@@ -7,8 +7,10 @@ import { Button } from '@/components/crm/Button'
 import { inputClass } from '@/components/crm/FormFields'
 import { COLLEAGUE_IDS, colleagues } from '@/lib/colleagues'
 import { measureGoal } from '@/lib/goal-measure'
+import { useCRMStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 import type {
+  ActionScope,
   ColleagueId,
   CrmEventKind,
   PersonalGoal,
@@ -40,6 +42,12 @@ import * as api from '@/app/actions/goals'
  * locally, fire the action, surface a failure rather than rolling back. There
  * is no Save button because there is no pending state to flush — a field
  * commits when it loses focus.
+ *
+ * Every write declares the identity it believes it is acting as, which is the
+ * one thing this editor does take from the CRM store. The rows are local, but
+ * the workspace is not something this page can know on its own — and a tab
+ * whose cookie changed underneath it must not commit a half-typed goal into
+ * the organization of whoever signed in second. See app/actions/goals.ts.
  */
 
 const SECTION_LABELS: Record<GoalSection, string> = {
@@ -231,6 +239,17 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
   // two update, while a half-typed goal title in state is left untouched.
   const derived = initial.totals
   const counts = initial.weeklyCounts
+
+  // From the CRM store, which /goals sits inside — the root layout wraps every
+  // authed page in AppShell, and AppShell is the CRMStoreProvider. Nothing
+  // else here reads that store; this is the identity the writes below declare,
+  // and the server refuses any that disagrees with the session it receives.
+  const workspace = useCRMStore((s) => s.workspace)
+  const scope: ActionScope = {
+    organizationId: workspace.organization.id,
+    userId: workspace.viewer.userId,
+  }
+
   const [goals, setGoals] = useState<Goal[]>(initial.goals)
   const [metrics, setMetrics] = useState<GoalMetric[]>(initial.metrics)
   const [personalGoals, setPersonalGoals] = useState<PersonalGoal[]>(initial.personalGoals)
@@ -244,7 +263,17 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
    */
   const persist = useCallback((run: () => Promise<api.ActionResult>) => {
     void run().then((result) => {
-      if (!result.ok) setError(result.error)
+      if (result.ok) return
+      // The server answered as someone else: the session this tab was built
+      // on is gone and another has replaced it (another tab logged in). The
+      // write was refused before it touched anything; a banner would leave a
+      // stale editor on screen for the wrong person, so reload — the same
+      // move SnapshotSync makes for the CRM store.
+      if (result.error === 'context_mismatch') {
+        window.location.reload()
+        return
+      }
+      setError(result.error)
     })
   }, [])
 
@@ -270,17 +299,17 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
       order: siblings.length,
     }
     setGoals((prev) => [...prev, goal])
-    persist(() => api.createGoal(goal))
+    persist(() => api.createGoal(goal, scope))
   }
 
   const editGoal = (id: string, updates: Partial<Goal>) => {
     setGoals((prev) => prev.map((g) => (g.id === id ? { ...g, ...updates } : g)))
-    persist(() => api.updateGoal(id, updates))
+    persist(() => api.updateGoal(id, updates, scope))
   }
 
   const removeGoal = (id: string) => {
     setGoals((prev) => prev.filter((g) => g.id !== id))
-    persist(() => api.deleteGoal(id))
+    persist(() => api.deleteGoal(id, scope))
   }
 
   // --- metrics -------------------------------------------------------------
@@ -290,7 +319,7 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
   // there is nothing to delete because the row is the target.
   const editMetric = (id: string, updates: Partial<GoalMetric>) => {
     setMetrics((prev) => prev.map((m) => (m.id === id ? { ...m, ...updates } : m)))
-    persist(() => api.updateGoalMetric(id, updates))
+    persist(() => api.updateGoalMetric(id, updates, scope))
   }
 
   // --- focus ---------------------------------------------------------------
@@ -305,17 +334,17 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
       order: siblings.length,
     }
     setPersonalGoals((prev) => [...prev, item])
-    persist(() => api.createPersonalGoal(item))
+    persist(() => api.createPersonalGoal(item, scope))
   }
 
   const editPersonalGoal = (id: string, updates: Partial<PersonalGoal>) => {
     setPersonalGoals((prev) => prev.map((f) => (f.id === id ? { ...f, ...updates } : f)))
-    persist(() => api.updatePersonalGoal(id, updates))
+    persist(() => api.updatePersonalGoal(id, updates, scope))
   }
 
   const removePersonalGoal = (id: string) => {
     setPersonalGoals((prev) => prev.filter((f) => f.id !== id))
-    persist(() => api.deletePersonalGoal(id))
+    persist(() => api.deletePersonalGoal(id, scope))
   }
 
   // --- rendering -----------------------------------------------------------
@@ -659,7 +688,7 @@ export function GoalsEditor({ initial }: { initial: GoalsSnapshot }) {
                         order: metrics.length,
                       }
                       setMetrics((prev) => [...prev, created])
-                      persist(() => api.createGoalMetric(created))
+                      persist(() => api.createGoalMetric(created, scope))
                     }}
                     onBlur={(e) => {
                       // `metric` is resolved fresh on the render that follows

@@ -1,4 +1,4 @@
-import { isAuthenticated } from '@/lib/auth/guard'
+import { getAuthContext } from '@/lib/auth/context'
 import { loadSnapshot, loadSnapshotVersion } from '@/lib/db/queries'
 
 /**
@@ -16,14 +16,20 @@ import { loadSnapshot, loadSnapshotVersion } from '@/lib/db/queries'
  * slightly behind the data, so the next poll re-applies a change already
  * present — harmless. Reading the stamp last would put it ahead of the data
  * and the client would mark that change seen without ever having received it.
+ *
+ * AUTH AND SCOPE. The context is both: null is a 401, and a non-null one names
+ * the organization the stamp and the rows are read for. There is no
+ * organization parameter on this route and there must never be one — the
+ * session decides whose working set this is.
  */
 export async function GET() {
-  if (!(await isAuthenticated())) {
+  const context = await getAuthContext()
+  if (!context) {
     return new Response('Unauthorized', { status: 401 })
   }
 
-  const version = await loadSnapshotVersion()
-  const snapshot = await loadSnapshot()
+  const version = await loadSnapshotVersion(context.organizationId)
+  const snapshot = await loadSnapshot(context)
 
   return Response.json(
     { version, snapshot },

@@ -1,6 +1,7 @@
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 
 import { DisplayBoard } from '@/components/goals/DisplayBoard'
+import { displayOrganization } from '@/lib/auth/display-access'
 import { COLLEAGUE_IDS } from '@/lib/colleagues'
 import { loadGoals, loadGoalsVersion } from '@/lib/db/queries'
 import type { ColleagueId } from '@/lib/types'
@@ -13,10 +14,20 @@ import { BoardRefresh } from './BoardRefresh'
  *   - Lively Wallpaper, at `?k=<display token>` — see lib/auth/display-token.ts
  *   - a normal browser tab with a session, no token needed
  *
- * proxy.ts is what admits the tokened request; nothing here re-checks it,
- * because by the time this renders the request has already passed the gate one
- * way or the other. Note this page renders no forms and calls no Server
- * Actions — a token holder can read this board and do nothing else.
+ * proxy.ts admits the request one of those two ways, and this page checks
+ * again — not out of distrust of Proxy, but because the check is also where
+ * the organization comes from. A token names the organization it was minted
+ * for; a session names the one it is acting in. Neither is read from the URL
+ * in the clear: the `?k=` value is only ever interpreted through
+ * lib/auth/display-access, which yields an organization id if and only if
+ * the HMAC over that organization, the minting member and this colleague
+ * verifies AND that member is still active. Token first, session second, so a
+ * wallpaper link keeps working in a browser that also happens to be logged
+ * into some other workspace — the link says whose board it is. Neither means
+ * the login page, since a wallpaper cannot fill one in and a person can.
+ *
+ * Note this page renders no forms and calls no Server Actions — a token holder
+ * can read this board and do nothing else.
  *
  * loadGoals() rather than loadSnapshot(): three small tables, not the entire
  * CRM working set, because this repaints on a timer. See lib/db/queries.ts.
@@ -46,10 +57,13 @@ function currentPeriod(now: Date): string {
 
 export default async function GoalsDisplayPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ colleague: string }>
+  searchParams: Promise<{ k?: string }>
 }) {
   const { colleague } = await params
+  const { k } = await searchParams
 
   // The roster is the source of truth. An unknown segment 404s rather than
   // rendering an empty personal column — a wallpaper that silently shows
@@ -58,12 +72,21 @@ export default async function GoalsDisplayPage({
     notFound()
   }
 
+  // Which organization's board this is — see the header. The token is tried
+  // before the session, and a token only counts while the member who minted
+  // it is still one (lib/auth/display-access.ts): a revoked person's copied
+  // link must not keep showing the team's numbers.
+  const organizationId = await displayOrganization(colleague, k)
+  if (!organizationId) {
+    redirect('/login')
+  }
+
   // Read together: the version has to describe the same board that is about to
   // render, or the first check would see a difference and reload immediately.
   const [{ goals, metrics, personalGoals, weeklyCounts, totals }, version] =
     await Promise.all([
-      loadGoals(),
-      loadGoalsVersion(),
+      loadGoals(organizationId),
+      loadGoalsVersion(organizationId),
     ])
 
   // One clock reading for the whole render, so the period label and every

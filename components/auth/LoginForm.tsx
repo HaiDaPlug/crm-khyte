@@ -1,10 +1,10 @@
 'use client'
 
-import { useActionState } from 'react'
+import { useActionState, useState } from 'react'
 import { useFormStatus } from 'react-dom'
 import { Lock } from 'lucide-react'
 
-import { login, type LoginState } from '@/app/actions/auth'
+import { login, type LoginError, type LoginState } from '@/app/actions/auth'
 import { Button } from '@/components/crm/Button'
 import { inputClass } from '@/components/crm/FormFields'
 import { cn } from '@/lib/utils'
@@ -20,16 +20,26 @@ import { cn } from '@/lib/utils'
  */
 const copy = {
   title: 'Khyte CRM',
-  subtitle: 'Ange lösenord för att fortsätta',
-  label: 'Lösenord',
+  subtitle: 'Logga in för att fortsätta',
+  email: 'E-post',
+  password: 'Lösenord',
   submit: 'Logga in',
   submitting: 'Loggar in...',
+  // `satisfies` rather than a lookup that tolerates a miss: a LoginError the
+  // action can return but this table cannot name would render as nothing at
+  // all, which on a login form reads as the button doing nothing.
   errors: {
-    empty: 'Ange ett lösenord.',
-    invalid: 'Fel lösenord.',
+    empty: 'Ange e-post och lösenord.',
+    invalid: 'Fel e-post eller lösenord.',
     throttled: 'För många försök. Vänta en stund och försök igen.',
-  },
-} as const
+    no_membership: 'Kontot tillhör ingen arbetsyta. Be en ägare lägga till dig.',
+    not_configured: 'Inloggning är inte konfigurerad på den här servern.',
+    unavailable: 'Inloggningstjänsten svarar inte. Försök igen om en stund.',
+  } satisfies Record<LoginError, string>,
+}
+
+/** The errors that are about what was typed, as opposed to the server. */
+const FIELD_ERRORS: ReadonlySet<LoginError> = new Set(['empty', 'invalid'])
 
 function SubmitButton() {
   // useFormStatus has to read the status from a form above it, so this cannot
@@ -45,28 +55,55 @@ function SubmitButton() {
 export function LoginForm({ returnTo = '/' }: { returnTo?: string }) {
   const [state, action] = useActionState<LoginState, FormData>(login, undefined)
 
-  const message = state?.error
-    ? copy.errors[state.error as keyof typeof copy.errors]
-    : null
+  // Controlled on purpose: React resets a form's uncontrolled fields once its
+  // action settles, which would wipe the address on every wrong password and
+  // make the person retype it. The password field stays uncontrolled — a
+  // rejected password should not linger in the box.
+  const [email, setEmail] = useState('')
+
+  const message = state?.error ? copy.errors[state.error] : null
+  const fieldsRejected = state?.error ? FIELD_ERRORS.has(state.error) : false
 
   return (
     <form action={action} className="flex w-full flex-col gap-5">
       <input type="hidden" name="returnTo" value={returnTo} />
       <div>
+        <label htmlFor="email" className="label-mono mb-2 block">
+          {copy.email}
+        </label>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          inputMode="email"
+          // `username` is what password managers key the saved pair on; an
+          // `email` hint would fill the address but not offer the password.
+          autoComplete="username"
+          spellCheck={false}
+          // The first field on the page, and the page exists to be typed into.
+          autoFocus
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          aria-invalid={fieldsRejected ? true : undefined}
+          aria-describedby={message ? 'login-error' : undefined}
+          className={cn(inputClass, fieldsRejected && 'border-danger/60')}
+        />
+      </div>
+
+      <div>
         <label htmlFor="password" className="label-mono mb-2 block">
-          {copy.label}
+          {copy.password}
         </label>
         <input
           id="password"
           name="password"
           type="password"
           autoComplete="current-password"
-          // The only field on the page, and the page exists to be typed into.
-          autoFocus
           required
-          aria-invalid={message ? true : undefined}
-          aria-describedby={message ? 'password-error' : undefined}
-          className={cn(inputClass, message && 'border-danger/60')}
+          aria-invalid={fieldsRejected ? true : undefined}
+          aria-describedby={message ? 'login-error' : undefined}
+          className={cn(inputClass, fieldsRejected && 'border-danger/60')}
         />
       </div>
 
@@ -74,7 +111,7 @@ export function LoginForm({ returnTo = '/' }: { returnTo?: string }) {
           on error reads as feedback rather than as a layout jump. */}
       {message && (
         <p
-          id="password-error"
+          id="login-error"
           // Announced on change so a screen reader hears the rejection without
           // the focus having to move.
           role="alert"

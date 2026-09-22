@@ -20,8 +20,10 @@ import { loadGoals, loadGoalsVersion } from '@/lib/db/queries'
 export default async function GoalsPage() {
   // Proxy already turned away anyone without a session, but that is an
   // optimistic cookie check — this is the one that counts, same as every other
-  // page that reads real data.
-  await requireSession()
+  // page that reads real data. It is also where the organization comes from:
+  // every read below, and every wallpaper link minted below, is scoped to the
+  // one this session is acting in.
+  const context = await requireSession()
 
   // The stamp is read first and sequentially, not in parallel with the rows —
   // the same ordering app/layout.tsx uses for the CRM, and for the same reason.
@@ -30,17 +32,28 @@ export default async function GoalsPage() {
   // swallows the change. Note this is the opposite trade to the wallpaper's
   // display page, which reads both together because there a redundant wake-up
   // means a full `location.reload()` rather than a cheap RSC round-trip.
-  const version = await loadGoalsVersion()
-  const snapshot = await loadGoals()
+  const version = await loadGoalsVersion(context.organizationId)
+  const snapshot = await loadGoals(context.organizationId)
 
   // Tokens are minted server-side and handed down as finished URLs. The secret
   // never crosses into the client bundle, which is the whole point of doing it
-  // here rather than in the component.
+  // here rather than in the component. Each token is bound to this
+  // organization, to the colleague, and to the membership minting it — so a
+  // link opens this workspace's board and nobody else's, and stops working
+  // the day the person who copied it is no longer a member. See
+  // lib/auth/display-token.ts and lib/auth/display-access.ts.
   const links = COLLEAGUE_IDS.map((id) => ({
     id,
     name: colleagues[id].name,
     color: colleagues[id].color,
-    token: displayToken(id),
+    token: displayToken(
+      {
+        organizationId: context.organizationId,
+        memberId: context.viewer.memberId,
+        credentialGeneration: context.credentialGeneration,
+      },
+      id
+    ),
   }))
 
   return (

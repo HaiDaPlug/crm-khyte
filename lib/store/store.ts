@@ -1,5 +1,6 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import {
+  ActionScope,
   Opportunity,
   Company,
   Contact,
@@ -13,6 +14,8 @@ import {
   CRMSnapshot,
   Settings,
   AppLanguage,
+  OrganizationMember,
+  Workspace,
 } from '@/lib/types'
 import { DEFAULT_SETTINGS } from '@/lib/settings'
 import { newId } from '@/lib/utils'
@@ -60,6 +63,12 @@ export interface CRMStore {
   toggleTheme: () => void
 
   // Data
+  /**
+   * The organization this working set belongs to, who is looking, and the
+   * roster. Read by the chrome (avatar, sign-out) and by Settings; written by
+   * the snapshot and by the two roster actions below, nothing else.
+   */
+  workspace: Workspace
   opportunities: Opportunity[]
   companies: Company[]
   contacts: Contact[]
@@ -84,8 +93,23 @@ export interface CRMStore {
   toasts: Toast[]
   dismissToast: (id: string) => void
   /**
-   * Swaps the eight data collections for a freshly read snapshot, leaving
-   * every piece of UI state (settings, sidebar, search) alone.
+   * True once the server has answered as a different person or organization
+   * than this store was built for — another tab logged in as someone else,
+   * or this session was revoked and replaced. The store is that identity's
+   * working set and must not be merged with, or write on behalf of, another;
+   * SnapshotSync reloads the page, which rebuilds it from the session that
+   * actually exists. Never reset: the old store is finished.
+   */
+  identityChanged: boolean
+  /**
+   * For a caller outside `persist` — the Settings roster, whose actions
+   * return their rows directly — that has just been told `context_mismatch`
+   * by the server. Same consequence: the store is finished, reload.
+   */
+  markIdentityChanged: () => void
+  /**
+   * Swaps the data collections and the workspace for a freshly read snapshot,
+   * leaving every piece of UI state (settings, sidebar, search) alone.
    *
    * Returns false when the merge was refused rather than applied — a caller
    * that gets `false` must not mark the incoming version as seen, or the
@@ -180,6 +204,24 @@ export interface CRMStore {
   updateLead: (leadId: string, updates: Partial<Lead>) => void
   /** Permanent — used when a lead is promoted into a Prospect, or removed outright. */
   removeLead: (leadId: string) => void
+
+  // Actions — Workspace
+  /**
+   * Replaces the roster wholesale — for a caller holding a fresh read of
+   * every member. Leaves the organization and the viewer alone.
+   */
+  setWorkspaceMembers: (members: OrganizationMember[]) => void
+  /**
+   * Files one member into the roster: the row with the same id is replaced,
+   * an unknown one appended. Called by Settings with what a member action
+   * returned, which is the row as the database now holds it — so unlike the
+   * collections above this is not optimistic and needs no protection from
+   * the next merge.
+   *
+   * The viewer's own entry is mirrored too: renaming yourself, or being
+   * promoted, shows in the chrome at once instead of on the next poll.
+   */
+  upsertWorkspaceMember: (member: OrganizationMember) => void
 
   // Actions — UI
   toggleSidebar: () => void
@@ -300,6 +342,26 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
   }
 
   /**
+   * The roster under the same protection as the collections.
+   *
+   * A member action is awaited and files the committed row, so the write can
+   * never be ahead of the server — but a poll's *read* can have started
+   * before that write committed and land afterwards, carrying the old roster.
+   * Without this, a member just added or renamed in Settings would vanish
+   * from the list (and the viewer's own rename from the sidebar) until the
+   * next poll. The viewer is re-derived from the merged roster so the two
+   * cannot disagree about the person looking.
+   */
+  function mergeWorkspace(local: Workspace, incoming: Workspace): Workspace {
+    const members = mergeCollection('members', local.members, incoming.members)
+    const own = members.find((m) => m.userId === incoming.viewer.userId)
+    const viewer = own
+      ? { ...incoming.viewer, displayName: own.displayName, role: own.role, colleague: own.colleague }
+      : incoming.viewer
+    return { organization: incoming.organization, viewer, members }
+  }
+
+  /**
    * Keeps the local row for anything still inside its grace window instead of
    * accepting whatever the incoming snapshot says — including a row the
    * snapshot omits entirely, which is what an insert not yet visible to the
@@ -345,6 +407,26 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
   }
 
   return createStore<CRMStore>()((set, get) => {
+    /**
+     * What this store believes it is: the identity every write below declares.
+     *
+     * Read fresh at call time rather than captured once, so it is whatever the
+     * store holds at the moment the action is fired. The server compares it
+     * with the session that actually arrives and refuses the write on a
+     * disagreement — see the header on app/actions/crm.ts. That is the guard
+     * against a tab whose cookie changed underneath it (another tab signed in
+     * as someone else) committing its drafts as the new person, in the new
+     * person's organization, with row ids minted in the old one.
+     *
+     * Not an authority: nothing server-side is scoped by this. It only ever
+     * makes a write fail, which persist() below turns into `identityChanged`
+     * and SnapshotSync turns into a reload.
+     */
+    const scope = (): ActionScope => ({
+      organizationId: get().workspace.organization.id,
+      userId: get().workspace.viewer.userId,
+    })
+
     function pushToast(kind: Toast['kind'], message: string): void {
       set((state) => ({ toasts: [...state.toasts, { id: newId(), kind, message }] }))
     }
@@ -376,6 +458,14 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         .then(run)
         .then((result) => {
           if (!result.ok) {
+            // The server answered as someone else: the session this tab was
+            // built on is gone and another has replaced it. The write was
+            // refused before it touched anything (see run() in the actions),
+            // and this store must not submit again — reload instead of toast.
+            if (result.error === 'context_mismatch') {
+              set({ identityChanged: true })
+              return
+            }
             pushToast('error', `${label} — ${result.error}`)
             return
           }
@@ -448,6 +538,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         }),
 
       // The server snapshot, in place before the first render
+      workspace: snapshot.workspace,
       companies: snapshot.companies,
       contacts: snapshot.contacts,
       opportunities: snapshot.opportunities,
@@ -461,11 +552,28 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
       // Sync state
       toasts: [],
+      identityChanged: false,
+      markIdentityChanged: () => set({ identityChanged: true }),
 
       dismissToast: (id) =>
         set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
       applyRemoteSnapshot: (snapshot) => {
+        // Not ours. A snapshot for another organization, or for another
+        // person in this one, is the working set of whoever is now logged in
+        // — the cookie changed underneath this tab. Merging it would put two
+        // workspaces in one store, and the grace window would even keep this
+        // one's recent rows alive inside the other's roster. Refuse, and mark
+        // the store finished; SnapshotSync reloads the page.
+        const { workspace } = get()
+        if (
+          snapshot.workspace.organization.id !== workspace.organization.id ||
+          snapshot.workspace.viewer.userId !== workspace.viewer.userId
+        ) {
+          set({ identityChanged: true })
+          return false
+        }
+
         // A write of our own is still in the air. The snapshot on the wire was
         // read before it landed, so applying it now would visibly undo the
         // change the user just made. Refusing is cheap — the poll comes back.
@@ -488,6 +596,11 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         // explain why — see markRecent/mergeCollection.
         const state = get()
         set({
+          // Merged per member, like the collections: a poll that started
+          // before a member action committed must not undo it. The viewer is
+          // re-derived from the merged roster, which is how a rename or a
+          // demotion by another owner reaches the chrome too.
+          workspace: mergeWorkspace(state.workspace, snapshot.workspace),
           companies: mergeCollection('companies', state.companies, snapshot.companies),
           contacts: mergeCollection('contacts', state.contacts, snapshot.contacts),
           opportunities: mergeCollection('opportunities', state.opportunities, snapshot.opportunities),
@@ -529,7 +642,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist(
           'Save lead',
           { collection: 'opportunities', id: placed.id },
-          () => api.createOpportunity(placed),
+          () => api.createOpportunity(placed, scope()),
           'Prospect created'
         )
       },
@@ -546,7 +659,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Add to pipeline', { collection: 'opportunities', id: opportunityId }, () =>
-          api.updateOpportunity(opportunityId, { inPipeline: true, stage, order })
+          api.updateOpportunity(opportunityId, { inPipeline: true, stage, order }, scope())
         )
       },
 
@@ -577,7 +690,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
         for (const o of moved) {
           persist('Move stage', { collection: 'opportunities', id: o.id }, () =>
-            api.updateOpportunity(o.id, { stage: o.stage, order: o.order })
+            api.updateOpportunity(o.id, { stage: o.stage, order: o.order }, scope())
           )
         }
       },
@@ -589,7 +702,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Update lead', { collection: 'opportunities', id: opportunityId }, () =>
-          api.updateOpportunity(opportunityId, updates)
+          api.updateOpportunity(opportunityId, updates, scope())
         )
       },
 
@@ -634,13 +747,20 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             ),
           }
         })
-        persist('Delete prospect', null, () => api.deleteOpportunity(opportunityId), 'Prospect deleted')
+        persist(
+          'Delete prospect',
+          null,
+          () => api.deleteOpportunity(opportunityId, scope()),
+          'Prospect deleted'
+        )
       },
 
       // Notes
       addNote: (note) => {
         set((state) => ({ notes: [note, ...state.notes] }))
-        persist('Save note', { collection: 'notes', id: note.id }, () => api.createNote(note))
+        persist('Save note', { collection: 'notes', id: note.id }, () =>
+          api.createNote(note, scope())
+        )
       },
 
       dismissNote: (noteId) => {
@@ -650,7 +770,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Dismiss note', { collection: 'notes', id: noteId }, () =>
-          api.updateNote(noteId, { dismissed: true })
+          api.updateNote(noteId, { dismissed: true }, scope())
         )
       },
 
@@ -695,25 +815,25 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         }))
 
         persist('Apply note', { collection: 'notes', id: noteId }, () =>
-          api.updateNote(noteId, { applied: true })
+          api.updateNote(noteId, { applied: true }, scope())
         )
         if (targetId && Object.keys(changes).length > 0) {
           persist('Apply note to lead', { collection: 'opportunities', id: targetId }, () =>
-            api.updateOpportunity(targetId!, changes)
+            api.updateOpportunity(targetId!, changes, scope())
           )
         }
       },
 
       deleteNote: (noteId) => {
         set((state) => ({ notes: state.notes.filter((n) => n.id !== noteId) }))
-        persist('Delete note', null, () => api.deleteNote(noteId))
+        persist('Delete note', null, () => api.deleteNote(noteId, scope()))
       },
 
       // Strategy
       createStrategyBoard: (board) => {
         set((state) => ({ strategyBoards: [...state.strategyBoards, board] }))
         persist('Create board', { collection: 'strategyBoards', id: board.id }, () =>
-          api.createStrategyBoard(board)
+          api.createStrategyBoard(board, scope())
         )
       },
 
@@ -730,7 +850,9 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
                 ],
               }
         )
-        persist('Link prospect', null, () => api.linkOpportunityToBoard(boardId, opportunityId))
+        persist('Link prospect', null, () =>
+          api.linkOpportunityToBoard(boardId, opportunityId, scope())
+        )
       },
 
       unlinkOpportunityFromBoard: (boardId, opportunityId) => {
@@ -740,14 +862,14 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Unlink prospect', null, () =>
-          api.unlinkOpportunityFromBoard(boardId, opportunityId)
+          api.unlinkOpportunityFromBoard(boardId, opportunityId, scope())
         )
       },
 
       addStrategyColumn: (column) => {
         set((state) => ({ strategyColumns: [...state.strategyColumns, column] }))
         persist('Save headline', { collection: 'strategyColumns', id: column.id }, () =>
-          api.createStrategyColumn(column)
+          api.createStrategyColumn(column, scope())
         )
       },
 
@@ -758,7 +880,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Rename headline', { collection: 'strategyColumns', id: columnId }, () =>
-          api.updateStrategyColumn(columnId, { title })
+          api.updateStrategyColumn(columnId, { title }, scope())
         )
       },
 
@@ -769,7 +891,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           strategyColumns: state.strategyColumns.filter((k) => k.id !== columnId),
           strategyCards: state.strategyCards.filter((c) => c.columnId !== columnId),
         }))
-        persist('Delete headline', null, () => api.deleteStrategyColumn(columnId))
+        persist('Delete headline', null, () => api.deleteStrategyColumn(columnId, scope()))
       },
 
       moveStrategyCard: (cardId, newColumnId, targetIndex) => {
@@ -798,7 +920,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
         for (const c of moved) {
           persist('Move strategy card', { collection: 'strategyCards', id: c.id }, () =>
-            api.updateStrategyCard(c.id, { columnId: c.columnId, order: c.order })
+            api.updateStrategyCard(c.id, { columnId: c.columnId, order: c.order }, scope())
           )
         }
       },
@@ -806,7 +928,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
       addStrategyCard: (card) => {
         set((state) => ({ strategyCards: [...state.strategyCards, card] }))
         persist('Save strategy card', { collection: 'strategyCards', id: card.id }, () =>
-          api.createStrategyCard(card)
+          api.createStrategyCard(card, scope())
         )
       },
 
@@ -817,7 +939,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Edit strategy card', { collection: 'strategyCards', id: cardId }, () =>
-          api.updateStrategyCard(cardId, { content })
+          api.updateStrategyCard(cardId, { content }, scope())
         )
       },
 
@@ -840,10 +962,10 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
             .map((c) => byId.get(c.id) ?? c),
         }))
 
-        persist('Delete strategy card', null, () => api.deleteStrategyCard(cardId))
+        persist('Delete strategy card', null, () => api.deleteStrategyCard(cardId, scope()))
         for (const c of remainingInLane) {
           persist('Reorder strategy card', { collection: 'strategyCards', id: c.id }, () =>
-            api.updateStrategyCard(c.id, { order: c.order })
+            api.updateStrategyCard(c.id, { order: c.order }, scope())
           )
         }
       },
@@ -866,7 +988,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist(
           'Save task',
           { collection: 'tasks', id: created.id },
-          () => api.createTask(created),
+          () => api.createTask(created, scope()),
           'Task created'
         )
       },
@@ -891,7 +1013,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist(
           'Update task',
           { collection: 'tasks', id: taskId },
-          () => api.updateTask(taskId, updates),
+          () => api.updateTask(taskId, updates, scope()),
           'Task saved'
         )
       },
@@ -925,7 +1047,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
 
         for (const t of moved) {
           persist('Move task', { collection: 'tasks', id: t.id }, () =>
-            api.updateTask(t.id, { completed: t.completed, order: t.order })
+            api.updateTask(t.id, { completed: t.completed, order: t.order }, scope())
           )
         }
       },
@@ -936,13 +1058,13 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           tasks: state.tasks.map((t) => (t.id === taskId ? { ...t, archivedAt } : t)),
         }))
         persist('Archive task', { collection: 'tasks', id: taskId }, () =>
-          api.updateTask(taskId, { archivedAt })
+          api.updateTask(taskId, { archivedAt }, scope())
         )
       },
 
       deleteTask: (taskId) => {
         set((state) => ({ tasks: state.tasks.filter((t) => t.id !== taskId) }))
-        persist('Delete task', null, () => api.deleteTask(taskId), 'Task deleted')
+        persist('Delete task', null, () => api.deleteTask(taskId, scope()), 'Task deleted')
       },
 
       // Companies & Contacts
@@ -951,7 +1073,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist(
           'Save company',
           { collection: 'companies', id: company.id },
-          () => api.createCompany(company),
+          () => api.createCompany(company, scope()),
           'Company created'
         )
       },
@@ -963,7 +1085,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Update company', { collection: 'companies', id: companyId }, () =>
-          api.updateCompany(companyId, updates)
+          api.updateCompany(companyId, updates, scope())
         )
       },
 
@@ -972,7 +1094,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist(
           'Save contact',
           { collection: 'contacts', id: contact.id },
-          () => api.createContact(contact),
+          () => api.createContact(contact, scope()),
           'Contact created'
         )
       },
@@ -984,7 +1106,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Update contact', { collection: 'contacts', id: contactId }, () =>
-          api.updateContact(contactId, updates)
+          api.updateContact(contactId, updates, scope())
         )
       },
 
@@ -994,7 +1116,7 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
         persist(
           'Save lead',
           { collection: 'leads', id: lead.id },
-          () => api.createLead(lead),
+          () => api.createLead(lead, scope()),
           'Lead created'
         )
       },
@@ -1006,14 +1128,45 @@ export function createCRMStore(snapshot: CRMSnapshot): CRMStoreApi {
           ),
         }))
         persist('Update lead', { collection: 'leads', id: leadId }, () =>
-          api.updateLead(leadId, updates)
+          api.updateLead(leadId, updates, scope())
         )
       },
 
       removeLead: (leadId) => {
         set((state) => ({ leads: state.leads.filter((l) => l.id !== leadId) }))
-        persist('Remove lead', null, () => api.deleteLead(leadId), 'Lead removed')
+        persist('Remove lead', null, () => api.deleteLead(leadId, scope()), 'Lead removed')
       },
+
+      // Workspace
+      setWorkspaceMembers: (members) =>
+        set((state) => ({ workspace: { ...state.workspace, members } })),
+
+      upsertWorkspaceMember: (member) =>
+        set((state) => {
+          // Same grace window as a settled write: a poll whose read predates
+          // this row must not take it back — see mergeWorkspace.
+          markRecent('members', member.id)
+          const { workspace } = state
+          const known = workspace.members.some((m) => m.id === member.id)
+          const members = known
+            ? workspace.members.map((m) => (m.id === member.id ? member : m))
+            : [...workspace.members, member]
+
+          // Same person as the one looking: keep the viewer in step. Matched
+          // on userId rather than memberId so a re-added membership (same id,
+          // see lib/org/members.addMember) and a fresh one behave alike.
+          const viewer =
+            member.userId === workspace.viewer.userId
+              ? {
+                  ...workspace.viewer,
+                  displayName: member.displayName,
+                  role: member.role,
+                  colleague: member.colleague,
+                }
+              : workspace.viewer
+
+          return { workspace: { ...workspace, members, viewer } }
+        }),
 
       // UI
       toggleSidebar: () =>

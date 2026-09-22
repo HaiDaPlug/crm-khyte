@@ -54,10 +54,11 @@ new ones with `npx supabase migration new <name>` rather than by hand.
    - **Secret key** (`sb_secret_…`) → `SUPABASE_SECRET_KEY`
 3. Restart the dev server. The "no Supabase credentials" warning should be gone.
 
-`.env.example` also carries `AUTH_PASSWORD` and `AUTH_SECRET` for the password
-gate. Those are **not** optional the way the Supabase values are — the app runs
-on demo data without a database, but it throws without those two rather than
-serving an open gate. Generate a secret with the one-liner in `.env.example`.
+`.env.example` also carries `AUTH_SECRET`, which signs the per-user session
+cookie, and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, which the login form's
+password check uses. Neither is optional. Note that accounts and sessions
+live in the database, so the demo-data mode without credentials still boots
+but cannot be logged into — see [organization-foundation.md](organization-foundation.md).
 
 This project uses the **new API keys**, not the legacy JWT `anon` /
 `service_role` pair on the "Legacy API Keys" tab. The mapping is
@@ -226,41 +227,55 @@ to learn the id.
 
 ---
 
-## Auth and RLS
+## Auth, organizations and RLS
 
-Every table has an `owner_id` column and RLS is **enabled**, with policies that
-scope rows to `auth.uid() = owner_id`. Right now those policies match nothing:
-the server uses a secret key, which holds BYPASSRLS and skips them entirely. The
-structure is there so that adding auth is a wiring job, not a migration.
+**Since 2026-09-20 every row belongs to an organization and every person has
+an account.** The full design is in [organization-foundation.md](organization-foundation.md);
+the short version:
 
-When auth lands:
+- `organizations`, `organization_members` (role, status, optional roster
+  label) and `app_sessions` are the new tables. Every business and
+  integration table carries `organization_id`, and the parent/child keys are
+  composite `(id, organization_id)` references so a cross-organization link
+  cannot exist.
+- Supabase Auth holds accounts and passwords. The app verifies a password
+  through it (`lib/auth/identity.ts`, publishable key) and then mints its own
+  session (`lib/auth/session.ts`, `app_sessions`), so `proxy.ts` can verify a
+  cookie without I/O and a single session can be revoked.
+- `getAuthContext()` (`lib/auth/context.ts`) joins the session to an *active*
+  membership and is the only source of organization scope for reads, writes,
+  routes and tools. MCP connections carry the approving account and
+  organization.
+- Accounts are created by an owner — Settings → Organisation, or
+  `npm run org:members -- add …` — never by the migration and never by
+  guessing which email belongs to which roster label.
 
-1. Swap `lib/supabase/server.ts` for a request-scoped client built from the
-   user's session (this is where `@supabase/ssr` and the publishable key come in).
-2. Set `owner_id` on insert in `app/actions/crm.ts`.
-3. Claim the existing rows:
-   `update companies set owner_id = '<your-user-uuid>' where owner_id is null;`
-   and the same for the other ten tables (the three goals tables included —
-   they carry `owner_id` and RLS policies on the same pattern, even though the
-   direction board is company-wide rather than per-person, so that the eventual
-   multi-tenant story does not need a second migration).
-4. ~~Move the Zustand store behind a per-request React context.~~ Done
-   2026-08-21 — `lib/store/provider.tsx` builds one store per request. It was a
-   module singleton shared across concurrent server requests, which was harmless
-   for one operator but wrong the moment there are two users. Fixed early because
-   the same change fixed a hydration bug; see Known issues in
-   `docs/current_state.md`.
+**RLS is correct but dormant.** The old `auth.uid() = owner_id` policies are
+replaced by membership policies through `public.is_org_member(uuid)`. Reads
+still go straight to Postgres (`SUPABASE_DB_URL`) and writes still use the
+secret key, both of which bypass RLS, so organization scope is enforced in
+code on every query and covered by the isolation tests. The policies exist so
+that a publishable-key path (Realtime, a browser client) can be opened later
+without a retrofit.
+
+**`owner_id` is retired, not dropped.** It was never populated; nothing reads
+or writes it. Removing a column the deployed code might still select is the
+outage this CRM has had before, so it stays.
+
+The Zustand store has been per-request since 2026-08-21
+(`lib/store/provider.tsx`), which is what keeps two concurrent requests from
+sharing a working set now that they can belong to different people.
 
 ---
 
 ## Known gaps
 
-- ~~**The Server Actions are unauthenticated.**~~ Fixed by the shared-password
-  gate: every action in `app/actions/crm.ts` and `app/actions/goals.ts` runs
-  `requireAuth()` through one of two helpers, so a direct POST without a
-  session is rejected. They authenticate but still do not **authorize** —
-  there is one password and no per-user identity, so there is no `owner_id` to
-  check a caller against. That half lands with accounts.
+- ~~**The Server Actions are unauthenticated.**~~ Fixed twice over: the
+  shared-password gate made every action in `app/actions/crm.ts` and
+  `app/actions/goals.ts` run `requireAuth()` through one of two helpers, and
+  since 2026-09-20 that call returns an `AuthContext` whose organization scopes
+  the write. A direct POST without a session is rejected; a write against
+  another organization's id reads as not found.
 - **The wallpaper display token is a weaker credential than a session.** Anyone
   holding a `/goals/display/<name>?k=…` link reads that board — goals, targets,
   revenue — with no password. It is bound to one colleague, confined to display

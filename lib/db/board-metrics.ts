@@ -33,6 +33,13 @@ import { getDb } from './pg'
  * other event kind here has — the work of booking it happened — and whether
  * the booking held is what the pipeline and the export's
  * `meeting_booked_status` column answer.
+ *
+ * Every function takes the organization first, and every statement filters by
+ * it. The numbers are per workspace by definition — one organization's revenue
+ * is not the sum of every workspace on the server — and the id is a parameter
+ * rather than something read here because this module has no session to read
+ * it from: the caller's AuthContext (or the MCP principal) is the only
+ * legitimate source, and passing it through keeps that visible at every call.
  */
 
 /** Monday 00:00 local, the start of the week a moment belongs to. */
@@ -68,7 +75,7 @@ export interface DerivedTotals {
  * with no value counts toward customers but contributes nothing to revenue,
  * which is the honest reading.
  */
-export async function loadDerivedTotals(): Promise<DerivedTotals> {
+export async function loadDerivedTotals(organizationId: string): Promise<DerivedTotals> {
   const sql = getDb()
 
   const [row] = await sql`
@@ -80,6 +87,7 @@ export async function loadDerivedTotals(): Promise<DerivedTotals> {
         0
       )                                                                  as pipeline
     from opportunities
+    where organization_id = ${organizationId}
   `
 
   const r = row as unknown as Record<string, string | number>
@@ -97,13 +105,17 @@ export async function loadDerivedTotals(): Promise<DerivedTotals> {
  * 0 rather than undefined — a non-negotiable with no activity yet must render
  * as "0 of 15", not as missing.
  */
-export async function countEventsSince(since: Date): Promise<Record<string, number>> {
+export async function countEventsSince(
+  organizationId: string,
+  since: Date
+): Promise<Record<string, number>> {
   const sql = getDb()
 
   const rows = await sql`
     select kind, count(*) as total
     from crm_events
-    where occurred_at >= ${since.toISOString()}
+    where organization_id = ${organizationId}
+      and occurred_at >= ${since.toISOString()}
     group by kind
   `
 
@@ -127,6 +139,7 @@ export async function countEventsSince(since: Date): Promise<Record<string, numb
  * a breakdown that visibly fails to add up to the total beside it.
  */
 export async function countEventsByColleagueSince(
+  organizationId: string,
   since: Date
 ): Promise<Record<string, Record<string, number>>> {
   const sql = getDb()
@@ -134,7 +147,8 @@ export async function countEventsByColleagueSince(
   const rows = await sql`
     select kind, coalesce(colleague, 'unassigned') as who, count(*) as total
     from crm_events
-    where occurred_at >= ${since.toISOString()}
+    where organization_id = ${organizationId}
+      and occurred_at >= ${since.toISOString()}
     group by kind, colleague
   `
 
@@ -152,6 +166,7 @@ export async function countEventsByColleagueSince(
 
 /** Events of each kind within a half-open window — `[from, to)`. */
 export async function countEventsBetween(
+  organizationId: string,
   from: Date,
   to: Date
 ): Promise<Record<string, number>> {
@@ -160,7 +175,8 @@ export async function countEventsBetween(
   const rows = await sql`
     select kind, count(*) as total
     from crm_events
-    where occurred_at >= ${from.toISOString()}
+    where organization_id = ${organizationId}
+      and occurred_at >= ${from.toISOString()}
       and occurred_at <  ${to.toISOString()}
     group by kind
   `
@@ -181,7 +197,8 @@ export interface ArchivedCount {
 }
 
 /**
- * Freezes every week that has ended and is not yet archived.
+ * Freezes every week that has ended and is not yet archived, for one
+ * organization.
  *
  * Runs on read rather than on a schedule. There is no cron in this app, and a
  * wallpaper that reloads all day is a more reliable trigger than one — the
@@ -194,16 +211,25 @@ export interface ArchivedCount {
  * that week, and that number lives on a goal row the operator is free to change
  * next Monday. Freezing both is what makes a past week still mean what it meant.
  *
- * Idempotent by the unique index on week_start — a concurrent second call
- * conflicts and does nothing rather than writing a duplicate week.
+ * Idempotent by the unique index on (organization_id, week_start) — a
+ * concurrent second call conflicts and does nothing rather than writing a
+ * duplicate week, and two organizations closing the same week write two rows,
+ * one each. Every statement in the loop carries the organization: the first
+ * event, the already-archived check, the counts, the targets and the insert
+ * all describe this workspace's week, and a single unscoped one among them
+ * would freeze another workspace's numbers under this one's name.
  */
-export async function archiveFinishedWeeks(now: Date): Promise<number> {
+export async function archiveFinishedWeeks(organizationId: string, now: Date): Promise<number> {
   const sql = getDb()
 
   // The earliest activity is where history starts; with no events there is
-  // nothing to archive and no reason to touch the table.
+  // nothing to archive and no reason to touch the table. This organization's
+  // earliest, not the server's: a workspace that started logging last month
+  // has one month of history, not everyone's.
   const [earliest] = await sql`
-    select min(occurred_at) as first_event from crm_events
+    select min(occurred_at) as first_event
+    from crm_events
+    where organization_id = ${organizationId}
   `
   const first = (earliest as unknown as { first_event: string | null })?.first_event
   if (!first) return 0
@@ -218,10 +244,12 @@ export async function archiveFinishedWeeks(now: Date): Promise<number> {
     next.setDate(next.getDate() + 7)
 
     const already = await sql`
-      select 1 from weekly_snapshots where week_start = ${isoDate(cursor)} limit 1
+      select 1 from weekly_snapshots
+      where organization_id = ${organizationId} and week_start = ${isoDate(cursor)}
+      limit 1
     `
     if (already.length === 0) {
-      const counts = await countEventsBetween(cursor, next)
+      const counts = await countEventsBetween(organizationId, cursor, next)
 
       // The targets as they stand now. Imperfect for a week archived late —
       // a target changed since then is the one recorded — but the alternative
@@ -230,7 +258,8 @@ export async function archiveFinishedWeeks(now: Date): Promise<number> {
       const goals = await sql`
         select title, metric_kind, metric_target
         from goals
-        where section = 'weekly' and metric_kind is not null
+        where organization_id = ${organizationId}
+          and section = 'weekly' and metric_kind is not null
         order by sort_order
       `
 
@@ -247,10 +276,13 @@ export async function archiveFinishedWeeks(now: Date): Promise<number> {
         actual: counts[goal.metric_kind] ?? 0,
       }))
 
+      // organization_id written explicitly rather than left to the column's
+      // rollout default — the default keeps older code up during the deploy,
+      // it is not something a write may lean on.
       await sql`
-        insert into weekly_snapshots (week_start, counts)
-        values (${isoDate(cursor)}, ${JSON.stringify(payload)}::jsonb)
-        on conflict (week_start) do nothing
+        insert into weekly_snapshots (organization_id, week_start, counts)
+        values (${organizationId}, ${isoDate(cursor)}, ${JSON.stringify(payload)}::jsonb)
+        on conflict (organization_id, week_start) do nothing
       `
       archived += 1
     }

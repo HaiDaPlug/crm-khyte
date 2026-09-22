@@ -1,9 +1,59 @@
 # Khyte CRM — Current State
 
-**Date:** 2026-09-16
-**Phase:** MVP + persistence + password gate + derived direction board +
-cross-browser live sync
-(Supabase live; shared-password auth, no accounts)
+**Date:** 2026-09-20
+**Phase:** MVP + persistence + derived direction board + cross-browser live
+sync + **organization foundation** (Supabase live; individual accounts,
+organization-scoped data — Donna Stage 1, on `feat/organization-foundation`)
+
+## Session update — organization foundation, Donna Stage 1 (2026-09-20)
+
+**The shared password is gone; every row belongs to an organization.** This
+is the first stage of the Donna redesign described in
+[Donna-Product-Architecture-and-Fable-Handoff-v1.md](Donna-Product-Architecture-and-Fable-Handoff-v1.md),
+and the review handoff for it is
+[organization-foundation.md](organization-foundation.md) — read that for the
+data model, the identity flow, the deploy order and what is deliberately left
+for later stages. What it means for this document:
+
+- The **Auth gate** section below describes the retired shared-password
+  design. What replaced it: Supabase Auth verifies a person's password
+  (`lib/auth/identity.ts`), the app mints its own revocable session
+  (`lib/auth/session.ts`, `app_sessions`), and `getAuthContext()`
+  (`lib/auth/context.ts`) joins that session to an *active* membership to
+  produce the `{ user, organization, viewer }` every read, write, route and
+  MCP tool is scoped by. `proxy.ts` is still the optimistic, I/O-free gate.
+- `20260920120000_organizations.sql` adds `organizations`,
+  `organization_members`, `app_sessions`, an `organization_id` on all
+  nineteen business and integration tables (backfilled to the fixed Khyte
+  organization through a rollout default), `crm_events.recorded_by`, and
+  composite same-organization foreign keys. It revokes the MCP connections
+  approved under the shared password. `owner_id` stays, retired. The default
+  is dropped by a follow-up migration once the deployed build is verified —
+  the same rule as every other migration here: never ahead of the code that
+  reads it.
+- **Wallpaper links** now carry `<organizationId>.<hmac>`; old links stop
+  verifying and are copied again from `/goals`.
+- **Settings → Organisation** lists members; owners add (temporary password
+  shown once), edit, reset and revoke. `npm run org:members` does the same
+  from the CLI for bootstrap. The migration creates no accounts — which email
+  is Erik and which is Abdi is stated by an owner, never guessed.
+- **MCP** connections act as the person who approved them, in their
+  organization; receipts and events record that account. ChatGPT must be
+  reconnected once after deploy.
+- The roster enum (`erik`/`abdi`/`hai`) is unchanged on every attribution
+  column; a member is *mapped* to a label. A per-organization roster is a
+  later stage.
+- Demo mode without a database still boots but cannot be logged into: there
+  are no sessions to mint. Developer setup needs a Supabase project.
+
+Validation and exit evidence for this stage are recorded in
+[organization-foundation.md](organization-foundation.md) once the branch is
+verified; this section is the pointer, not the record.
+
+Stage 1 was accepted as code on 2026-09-21 (commit `4a95dc5`). The handoff
+for whoever builds Stage 2 — process rules, the invariants to keep, the
+notes-to-Journal investigation and the questions to settle first — is
+[donna-handoff-after-stage-1.md](donna-handoff-after-stage-1.md).
 
 ## Session update — strategy roster, task dates, migration record (2026-09-11)
 
@@ -260,7 +310,8 @@ log and the weekly archive) and `20260828140100_weekly_goal_section` (the
 "X of Y" for a goal nothing counts automatically, and retires `progress`
 **without dropping it** — the column is still mapped and still read for the
 editor's "tidigare uppskattning" hint, and a migration landing ahead of the
-code that reads its column is how this CRM went down once already.
+code that reads its column is how this CRM went down once already. Applied
+2026-09-16, with the code that reads it in the same branch.
 
 **The board's numbers are now computed, not typed.** Revenue, customers and
 pipeline are recomputed from `opportunities` on every read, and the weekly
@@ -1275,7 +1326,12 @@ The diagnosis in this section was read through the Supabase Management API,
 which runs SQL over its own connection and needs no pooler slot — the way back
 in when the pooler is full.
 
-### Auth gate (lib/auth/ + proxy.ts + app/login/)
+### Auth gate (lib/auth/ + proxy.ts + app/login/) — shared-password era, retired 2026-09-20
+
+Kept as the record of the design that ran from 2026-08-26 to 2026-09-20. The
+session cookie, `createSession()`/`verifyPassword()` and `AUTH_PASSWORD`
+described here are gone; see the session update at the top and
+[organization-foundation.md](organization-foundation.md) for what replaced them.
 
 **One shared password, no accounts.** Anyone holding it gets full read/write on
 every record, so it is a workspace credential rather than a personal one. This
@@ -1666,6 +1722,56 @@ the last good render up.
 → 307 to `/login`; authed → 200 with a real stamp and `no-store`; `/goals` renders
 200 with the weekly readout present and `GoalsSync` mounted.
 
+### Goal measurement (lib/goal-measure.ts)
+
+**Every goal is "X of Y". There is one model now, not three.** Before
+2026-09-15 the page carried three unrelated notions of a number: the `Mål`
+section had a hand-typed 0–100 `progress`, the weekly non-negotiables had a
+`metricKind` counted from `crm_events`, and the scoreboard had derived totals
+against a stored target. The section the page is named for was the one with no
+connection to the CRM at all.
+
+**The retired one is `progress`, and the reason is that it had no
+denominator.** "18 %" of what? Nothing contradicted it and nothing could, so
+it drifted from the day it was entered while the wallpaper drew a precise bar
+over an estimate. `metricCurrent`/`metricTarget` replace it: the X is still
+typed for a goal nothing counts automatically, but "1 av 3 bolag" is a count
+anyone can check. A goal that genuinely is not a count — "75 % of running all
+of our own sales" — now gets no bar at all, which is the honest rendering and
+the same rule `Bar` has always documented (an empty bar is a statement, a
+missing bar means "not measured").
+
+**`measureGoal(goal, counts)` is the single resolver**, and that is the point
+of it existing as a module rather than an expression. `GoalsEditor`,
+`DisplayBoard` and `/goals/timeline` each carried their own copy of
+`metricKind ? counts[kind] : progress ?? 0` before, which is exactly the drift
+the weekly progress cards were built to prevent. It returns `current`,
+`target`, `measured`, `hit` and `percent`; `measured` is deliberately
+`target > 0` rather than `target !== undefined`, because a target of 0 is not a
+goal you have met, it is a goal with no scale, and dividing by it gives
+`Infinity`.
+
+**Where the X comes from is the only thing that varies.** `metricKind` set →
+counted from the event log for the current week, and cannot drift from what the
+CRM recorded. `metricKind` unset → `metricCurrent`, typed. The editor shows the
+same pair either way (`Nu` / `Mål`), so the two kinds of row read identically
+on the board.
+
+**A goal still carrying an old estimate shows it as a hint** —
+"Tidigare uppskattning: 75 %" — but only while it has no target yet, and only
+in the editor. It is the one record of what anyone thought at the time, and it
+would otherwise have vanished silently the moment the bar stopped being drawn
+from it. It disappears as soon as someone gives the goal a real `Nu`/`Mål`.
+
+**The scoreboard's target field was impossible to type into**, fixed in the
+same pass. The `goal_metrics` row was created on blur, but the input was
+controlled against `metric?.targetValue` for a row that did not exist, so
+React restored `''` after every keypress and the blur handler only ever saw an
+empty string. On any database where `goal_metrics` was still empty — every
+fresh one, since nothing else creates those rows — no target could be set at
+all, which is why the wallpaper's three KPI tiles showed bare numbers with no
+bar. The row is created on the first keystroke now.
+
 ### Goals timeline (lib/goal-period.ts + app/goals/timeline/)
 
 **`annual` and `quarter` were two hardcoded boxes with no date behind either
@@ -1783,6 +1889,7 @@ Full detail in `docs/database.md`. Shape of it:
 | `supabase/migrations/20260826140000_goals.sql`, `20260828120000_personal_goals.sql`, `20260828140000_crm_events.sql`, `20260828140100_weekly_goal_section.sql` | the direction-board schema — see Derived board metrics. Applied |
 | `supabase/migrations/20260829120000_opportunity_sort_order.sql` | adds `opportunities.sort_order`, backfilled per-stage from `created_at desc` so no card visibly moved. Applied |
 | `supabase/migrations/20260914120000_task_sort_order.sql` | adds `tasks.sort_order` (`integer not null default 0`), backfilled per bucket from `due_date asc, created_at desc` — the order the board already rendered — so no task visibly moved. Applied |
+| `supabase/migrations/20260915120000_goal_metric_current.sql` | adds `goals.metric_current` (`integer`, `null` or `>= 0`) — the X in "X of Y", against the existing `metric_target`. Purely additive, no backfill: a goal with no target draws no bar until someone sets one. **Retires `goals.progress` without dropping it** — the column keeps its values, stays mapped, and is still read for the editor's "tidigare uppskattning" hint. Applied 2026-09-16 |
 | `supabase/seed.sql` | the former mock data as real rows, fixed UUIDs, re-runnable |
 | `supabase/config.toml` | local CLI config from `supabase init`; not a project link |
 | `scripts/supabase.mjs` | `npm run supabase -- <cmd>` — runs any CLI command with `SUPABASE_ACCESS_TOKEN` taken from `.env.local`, which overrides the machine-global `~/.supabase/access-token` |
@@ -1814,7 +1921,8 @@ Known issues for the remaining call sites that still call
 **Runs without Supabase credentials.** No `.env.local` means demo data, a boot
 warning, and writes that no-op. The UI is identical either way.
 
-**`AUTH_PASSWORD` and `AUTH_SECRET` are the exception — those are required.**
+**`AUTH_SECRET` is the exception — it is required** (as `AUTH_PASSWORD` was
+too, until individual accounts replaced the shared password on 2026-09-20).
 Unlike the Supabase variables there is no fallback: `verifyPassword()` and the
 signing helper both throw if their variable is missing, deliberately, because
 the alternatives are a gate that accepts everything or one that accepts nothing
@@ -2131,6 +2239,26 @@ prospects board's cards separate from the page.
   its actuals from `opportunities`, so only `target_value`, `label` and `unit`
   are still read. The column stays because dropping it is a migration for no
   gain, but nothing writes it any more
+- **The scoreboard compares all-time actuals against targets with no period.**
+  `loadDerivedTotals()` has no date filter — `sum(deal_value) filter (where
+  stage = 'Won')` is every deal ever won — and `goal_metrics` has no period
+  column, so "Intäkt 467k / 1M" means lifetime revenue against a target with no
+  timeframe. It reads as progress and is not progress. Scoping it to the fiscal
+  quarter is the next piece of work and needs the `deal_won` event log to do
+  it, because **`opportunities` has no `won_at` column** — the log is the only
+  record of *when* a deal closed. Blocked on one decision: whether the fiscal
+  year is the calendar year
+- **A meeting booked and walked back mid-week still counts for that week.**
+  Accepted deliberately when `meeting_booked` went back to an event count on
+  2026-09-15 — it is the same contract every other event kind here has. The
+  alternative was netting reversals, which is why `meeting_booked_reversed`
+  exists as an applied-but-unused enum value; it also lets this week's number
+  fall on a Thursday, which is a bad property for a target you are chasing
+- **The scoreboard target fix has never been exercised in a browser.** The
+  create-on-first-keystroke path is reasoned from React's controlled-input
+  restoration and is covered by typecheck, build and the existing suite, but
+  nothing has watched the field actually accept a digit against a real
+  `goal_metrics` table. Thirty seconds on `/goals` closes it
 - **The direction board is not localized.** Every label in `GoalsEditor`,
   `WallpaperLinks` and `DisplayBoard` is hard-coded Swedish rather than going
   through `lib/i18n/` (only the sidebar nav entry has `sv`/`en` entries). The
@@ -2173,12 +2301,12 @@ prospects board's cards separate from the page.
    identical, so this needs a `completed_at timestamptz` column before the
    window filter means anything. Small, additive migration; not started
 8. **Weekly AI summary.** A scheduled (cron-driven, weekly) job that reads the
-   past week's `crm_events`, completed tasks (see #8) and notes, and writes a
+   past week's `crm_events`, completed tasks (see #7) and notes, and writes a
    short digest: strongest team result, strongest individual contribution, and
-   suggested next steps. Explicitly a step *after* #8 — a summary of "who did
+   suggested next steps. Explicitly a step *after* #7 — a summary of "who did
    what" needs the completed-tasks-by-week data to exist first. Not started;
    see the **AI Assistant design** section below for the shared reasoning layer
-   this and the assistant in #10 should both be built on, rather than each
+   this and the assistant in #9 should both be built on, rather than each
    rolling its own prompt-and-fetch logic
 9. **Context-aware assistant ("Donna").** The highest-leverage and
     highest-risk item on this list — worth its own design pass rather than a

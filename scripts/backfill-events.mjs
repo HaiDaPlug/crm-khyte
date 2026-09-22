@@ -24,6 +24,14 @@
  * Idempotent and additive: it only ever inserts, never edits or deletes, which
  * is what the append-only log requires.
  *
+ * ORGANIZATIONS. Every event is written with the `organization_id` of the
+ * prospect it belongs to, read off the opportunity rather than assumed. The
+ * column carries a rollout default naming Khyte, but that default is a
+ * rollout aid a later migration drops — an event must land where its prospect
+ * lives, whichever organization that is. `recorded_by` stays null: a backfill
+ * is not any person's act, and the roster label in `colleague` already says
+ * who did the work.
+ *
  * Usage:
  *   node scripts/backfill-events.mjs             show what would be written
  *   node scripts/backfill-events.mjs --apply     actually write it
@@ -110,7 +118,7 @@ const dayKey = (date) =>
 
 const { data: opportunities, error: oppError } = await db
   .from('opportunities')
-  .select('id, stage, last_interaction, created_at, followed_up_by')
+  .select('id, organization_id, stage, last_interaction, created_at, followed_up_by')
 
 if (oppError) {
   console.error(`[khyte] could not read opportunities: ${oppError.message}`)
@@ -148,6 +156,7 @@ for (const opp of opportunities) {
     }
     already.add(key)
     planned.push({
+      organization_id: opp.organization_id,
       kind,
       subject_id: opp.id,
       colleague: opp.followed_up_by ?? null,

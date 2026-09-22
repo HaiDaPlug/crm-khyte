@@ -28,6 +28,12 @@ import { STAGES } from '@/lib/stage-config'
  * see the header on ./board-metrics for why that did not survive contact with
  * a weekly target. The log also still feeds the export's dated history
  * (lib/export-prospects.ts), as it did throughout.
+ *
+ * WHOSE LOG. Every row belongs to one organization and every read here is
+ * filtered by it. The organization is never a field on an event: it is the
+ * `EventScope` the whole batch is written under, and the caller takes it from
+ * its AuthContext or MCP principal — see the type below for why it is kept
+ * apart from the event data.
  */
 
 export type CrmEventKind =
@@ -144,6 +150,26 @@ export interface RecordEventInput {
 }
 
 /**
+ * Whose log a batch lands in, and who wrote it.
+ *
+ * Kept apart from `RecordEventInput` on purpose. The organization is not a
+ * property of an event that a caller sets per row; it is the scope the whole
+ * batch is recorded under, and it comes from the caller's AuthContext (or the
+ * MCP principal) — never from the event, a client payload or a default. A
+ * separate, required argument is what stops a caller from forgetting it, and
+ * from being able to slip a foreign id in beside the data.
+ *
+ * `recordedBy` is the account that pressed the button, as distinct from
+ * `colleague` on the event, which is the roster label credited with the work:
+ * logging a call for a teammate credits them and is recorded by you. Null when
+ * there is no account behind the write, such as a script.
+ */
+export interface EventScope {
+  organizationId: string
+  recordedBy: string | null
+}
+
+/**
  * Midnight local on the day a `YYYY-MM-DD` string names, or on `now`.
  *
  * Parsed field-by-field rather than through `new Date(string)`, which reads a
@@ -164,10 +190,16 @@ function dayStart(occurredOn?: string): Date {
 }
 
 /**
- * Whether this kind is already recorded for this subject on this day.
+ * Whether this kind is already recorded for this subject on this day, in this
+ * organization.
  *
  * A read before an append, which the log's append-only rule permits: the rule
  * forbids editing history, not declining to write the same fact twice.
+ *
+ * Scoped to the organization like every other read of a business table. A
+ * subject id is a uuid and will not collide across workspaces in practice, but
+ * the rule is that no query runs unscoped, and a rule with practical
+ * exceptions stops being one.
  *
  * Fails open — a check that errors reports "not recorded" and the event is
  * written. The insert this accompanies has already succeeded, so the database
@@ -176,6 +208,7 @@ function dayStart(occurredOn?: string): Date {
  * duplicate is visible on the board and can be reasoned about.
  */
 async function alreadyRecorded(
+  organizationId: string,
   kind: CrmEventKind,
   subjectId: string,
   start: Date
@@ -187,6 +220,7 @@ async function alreadyRecorded(
     const { data, error } = await getSupabase()
       .from('crm_events')
       .select('id')
+      .eq('organization_id', organizationId)
       .eq('kind', kind)
       .eq('subject_id', subjectId)
       .gte('occurred_at', start.toISOString())
@@ -256,12 +290,19 @@ function localDay(timestamp: string): string {
 }
 
 /**
- * Every recorded event for the given subjects, oldest first.
+ * Every recorded event for the given subjects in one organization, oldest
+ * first.
  *
  * One query for the whole export rather than one per prospect: the log is a few
- * hundred rows for this workspace and the caller needs all of it at once. Read
+ * hundred rows for a workspace and the caller needs all of it at once. Read
  * through the same direct-Postgres path as the rest of lib/db, so it cannot hit
  * the PostgREST clock-skew fault ./retry exists to wait out.
+ *
+ * Filtered by organization as well as by subject. The subject ids come from
+ * the caller's own snapshot and should all be its own, but the export must be
+ * unable to be handed another workspace's history even if one from elsewhere
+ * found its way into the list — the filter makes that a matter of SQL rather
+ * than of trusting the list.
  *
  * Returns a Map keyed by subject so the caller can join without a scan per row.
  * Subjects with no events are simply absent — which is a real state (3 of the
@@ -269,6 +310,7 @@ function localDay(timestamp: string): string {
  * prospect whose history is merely thin.
  */
 export async function loadEventsForSubjects(
+  organizationId: string,
   subjectIds: string[]
 ): Promise<Map<string, CrmEventRecord[]>> {
   const bySubject = new Map<string, CrmEventRecord[]>()
@@ -277,7 +319,8 @@ export async function loadEventsForSubjects(
   const rows = await getDb()`
     select kind, subject_id, colleague, detail, occurred_at
     from crm_events
-    where subject_id = any(${subjectIds}::uuid[])
+    where organization_id = ${organizationId}
+      and subject_id = any(${subjectIds}::uuid[])
     order by occurred_at asc
   `
 
@@ -306,13 +349,19 @@ export async function loadEventsForSubjects(
 }
 
 /**
- * Appends events. Never throws.
+ * Appends events under `scope`. Never throws.
  *
  * Activity logging must not be able to fail a CRM write: a dropped event costs
  * a number on a board, while a rejected write costs the user their edit. The
  * failure is logged and swallowed.
+ *
+ * `organization_id` is written explicitly on every row even though the column
+ * has a rollout default. The default exists to keep older code up during the
+ * deploy, not to be relied on — an event that landed in the default workspace
+ * because a caller forgot the scope would be invisible to the people it
+ * belonged to and would count toward someone else's week.
  */
-export async function recordEvents(events: RecordEventInput[]): Promise<void> {
+export async function recordEvents(scope: EventScope, events: RecordEventInput[]): Promise<void> {
   if (events.length === 0) return
 
   try {
@@ -334,7 +383,14 @@ export async function recordEvents(events: RecordEventInput[]): Promise<void> {
       if (entry.event.oncePerDay && entry.event.subjectId) {
         const key = `${entry.event.kind}:${entry.event.subjectId}:${entry.start.getTime()}`
         if (seen.has(key)) continue
-        if (await alreadyRecorded(entry.event.kind, entry.event.subjectId, entry.start)) {
+        if (
+          await alreadyRecorded(
+            scope.organizationId,
+            entry.event.kind,
+            entry.event.subjectId,
+            entry.start
+          )
+        ) {
           continue
         }
         seen.add(key)
@@ -348,6 +404,8 @@ export async function recordEvents(events: RecordEventInput[]): Promise<void> {
       .from('crm_events')
       .insert(
         keep.map(({ event, start }) => ({
+          organization_id: scope.organizationId,
+          recorded_by: scope.recordedBy,
           kind: event.kind,
           subject_id: event.subjectId ?? null,
           colleague: event.colleague ?? null,

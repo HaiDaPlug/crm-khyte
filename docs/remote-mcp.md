@@ -30,8 +30,11 @@ This change does not add new tag-editing controls to the browser UI.
 
 ## Attribution and field rules
 
-- Authentication grants access to the team's shared CRM. It does **not** identify
-  Erik, Abdi or Hai. Any authorized connection may log work for another colleague.
+- A connection acts as the person who approved it, inside their organization
+  (since 2026-09-20 — see [organization-foundation.md](organization-foundation.md)).
+  Every saved operation, receipt and activity event records that account.
+  Who *did* the work is separate: any authorized connection may log outreach
+  or assign a task for another colleague by naming them explicitly.
 - `followedUpBy` on outreach identifies who performed that interaction. It is
   saved on the interaction and credits activity events. Existing prospect ownership
   is preserved; for a new prospect the field is initialized from that attribution.
@@ -119,7 +122,8 @@ The integration never falls back to demo data or reports a no-op as saved.
    `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`.
    Enter secrets in the deployment's environment settings and ChatGPT connection
    settings where needed. Never put them in prompts, committed files or tool results.
-   The existing `AUTH_PASSWORD`, `AUTH_SECRET` and database configuration remain required.
+   The existing `AUTH_SECRET` and database configuration remain required;
+   `AUTH_PASSWORD` is retired (individual accounts replaced it on 2026-09-20).
 3. Deploy, then verify both discovery URLs return JSON:
    `https://crm.khyte.se/.well-known/oauth-authorization-server` and
    `https://crm.khyte.se/.well-known/oauth-protected-resource`.
@@ -131,9 +135,12 @@ The integration never falls back to demo data or reports a no-op as saved.
    client registration. Copy ChatGPT's exact callback into `MCP_REDIRECT_URIS` and
    redeploy if necessary. The server supports issuer identification and PKCE S256;
    use the callback displayed for this connection rather than guessing it.
-5. Sign in with the shared CRM password, approve the requested connection scopes,
-   and test a clearly identified sample task. Normal CRM login returns to the CRM;
-   login started from OAuth returns to the connection approval.
+5. Sign in with your own account, approve the requested connection scopes —
+   the consent page names the account and organization the connection will
+   act as — and test a clearly identified sample task. Normal CRM login
+   returns to the CRM; login started from OAuth returns to the connection
+   approval. Connections approved under the retired shared password were
+   revoked by the organization migration and must be approved again.
 
 Available scopes: `crm:read`, `crm:leads:write`, `crm:outreach:write`,
 `crm:tasks:write`. Read access is required; grant write scopes only for the desired
@@ -147,9 +154,15 @@ to the signed browser session and protected by origin checks.
 
 To revoke a connection, use OAuth `/oauth/revoke` with its access or refresh token
 and client credentials, or set that connection's `revoked_at` in the database.
-Rotating `MCP_SECRET` invalidates all MCP connections and preview tokens. Rotating
-the existing browser `AUTH_SECRET` only invalidates browser sessions; it does not
-revoke separately approved MCP connections. There is no connection-management UI yet.
+Revoking a member (Settings → Organisation, or `npm run org:members -- revoke`)
+revokes every connection that person approved in that organization and
+discards their pending authorization codes; every bearer authentication and
+every tool commit re-checks that the membership is still active on the same
+credential generation the connection was minted under, so a connection or
+code from before a revoke, re-add or password reset stays dead. Rotating
+`MCP_SECRET` invalidates all MCP connections and preview tokens. Rotating the
+browser `AUTH_SECRET` only invalidates browser sessions; it does not revoke
+separately approved MCP connections. There is no connection-management UI yet.
 
 Relevant official documentation:
 [MCP server](https://developers.openai.com/plugins/build/mcp-server),

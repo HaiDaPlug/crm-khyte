@@ -16,7 +16,11 @@ import {
   ChevronsRight,
   Sun,
   Moon,
+  LogOut,
 } from 'lucide-react'
+import { logout } from '@/app/actions/auth'
+import { colleagues } from '@/lib/colleagues'
+import type { ColleagueId } from '@/lib/types'
 import { cn } from '@/lib/utils'
 import { useCRMStore } from '@/lib/store'
 import khyteLogo from '@/public/khyte-logo-text-png.png'
@@ -33,6 +37,45 @@ export const navItems = [
   { href: '/settings', label: 'settings', icon: Settings },
 ] as const
 
+/**
+ * A member's initial on a disc.
+ *
+ * Takes the roster colour when an owner has mapped the person to a label, so
+ * the avatar in the chrome is the same disc that sits on their tasks and
+ * prospects (see AssigneePicker), and the accent otherwise. Fixed hex for the
+ * roster colours — same reasoning as lib/colleagues: an avatar must read as
+ * the same colour in light and dark mode.
+ *
+ * Exported for the mobile drawer and Settings, which show the same people;
+ * one definition so the three cannot drift. Decorative — callers put the name
+ * in text beside it.
+ */
+export function MemberAvatar({
+  name,
+  colleague,
+  className,
+}: {
+  name: string
+  colleague?: ColleagueId
+  className?: string
+}) {
+  const person = colleague ? colleagues[colleague] : null
+  const initial = name.trim().charAt(0).toUpperCase() || '?'
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'flex shrink-0 select-none items-center justify-center rounded-full font-bold',
+        person ? 'text-white' : 'bg-accent text-background',
+        className
+      )}
+      style={person ? { background: person.color } : undefined}
+    >
+      {initial}
+    </span>
+  )
+}
+
 export function AppSidebar() {
   const { t } = useTranslations()
   const pathname = usePathname()
@@ -40,6 +83,10 @@ export function AppSidebar() {
   const toggleSidebar = useCRMStore((s) => s.toggleSidebar)
   const theme = useCRMStore((s) => s.settings.theme)
   const toggleTheme = useCRMStore((s) => s.toggleTheme)
+  const viewer = useCRMStore((s) => s.workspace.viewer)
+  const organization = useCRMStore((s) => s.workspace.organization)
+
+  const identity = `${viewer.displayName} · ${organization.name}`
 
   return (
     <aside
@@ -149,6 +196,50 @@ export function AppSidebar() {
           {t.nav.collapse}
         </span>
       </button>
+
+      {/*
+        Who is signed in, and where. Read from the store rather than written
+        into the chrome because the session decides both — one build serves
+        every organization. Collapsed, only the avatar remains, carrying the
+        name and organization in its title.
+
+        Sign-out is a real form posting to the server action, not an onClick:
+        it has to work before hydration and with scripts off, and the action
+        both revokes the session row and clears the cookie (see actions/auth).
+      */}
+      <div
+        className={cn(
+          'flex shrink-0 border-t border-border-accent',
+          collapsed ? 'flex-col items-center gap-1 px-2 py-3' : 'items-center gap-2.5 px-3 py-3'
+        )}
+      >
+        <span title={collapsed ? identity : undefined} className="flex shrink-0">
+          <MemberAvatar
+            name={viewer.displayName}
+            colleague={viewer.colleague}
+            className="size-8 text-[11px]"
+          />
+        </span>
+        {collapsed ? (
+          // The avatar is decorative; this is what a screen reader gets.
+          <span className="sr-only">{identity}</span>
+        ) : (
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13px] font-medium text-foreground">{viewer.displayName}</p>
+            <p className="truncate font-mono text-[10.5px] text-muted">{organization.name}</p>
+          </div>
+        )}
+        <form action={logout}>
+          <button
+            type="submit"
+            title={t.nav.signOut}
+            aria-label={t.nav.signOut}
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-raised hover:text-foreground"
+          >
+            <LogOut size={15} />
+          </button>
+        </form>
+      </div>
     </aside>
   )
 }

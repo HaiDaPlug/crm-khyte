@@ -5,13 +5,14 @@ import { createPortal } from 'react-dom'
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Grid2X2, Moon, Sun, X } from 'lucide-react'
+import { Grid2X2, LogOut, Moon, Sun, X } from 'lucide-react'
+import { logout } from '@/app/actions/auth'
 import { useCRMStore } from '@/lib/store'
 import { useTranslations } from '@/lib/hooks/useTranslations'
 import { useDialogBehavior, useMounted } from '@/lib/hooks/useDialog'
 import { cn } from '@/lib/utils'
 import khyteLogo from '@/public/khyte-logo-text-png.png'
-import { navItems } from './AppSidebar'
+import { MemberAvatar, navItems } from './AppSidebar'
 
 const primaryHrefs = ['/dashboard', '/prospects', '/pipeline', '/tasks'] as const
 
@@ -26,6 +27,8 @@ export function MobileChrome({ menuOpen, onMenuOpen, onMenuClose }: MobileChrome
   const pathname = usePathname()
   const theme = useCRMStore((s) => s.settings.theme)
   const toggleTheme = useCRMStore((s) => s.toggleTheme)
+  const viewer = useCRMStore((s) => s.workspace.viewer)
+  const organization = useCRMStore((s) => s.workspace.organization)
   const panelRef = useRef<HTMLDivElement>(null)
   const mounted = useMounted()
 
@@ -126,15 +129,34 @@ export function MobileChrome({ menuOpen, onMenuOpen, onMenuClose }: MobileChrome
                 {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
                 {theme === 'dark' ? t.nav.lightMode : t.nav.darkMode}
               </button>
+
+              {/*
+                Who is signed in, and where — the same identity the desktop
+                sidebar shows, from the same store. Sign-out is a form posting
+                to the server action so it works before hydration and with
+                scripts off; the row is the drawer's full-width 48px touch
+                target, same as the theme toggle above it.
+              */}
               <div className="mt-2 flex items-center gap-2.5 px-3.5 py-2">
-                <div className="flex size-8 items-center justify-center rounded-full bg-accent text-[11px] font-bold text-background">
-                  K
-                </div>
+                <MemberAvatar
+                  name={viewer.displayName}
+                  colleague={viewer.colleague}
+                  className="size-8 text-[11px]"
+                />
                 <div className="min-w-0">
-                  <p className="truncate text-[12px] font-medium text-foreground">{t.nav.workspace}</p>
-                  <p className="truncate font-mono text-[10.5px] text-muted">khyte.io</p>
+                  <p className="truncate text-[12px] font-medium text-foreground">{viewer.displayName}</p>
+                  <p className="truncate font-mono text-[10.5px] text-muted">{organization.name}</p>
                 </div>
               </div>
+              <form action={logout}>
+                <button
+                  type="submit"
+                  className="flex min-h-12 w-full items-center gap-3 rounded-xl px-3.5 text-[14px] text-foreground/75 transition-colors hover:bg-surface-raised hover:text-foreground"
+                >
+                  <LogOut size={18} />
+                  {t.nav.signOut}
+                </button>
+              </form>
             </div>
           </div>
         </div>,

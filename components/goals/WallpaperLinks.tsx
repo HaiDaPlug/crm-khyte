@@ -71,7 +71,9 @@ export function WallpaperLinks({ links }: { links: WallpaperLink[] }) {
         <>
           <p className="mb-4 text-[13.5px] leading-relaxed text-foreground/55">
             Klistra in i Lively Wallpaper. Länken innehåller nyckeln — dela den
-            bara med den det gäller. Tavlan uppdaterar sig själv var femte minut.
+            bara med den det gäller. Den är knuten till ditt medlemskap och
+            slutar fungera om det återkallas. Tavlan uppdaterar sig själv var
+            femte minut.
           </p>
 
           <ul className="flex flex-col gap-2">

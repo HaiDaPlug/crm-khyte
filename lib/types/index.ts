@@ -142,8 +142,82 @@ export interface StrategyCard {
 
 export type PipelineStage = Stage
 
-/** Fixed roster — the app has no real accounts/auth yet (see Settings). */
+/**
+ * The legacy roster label — who *did* a piece of work on a task, prospect,
+ * lead, event or interaction.
+ *
+ * Accounts exist now (see `Viewer`), but attribution columns still carry this
+ * label rather than a user id: it is what every historical row records, and a
+ * member is *mapped* to a label by an owner rather than the label being
+ * derived from a login. A per-organization roster replaces the fixed enum in
+ * a later stage.
+ */
 export type ColleagueId = 'erik' | 'abdi' | 'hai'
+
+/* ———— Organization and identity ———— */
+
+export type MemberRole = 'owner' | 'member'
+
+export type MemberStatus = 'active' | 'revoked'
+
+/** A workspace. Every business record belongs to exactly one. */
+export interface Organization {
+  id: string
+  name: string
+  slug: string
+  /** IANA zone, e.g. Europe/Stockholm. */
+  timezone: string
+}
+
+/** One account's membership of one organization. */
+export interface OrganizationMember {
+  id: string
+  userId: string
+  role: MemberRole
+  status: MemberStatus
+  email: string
+  displayName: string
+  /** The roster label this person is known as, when an owner has mapped one. */
+  colleague?: ColleagueId
+  createdAt: string
+  revokedAt?: string
+}
+
+/** The person looking at the app, as this organization knows them. */
+export interface Viewer {
+  userId: string
+  memberId: string
+  role: MemberRole
+  displayName: string
+  email: string
+  colleague?: ColleagueId
+}
+
+/**
+ * What a browser believes it is acting as when it submits a write.
+ *
+ * Sent with every Server Action call and compared, server-side, with the
+ * session that actually arrives. A tab whose account changed underneath it
+ * (another tab logged in as someone else) would otherwise submit its drafts
+ * under the new identity; with this, the server refuses and the tab reloads.
+ * It is an expectation to verify, never an authority — the session decides.
+ */
+export interface ActionScope {
+  organizationId: string
+  userId: string
+}
+
+/**
+ * The organization the session is acting in, who is looking, and who else is
+ * a member. Loaded with the snapshot so the chrome and Settings can render it
+ * without a second read; changes to the roster are rare and arrive through
+ * the same live-sync poll as everything else.
+ */
+export interface Workspace {
+  organization: Organization
+  viewer: Viewer
+  members: OrganizationMember[]
+}
 
 export interface Task {
   id: string
@@ -352,6 +426,8 @@ export interface WeeklyProgress {
  * Produced server-side by lib/db/queries.loadSnapshot().
  */
 export interface CRMSnapshot {
+  /** The organization this working set belongs to, and who is looking. */
+  workspace: Workspace
   companies: Company[]
   contacts: Contact[]
   opportunities: Opportunity[]
@@ -380,7 +456,8 @@ export type DateFormat = 'locale' | 'iso' | 'us' | 'eu'
 /**
  * How the app renders values, not what it stores. Persisted to localStorage
  * per browser rather than to Postgres — these are per-device display choices,
- * and the app is still single-operator.
+ * not part of the shared organization state, and a person may well want a
+ * different theme on their phone than on their desk.
  */
 export interface Settings {
   theme: 'dark' | 'light'

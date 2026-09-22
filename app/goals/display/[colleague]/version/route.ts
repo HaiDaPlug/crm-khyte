@@ -1,6 +1,6 @@
 import { COLLEAGUE_IDS } from '@/lib/colleagues'
-import { isAuthenticated } from '@/lib/auth/guard'
-import { DISPLAY_TOKEN_PARAM, verifyDisplayToken } from '@/lib/auth/display-token'
+import { displayOrganization } from '@/lib/auth/display-access'
+import { DISPLAY_TOKEN_PARAM } from '@/lib/auth/display-token'
 import { loadGoalsVersion } from '@/lib/db/queries'
 import type { ColleagueId } from '@/lib/types'
 
@@ -17,8 +17,12 @@ import type { ColleagueId } from '@/lib/types'
  * as this endpoint deciding who may read it, and a Route Handler is reachable
  * by direct fetch. The check is repeated here for the same reason
  * lib/auth/guard.ts exists rather than trusting Proxy: this is the last line,
- * not the first. Either a real session or the colleague's own token opens it,
- * mirroring the two ways the board itself is reachable.
+ * not the first. Either the colleague's own token or a real session opens it,
+ * mirroring the two ways the board itself is reachable — and, as on the page,
+ * the check is also where the organization comes from. Token first, then
+ * session, in the same order the page resolves it, so the stamp describes the
+ * same organization's board the page rendered; a stamp for a different
+ * workspace would either never match or reload the board forever.
  *
  * The response carries no board content — only a timestamp and a row count —
  * so even a leaked stamp reveals nothing beyond "something changed".
@@ -34,14 +38,15 @@ export async function GET(
   }
 
   const token = new URL(request.url).searchParams.get(DISPLAY_TOKEN_PARAM)
-  const allowed =
-    verifyDisplayToken(colleague, token ?? undefined) || (await isAuthenticated())
+  // Same resolution as the page, membership check included: a revoked
+  // member's link stops polling the moment it stops rendering.
+  const organizationId = await displayOrganization(colleague, token ?? undefined)
 
-  if (!allowed) {
+  if (!organizationId) {
     return new Response('Unauthorized', { status: 401 })
   }
 
-  const version = await loadGoalsVersion()
+  const version = await loadGoalsVersion(organizationId)
 
   return Response.json(
     { version },

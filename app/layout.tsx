@@ -1,11 +1,12 @@
 import { headers } from 'next/headers'
+import { redirect } from 'next/navigation'
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono, Barlow, Plus_Jakarta_Sans } from 'next/font/google'
 import { Instrument_Serif, Source_Serif_4 } from 'next/font/google'
 import './globals.css'
 import { AppShell } from '@/components/layout/AppShell'
 import { loadSnapshot, loadSnapshotVersion } from '@/lib/db/queries'
-import { isAuthenticated } from '@/lib/auth/guard'
+import { getAuthContext } from '@/lib/auth/context'
 
 const geistSans = Geist({
   variable: '--font-geist-sans',
@@ -65,11 +66,18 @@ export default async function RootLayout({
   // root layout serve both: layouts cannot see the pathname on the server
   // (they do not re-render on navigation), but they can read cookies.
   //
+  // The context is both the gate and the scope. Null means nobody is logged
+  // in — or no database is configured, in which case there is nobody to log
+  // in — and a non-null one names the organization every read below is
+  // filtered by. One object answers both questions, so there is no way to
+  // pass the first check and read some other workspace's rows.
+  //
   // The snapshot load sits behind the same check on purpose — an
   // unauthenticated request must not reach the database, and AppShell would
   // otherwise hand a full copy of the working set to the client tree on the
   // login page.
-  const authed = await isAuthenticated()
+  const context = await getAuthContext()
+  const authed = context !== null
 
   // The wallpaper renders bare — no sidebar, no store, no CRM snapshot.
   //
@@ -84,7 +92,18 @@ export default async function RootLayout({
   // <html> element below — this is one branch instead of a second copy that
   // silently drifts.
   const headerList = await headers()
-  const isDisplay = (headerList.get('x-pathname') ?? '').startsWith('/goals/display')
+  const pathname = headerList.get('x-pathname') ?? ''
+  const isDisplay = pathname.startsWith('/goals/display')
+
+  // A cookie that is well-signed but no longer names a live session — the
+  // person was revoked, or logged out elsewhere — passes Proxy's optimistic
+  // check and arrives here with no context. Rendering a page bare would crash
+  // the first component that reads the store; sending them to the gate is
+  // what the request deserves. The login page itself and the wallpaper are
+  // the two places a null context is an ordinary state, not a lockout.
+  if (!context && !isDisplay && pathname !== '/login') {
+    redirect('/login')
+  }
 
   // One read per full page load, handed to the client store below. Layouts do
   // not re-run on client-side navigation, so moving between routes costs
@@ -95,8 +114,8 @@ export default async function RootLayout({
   // between the two reads must leave the stamp behind the data rather than
   // ahead of it: behind costs one redundant merge, ahead silently swallows the
   // change. One small aggregate is worth that ordering.
-  const version = authed && !isDisplay ? await loadSnapshotVersion() : null
-  const snapshot = authed && !isDisplay ? await loadSnapshot() : null
+  const version = authed && !isDisplay ? await loadSnapshotVersion(context.organizationId) : null
+  const snapshot = authed && !isDisplay ? await loadSnapshot(context) : null
 
   return (
     <html

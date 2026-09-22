@@ -57,7 +57,7 @@ export function GoalsSync({ version }: { version: string }) {
           cache: 'no-store',
         })
 
-        // Most likely a 401: the shared-password session expired. Refreshing
+        // Most likely a 401: the session expired or was revoked. Refreshing
         // would replace a working editor with a login form mid-edit, so leave
         // the last good render up and let the next tick retry.
         if (!stamp.ok) return

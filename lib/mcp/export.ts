@@ -17,8 +17,11 @@ const DEFAULT_GROUPS = ['identity', 'status', 'people', 'dates', 'provenance'] a
 
 // Mirror the event provenance contract in lib/db/events.ts without its global
 // getDb dependency, so the export uses the caller's injected database.
-async function readEvents(db: Queryable, ids: string[]) {
-  const rows = await db.query('select kind, subject_id, colleague, detail, occurred_at from crm_events where subject_id = any($1::uuid[]) order by occurred_at asc, id asc', [ids])
+async function readEvents(db: Queryable, organizationId: string, ids: string[]) {
+  // Events are historical facts keyed by subject id with no foreign key back
+  // to the prospect, so the organization predicate is the only thing keeping
+  // another organization's log out of this history.
+  const rows = await db.query('select kind, subject_id, colleague, detail, occurred_at from crm_events where organization_id = $2 and subject_id = any($1::uuid[]) order by occurred_at asc, id asc', [ids, organizationId])
   const result: Record<string, CrmEventRecord[]> = {}
   for (const row of rows) {
     const detail = row.detail as Record<string, unknown> | null
@@ -32,36 +35,46 @@ async function readEvents(db: Queryable, ids: string[]) {
   return result
 }
 
-export async function exportProspects(db: Queryable, raw: unknown): Promise<{
+/**
+ * The contacted dataset, one page at a time.
+ *
+ * The organization comes from the connection's principal and nowhere else —
+ * `exportProspectsSchema` has no organization field on purpose, so a model
+ * cannot ask for another workspace's prospects however it phrases the request.
+ */
+export async function exportProspects(db: Queryable, raw: unknown, actor: { organizationId: string }): Promise<{
   asOf: string; total: number; guidance: string; rows: Record<string, unknown>[];
   nextCursor: string | null; historyAvailable?: boolean; fields?: string[];
 }> {
   const input = exportProspectsSchema.parse(raw)
   const asOf = input.asOf ?? stockholmToday()
   const stages = STAGES.filter(stage => hasBeenContacted(stage) && (!input.stages || input.stages.includes(stage)))
-  const params: unknown[] = [stages, input.contactedSince ?? null]
-  const filter = 'stage::text = any($1::text[]) and ($2::date is null or last_interaction >= $2::date)'
+  // The organization leads every predicate on this page, count and cursor
+  // included: a total, a next cursor or a note from another organization must
+  // never be computed, let alone returned.
+  const params: unknown[] = [stages, input.contactedSince ?? null, actor.organizationId]
+  const filter = 'organization_id = $3 and stage::text = any($1::text[]) and ($2::date is null or last_interaction >= $2::date)'
   const [count] = await db.query(`select count(*)::int as total from opportunities where ${filter}`, params)
   const base = { asOf, total: Number(count.total), guidance: EXPORT_GUIDANCE }
   if (input.countOnly) return { ...base, rows: [], nextCursor: null }
 
   // Immutable ID ordering prevents edits to last_interaction from moving a row
   // across the cursor. Fresh inserts/eligibility changes still require rechecks.
-  const opportunities = await db.query(`select *, last_interaction::text as last_interaction, follow_up_date::text as follow_up_date from opportunities where ${filter} and ($3::uuid is null or id > $3::uuid) order by id asc limit $4`, [...params, input.cursor ?? null, input.limit + 1])
+  const opportunities = await db.query(`select *, last_interaction::text as last_interaction, follow_up_date::text as follow_up_date from opportunities where ${filter} and ($4::uuid is null or id > $4::uuid) order by id asc limit $5`, [...params, input.cursor ?? null, input.limit + 1])
   const page = opportunities.slice(0, input.limit)
   if (!page.length) return { ...base, rows: [], nextCursor: null, historyAvailable: true }
   const ids = page.map(row => String(row.id))
   const companyIds = [...new Set(page.map(row => row.company_id))]
   const contactIds = [...new Set(page.map(row => row.contact_id))]
   const [companyRows, contactRows, noteRows, taskRows] = await Promise.all([
-    db.query('select * from companies where id = any($1::uuid[])', [companyIds]),
-    db.query('select * from contacts where id = any($1::uuid[])', [contactIds]),
-    db.query('select *, created_at::text as created_at from notes where opportunity_id = any($1::uuid[]) or company_id = any($2::uuid[])', [ids, companyIds]),
-    db.query('select *, due_date::text as due_date from tasks where related_opportunity_id = any($1::uuid[]) or related_company_id = any($2::uuid[])', [ids, companyIds]),
+    db.query('select * from companies where organization_id = $2 and id = any($1::uuid[])', [companyIds, actor.organizationId]),
+    db.query('select * from contacts where organization_id = $2 and id = any($1::uuid[])', [contactIds, actor.organizationId]),
+    db.query('select *, created_at::text as created_at from notes where organization_id = $3 and (opportunity_id = any($1::uuid[]) or company_id = any($2::uuid[]))', [ids, companyIds, actor.organizationId]),
+    db.query('select *, due_date::text as due_date from tasks where organization_id = $3 and (related_opportunity_id = any($1::uuid[]) or related_company_id = any($2::uuid[]))', [ids, companyIds, actor.organizationId]),
   ])
   let historyAvailable = true
   let events: Record<string, CrmEventRecord[]> = {}
-  try { events = await readEvents(db, ids) } catch { historyAvailable = false }
+  try { events = await readEvents(db, actor.organizationId, ids) } catch { historyAvailable = false }
   const companies = new Map(companyRows.map(row => { const value = fromCompanyRow(row as unknown as CompanyRow); return [value.id, value] }))
   const contacts = new Map(contactRows.map(row => { const value = fromContactRow(row as unknown as ContactRow); return [value.id, value] }))
   const notes = noteRows.map(row => fromNoteRow(row as unknown as NoteRow))
