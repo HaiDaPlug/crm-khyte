@@ -60,8 +60,17 @@ export function DetailDrawer({ opportunity, company, contact, onClose }: DetailD
   const updateOpportunity = useCRMStore((s) => s.updateOpportunity)
   const updateCompany = useCRMStore((s) => s.updateCompany)
   const updateContact = useCRMStore((s) => s.updateContact)
-  const logNextStep = useCRMStore((s) => s.logNextStep)
+  const changeNextStep = useCRMStore((s) => s.changeNextStep)
   const removeOpportunity = useCRMStore((s) => s.removeOpportunity)
+  // The next step as the store holds it, not as the drawer was handed it.
+  // Unlike the other fields here, a refused change is put back (see
+  // `changeNextStep` in the store), and the drawer's own copy of the row is a
+  // snapshot taken when it opened — reading the store is what lets the
+  // restored value reach the screen.
+  const storedNextStep = useCRMStore((s) =>
+    payload ? s.opportunities.find((o) => o.id === payload.opportunity.id)?.nextStep : undefined
+  )
+  const nextStep = storedNextStep ?? payload?.opportunity.nextStep ?? ''
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   // Which single field is mid-edit, if any. Only one at a time — these are
@@ -214,34 +223,32 @@ export function DetailDrawer({ opportunity, company, contact, onClose }: DetailD
 
   const beginEditNextStep = () => {
     if (!payload) return
-    setNextStepDraft(payload.opportunity.nextStep)
+    setNextStepDraft(nextStep)
     setEditingField('nextStep')
   }
 
   /**
-   * Saving a new next step logs the value it's replacing as a timeline
-   * activity first, so the drawer's history shows what was planned at each
+   * Saving a new next step records the value it replaces as a system line in
+   * the Journal, so the prospect's history shows what was planned at each
    * point rather than only ever the latest plan.
+   *
+   * ONE action, not two. The field and the line are written by the same
+   * Server Action in one transaction (`changeNextStep`), so a line cannot be
+   * filed for a change that did not happen, nor a change made without its
+   * line. The line's text is the replaced value alone; the card puts the
+   * label around it in the reader's language. Fired without awaiting: the
+   * field moves at once, the returned line lands in this prospect's feed
+   * below, and a refusal puts the old value back and toasts on its own.
    */
   const saveNextStep = () => {
     const id = payload?.opportunity.id
     if (!id || !payload) return
     const next = nextStepDraft.trim()
-    const previous = payload.opportunity.nextStep
-    if (next === previous) {
+    if (next === nextStep) {
       setEditingField(null)
       return
     }
-    if (previous) {
-      // A system line in the Journal, not a note: `origin: 'system'` is set
-      // server-side (app/actions/journal.ts) so this cannot read as something
-      // a person wrote, and the copy is built here because the dictionary is
-      // on the client. Fired without awaiting — the field commits either way,
-      // and a failed write toasts on its own. The store prepends the returned
-      // entry to this prospect's feed below.
-      void logNextStep(id, copy.nextStepLogged(previous))
-    }
-    updateOpportunity(id, { nextStep: next })
+    void changeNextStep(id, next)
     setPayload((p) => (p ? { ...p, opportunity: { ...p.opportunity, nextStep: next } } : p))
     setEditingField(null)
   }
@@ -549,8 +556,8 @@ export function DetailDrawer({ opportunity, company, contact, onClose }: DetailD
                   </div>
                 </div>
 
-                {/* Next step — click to edit; the previous value is logged to
-                    the timeline below as an activity before it's overwritten */}
+                {/* Next step — click to edit; the value it replaces is kept
+                    as a system line in the Journal below */}
                 <div className="mt-3 bg-accent-light border border-border-accent rounded-lg px-4 py-3.5">
                   <div className="flex items-start gap-2.5">
                     <ArrowRight size={14} className="mt-0.5 text-accent shrink-0" />
@@ -576,7 +583,7 @@ export function DetailDrawer({ opportunity, company, contact, onClose }: DetailD
                           onClick={beginEditNextStep}
                           className="block min-h-11 w-full touch-manipulation text-left text-[14px] leading-relaxed text-foreground sm:min-h-0"
                         >
-                          {payload.opportunity.nextStep || (
+                          {nextStep || (
                             <span className="text-foreground/50">{copy.nextStepPlaceholder}</span>
                           )}
                         </button>

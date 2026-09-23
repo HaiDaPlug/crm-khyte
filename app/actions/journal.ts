@@ -1,7 +1,5 @@
 'use server'
 
-import { randomUUID } from 'node:crypto'
-
 import { requireAuth, type AuthContext } from '@/lib/auth/guard'
 import { scopeMismatch } from '@/lib/actions/scope'
 import { crmDatabase } from '@/lib/crm/database'
@@ -10,6 +8,7 @@ import { isSupabaseConfigured } from '@/lib/supabase/server'
 import { unavailablePage, type ExportJournalEntry, type JournalEntryDetail, type JournalEntryView, type JournalPage } from '@/lib/journal/contracts'
 import {
   addLink,
+  changeNextStep as changeNextStepInJournal,
   createEntry,
   deleteEntry,
   editEntry,
@@ -48,8 +47,15 @@ import type { ActionScope } from '@/lib/types'
  *
  * `origin` IS NEVER TAKEN FROM THE BROWSER. Everything submitted here is
  * `origin: 'person'`. The one action that writes a system line —
- * `logNextStepEntry` — sets it server-side, in this file, where a caller
- * cannot reach it.
+ * `changeNextStep` — does it in the service, from the value the database held,
+ * in the same transaction as the next-step update; the browser sends only the
+ * new next step.
+ *
+ * THE SESSION IS RE-CHECKED AT THE WRITE. requireAuth() resolved the session
+ * when the request arrived; every write below also hands the service that
+ * session's id and membership generation, and the service asks again inside
+ * its transaction, under the account lock, whether both are still current. A
+ * member revoked while their request was queued writes nothing.
  *
  * NO withRetry. These go through the direct Postgres pool, which mints no JWT
  * and therefore cannot hit the clock-skew fault the PostgREST writes in ./crm
@@ -65,6 +71,13 @@ import type { ActionScope } from '@/lib/types'
  *  link to the entry the key did produce. */
 export type JournalActionResult =
   | { ok: true; entry: JournalEntryView; replayed?: boolean }
+  | { ok: false; error: string; existing?: JournalEntryView }
+
+/** A next-step change. `entry` is the system line recording the value that was
+ *  replaced, or null when there was nothing to record; `previous` is that value
+ *  as the database held it. */
+export type NextStepActionResult =
+  | { ok: true; entry: JournalEntryView | null; previous: string }
   | { ok: false; error: string; existing?: JournalEntryView }
 
 /** A page of the feed. */
@@ -88,9 +101,16 @@ function configured(): boolean {
 }
 
 /** Who the write is attributed to. Taken from the session; the scope the
- *  browser sent is compared, never read. */
+ *  browser sent is compared, never read. The session id and the membership
+ *  generation travel with it so the service can re-check both at the write. */
 function actorFor(context: AuthContext): JournalActor {
-  return { organizationId: context.organizationId, userId: context.userId, source: 'typed' }
+  return {
+    organizationId: context.organizationId,
+    userId: context.userId,
+    source: 'typed',
+    sessionId: context.sessionId,
+    credentialGeneration: context.credentialGeneration,
+  }
 }
 
 /** Reported rather than thrown — see the note above on why. */
@@ -163,49 +183,28 @@ export async function unlinkJournalEntry(id: string, linkId: string, scope: Acti
 }
 
 /**
- * The line the prospect drawer used to write into `notes` when a next step
- * changed.
+ * Changes a prospect's next step, and records the step it replaced as a
+ * system entry — one transaction, on the direct pool.
  *
- * `origin: 'system'` and `kind: 'update'` are set here, server-side: this is
- * Donna recording a change somebody made, not a person writing something down,
- * and the feed renders the two differently. The browser cannot ask for either.
+ * This replaces the drawer's two calls (the opportunity update, then a
+ * separate `logNextStepEntry` carrying the drawer's own copy of the old value
+ * and of the label). The browser now sends only the new value. The previous
+ * one is read by the service under a row lock, so the Journal records what
+ * the row actually held; the entry's body is that value alone, with
+ * `systemEvent: 'next_step_changed'`, and the drawer renders the label from
+ * its dictionary. `origin: 'system'` is set in the service, where a caller
+ * cannot reach it.
  *
- * `body` IS THE DRAWER'S OWN COPY, ALREADY LOCALISED. The dictionary lives on
- * the client (lib/i18n), so the alternative would be a second copy of "Next
- * step" in a Server Action that has no idea which language the drawer is in.
- * It is treated as text and nothing more — it is validated by the same schema
- * as anything a person types, and it decides nothing.
- *
- * A FRESH KEY EVERY CALL. A typed capture reuses its request key until the
- * save succeeds, because the person's draft survives a failure and must not
- * become two entries. This has no draft: each submitted change is its own
- * line, and the drawer already refuses a repeat submit, so a new uuid per call
- * is what keeps two genuinely different changes from colliding on one key.
+ * `{ ok: true, entry: null }` means the change was saved and there was nothing
+ * to record: the previous next step was empty, or the same.
  */
-export async function logNextStepEntry(
-  opportunityId: string,
-  body: string,
-  scope: ActionScope
-): Promise<JournalActionResult> {
+export async function changeNextStep(opportunityId: string, next: string, scope: ActionScope): Promise<NextStepActionResult> {
   const context = await requireAuth()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
   try {
-    return await createEntry(
-      crmDatabase(),
-      actorFor(context),
-      {
-        requestKey: randomUUID(),
-        text: body,
-        kind: 'update',
-        // The company's name becomes the label, resolved by the service from
-        // the opportunity — the prospect is called by its company everywhere
-        // in this CRM, and that name is what survives if it is ever deleted.
-        links: [{ type: 'opportunity', id: opportunityId }],
-      },
-      { origin: 'system' }
-    )
+    return await changeNextStepInJournal(crmDatabase(), actorFor(context), opportunityId, next)
   } catch (cause) {
     return failed('next step', cause)
   }

@@ -245,11 +245,12 @@ test('lint: every SQL statement against an organization-owned table names organi
   // Re-based twice: from 60 when lib/journal/service.ts joined SQL_FILES, and
   // again when the Journal reached lib/db/queries.ts — the two `notes`
   // statements (the snapshot read and its version arm) went, and
-  // loadJournalVersion's three union arms arrived. 89 statements today, and a
+  // loadJournalVersion's three union arms arrived, then changeNextStep's
+  // opportunity select and update in the correction pass. 91 statements today, and a
   // floor two below that so an ordinary edit does not move it while a file
   // dropping out still fails loudly.
   assert.ok(checked >= 87,
-    `only ${checked} statements found, below the 87 expected of the six files (89 today, 27 of them the Journal service); the lint has stopped seeing the code`)
+    `only ${checked} statements found, below the 87 expected of the six files (91 today, 29 of them the Journal service); the lint has stopped seeing the code`)
 })
 
 test('lint: the service layer stamps and filters the organization in the helpers every plan goes through', async () => {

@@ -99,6 +99,67 @@ export async function lockAccount(db: Queryable, userId: string): Promise<void> 
   await db.query('select pg_advisory_xact_lock(hashtext($1))', [`khyte:user:${userId}`])
 }
 
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A browser session as a write re-checks it: the ids AuthContext resolved. */
+export interface LiveSessionClaim {
+  userId: string
+  organizationId: string
+  sessionId: string
+  credentialGeneration: string
+}
+
+/**
+ * Whether a browser session is still live, and still backed by the exact
+ * membership it was resolved against — asked INSIDE the writer's transaction,
+ * after taking the account lock, immediately before the write.
+ *
+ * The session was checked when the request arrived (lib/auth/context.ts), but
+ * a Server Action can sit in a queue or behind a lock for longer than it takes
+ * an owner to revoke the person sending it. This is the browser's twin of the
+ * per-commit revalidation in lib/crm/service.ts commitAction: the same
+ * account lock revokeMember, resetCredentials and claimAccount take before
+ * they cut sessions and rotate the generation. So a revoke either committed
+ * first and this answers false, or it is waiting on this transaction and cuts
+ * everything once the write has landed — never a write committed on the
+ * strength of a check made before the wait.
+ *
+ * One statement: the session unrevoked, unexpired and in this organization,
+ * joined to an ACTIVE membership that still carries the generation the
+ * session was resolved with. The generation is what refuses a session from
+ * before a revoke-and-re-add, whose membership row is active again but is no
+ * longer the one that session was opened under.
+ *
+ * LOCK ORDER. The account advisory lock, then this read, then the caller's row
+ * locks — and never the organization lock after it. Taking the account lock
+ * alone is consistent with the order in this module's header (organization,
+ * then account, then rows): a writer that holds only the account lock never
+ * waits for the organization lock, so it cannot close a cycle with revokeMember
+ * (which holds the organization lock while it waits for this account's), and
+ * it takes no row lock before the account lock, so it cannot close one with
+ * the token exchange either.
+ *
+ * An id that is not uuid-shaped answers false without a query: it cannot
+ * name a session, and handing it to Postgres would be a cast error rather
+ * than a refusal.
+ */
+export async function assertLiveSession(tx: Queryable, claim: LiveSessionClaim): Promise<boolean> {
+  if (![claim.userId, claim.organizationId, claim.sessionId, claim.credentialGeneration].every(id => UUID_SHAPE.test(id))) {
+    return false
+  }
+  await lockAccount(tx, claim.userId)
+  const [row] = await tx.query<{ id: string }>(
+    `select s.id from app_sessions s
+     join organization_members m
+       on m.organization_id = s.organization_id and m.user_id = s.user_id
+      and m.status = 'active' and m.credential_generation = $4::uuid
+     where s.id = $1::uuid and s.user_id = $2::uuid and s.organization_id = $3::uuid
+       and s.revoked_at is null and s.expires_at > now()`,
+    [claim.sessionId, claim.userId, claim.organizationId, claim.credentialGeneration]
+  )
+  return Boolean(row)
+}
+
 /* ———— reads ———— */
 
 /** Every membership of the organization, active and revoked, owners first. */

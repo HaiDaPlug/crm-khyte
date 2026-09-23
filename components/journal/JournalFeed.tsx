@@ -42,11 +42,14 @@ interface JournalFeedProps {
  * The list is never emptied while a refresh is in flight — the previous page
  * stays under the skeleton line. A reader who has scrolled to an entry should
  * not lose it every twelve seconds because the poller saw the stamp move.
- * More than that: once Load more has been pressed, the poller MERGES its
- * fresh first page into the list instead of replacing it (see `readFirstPage`
+ * More than that: once Load more has been pressed, the poller re-reads EVERY
+ * page the reader holds and replaces the list with that (see `refreshRange`
  * in the store), so a colleague writing a line cannot cut a reader who asked
- * for three pages back to one. Only the Refresh button below, and the first
- * load, replace the list — those are somebody asking for the newest page.
+ * for three pages back to one, and a colleague deleting or editing an entry on
+ * page three is reflected there rather than left standing. Cards keep their
+ * ids, so the reader's place survives the swap. Only the Refresh button below,
+ * and the first load, read a single page — those are somebody asking for the
+ * newest page.
  *
  * The view is reference-counted for as long as this component is mounted. The
  * store outlives navigation, and the poller refreshes only the views a feed is
@@ -89,7 +92,8 @@ export function JournalFeed({ viewKey, targets, limit, className }: JournalFeedP
   const loading = view?.status === 'loading'
   const failed = view?.status === 'error'
 
-  /** The explicit ask, which replaces the list — unlike the poller's merge. */
+  /** The explicit ask: the newest page, and only that — unlike the poller,
+   *  which re-reads every page held. */
   const refresh = () =>
     void loadJournalView(viewKey, {
       targets: targetKey ? (JSON.parse(targetKey) as LinkTarget[]) : undefined,

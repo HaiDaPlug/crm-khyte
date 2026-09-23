@@ -57,6 +57,13 @@ const note = {
   extracted: randomUUID(),
   dismissed: randomUUID(),
   lateEvening: randomUUID(),
+  // Valid legacy content the first text of this migration would have refused
+  // or aborted on: a note longer than the composer's ceiling, and three lines
+  // shaped like outreach whose fields the tool could never have written.
+  long: randomUUID(),
+  malformedDate: randomUUID(),
+  malformedChannel: randomUUID(),
+  malformedColleague: randomUUID(),
 }
 const SEEDED_NOTES = Object.keys(note).length
 
@@ -72,6 +79,16 @@ const EXTRACTED = 'Fjällvind are hiring; worth a call.'
 const DISMISSED = 'A suggestion nobody wanted.'
 const LATE_EVENING = 'Sent the summary just before midnight.'
 const EXTRACTION = { company: COMPANY_NAME, confidence: 0.4 }
+/** One character over the 20 000 a new capture may carry. The old drawer set
+ *  no limit, so a note like this can exist, and it is somebody's text. */
+const LONG = `Long legacy note. ${'x'.repeat(20001 - 'Long legacy note. '.length)}`
+/** The outreach shape, with a date that does not exist. `'2026-99-99'::date`
+ *  raises, and inside the backfill that would abort the whole push. */
+const MALFORMED_DATE = '[2026-99-99 · email · hai] ordinary text'
+/** A channel crm_interactions has never allowed, and a name not on the roster. */
+const MALFORMED_CHANNEL = '[2026-09-10 · pigeon · erik] Sent by carrier pigeon'
+const MALFORMED_COLLEAGUE = '[2026-09-10 · email · bob] Bob is not on the roster'
+const MALFORMED = 3
 
 /** A second organization. It cannot exist until the rollout follow-up has
  *  run, so the test that applies that file is the one that creates it. */
@@ -144,6 +161,7 @@ type Counts = {
   outreach_total: number
   outreach_linked: number
   outreach_unmatched: number
+  outreach_malformed: number
 }
 
 const migrateNotes = async (): Promise<Counts> =>
@@ -200,6 +218,11 @@ before(async () => {
   // 22:30 UTC on a Monday is 00:30 on the Tuesday in Europe/Stockholm, which
   // is the organization's own clock and the only one that may decide the day.
   await legacyNote(note.lateEvening, LATE_EVENING, '2026-09-21T22:30:00Z')
+  // Unlinked, so the link arithmetic below is unchanged by them.
+  await legacyNote(note.long, LONG, '2026-09-16T08:00:00Z')
+  await legacyNote(note.malformedDate, MALFORMED_DATE, '2026-09-17T08:00:00Z')
+  await legacyNote(note.malformedChannel, MALFORMED_CHANNEL, '2026-09-18T08:00:00Z')
+  await legacyNote(note.malformedColleague, MALFORMED_COLLEAGUE, '2026-09-19T08:00:00Z')
 
   assert.equal(await count('notes'), SEEDED_NOTES)
   await pg.exec(await journalSql())
@@ -292,6 +315,60 @@ test('the three shapes are told apart, and each keeps only the date precision it
   assert.equal(late.occurred_at_is_created_at, true)
 })
 
+test('a legacy note longer than a new capture may be is copied whole: capture, entry and revision', async () => {
+  assert.equal(LONG.length, 20001)
+  const [copied] = await rows<{ capture_length: number; entry_length: number; revision_length: number; identical: boolean }>(
+    `select char_length(c.original_text) as capture_length, char_length(e.body) as entry_length,
+            char_length(v.body) as revision_length,
+            (c.original_text = n.raw and e.body = n.raw and v.body = n.raw) as identical
+       from notes n
+       join captures c on c.id = n.id
+       join journal_entries e on e.id = n.id
+       join journal_entry_revisions v on v.entry_id = e.id and v.revision = 1
+      where n.id = $1 and c.source = 'legacy'`, [note.long])
+  assert.ok(copied, 'the long note has a capture, an entry and a revision')
+  assert.equal(copied.identical, true, 'lossless: the source text, byte for byte, in all three places')
+  assert.equal(Number(copied.capture_length), 20001)
+  assert.equal(Number(copied.entry_length), 20001)
+  assert.equal(Number(copied.revision_length), 20001)
+  const long = await entry(note.long)
+  assert.equal(long.legacy_kind, 'drawer_note')
+  assert.equal(long.origin, 'person')
+
+  // The ceiling still binds everything that is NOT a migrated note: the
+  // composer's promise, now the database's too, for new input only.
+  await assert.rejects(pg.query(
+    `insert into captures (organization_id, source, original_text, request_key) values ($1, 'typed', $2, $3)`,
+    [KHYTE, LONG, `too-long-${randomUUID()}`]), /captures_original_text_check/)
+  await assert.rejects(pg.query(
+    `insert into captures (organization_id, source, original_text, request_key) values ($1, 'mcp', $2, $3)`,
+    [KHYTE, LONG, `too-long-${randomUUID()}`]), /captures_original_text_check/)
+})
+
+test('a line shaped like outreach whose fields the tool never wrote is migrated as a person\'s note, and counted', async () => {
+  for (const [id, raw, createdOn] of [
+    [note.malformedDate, MALFORMED_DATE, '2026-09-17'],
+    [note.malformedChannel, MALFORMED_CHANNEL, '2026-09-18'],
+    [note.malformedColleague, MALFORMED_COLLEAGUE, '2026-09-19'],
+  ] as const) {
+    const malformed = await entry(id)
+    assert.ok(malformed, `${raw} must be migrated, not abort the push`)
+    assert.equal(malformed.body, raw, 'kept word for word')
+    assert.equal(malformed.legacy_kind, 'drawer_note', raw)
+    assert.equal(malformed.origin, 'person', `${raw}: nothing proves Donna wrote it, so it is what a person typed`)
+    assert.equal(malformed.performer, null, `${raw}: no colleague is read out of a line that is not outreach`)
+    assert.equal(malformed.occurred_precision, 'exact', `${raw}: its timestamp is all that is known`)
+    assert.equal(malformed.occurred_at_is_created_at, true)
+    assert.equal(malformed.occurred_on, createdOn, 'the day it was written, in Stockholm, not a date parsed out of the text')
+    assert.equal((await links(id)).length, 0, `${raw}: no interaction is matched to a line that is not outreach`)
+  }
+  // The helper itself: a date, or null — never an exception.
+  const [parsed] = await rows<{ good: string | null; bad: string | null; junk: string | null }>(
+    `select public.journal_try_date('2026-09-10')::text as good, public.journal_try_date('2026-99-99')::text as bad,
+            public.journal_try_date('not a date')::text as junk`)
+  assert.deepEqual(parsed, { good: '2026-09-10', bad: null, junk: null })
+})
+
 test('an outreach line is linked to its interaction only when exactly one interaction can be it', async () => {
   const matched = await links(note.outreachMatched)
   assert.equal(matched.length, 2)
@@ -356,6 +433,7 @@ test('the function reports the counts the tables actually show, and re-running i
   assert.equal(steady.outreach_total, 3)
   assert.equal(steady.outreach_linked, 1)
   assert.equal(steady.outreach_unmatched, 2, 'the gap is a number somebody can look at, not a silence')
+  assert.equal(steady.outreach_malformed, MALFORMED, 'so is the number of lines that looked like outreach and were not')
   assert.equal(steady.notes_seen, await count('captures'))
   assert.equal(steady.notes_seen, await count('journal_entries'))
   assert.equal(steady.notes_seen, await count('journal_entry_revisions'))
@@ -383,6 +461,7 @@ test('the function reports the counts the tables actually show, and re-running i
   assert.equal(caught.outreach_total, 4)
   assert.equal(caught.outreach_linked, 1)
   assert.equal(caught.outreach_unmatched, 3)
+  assert.equal(caught.outreach_malformed, MALFORMED, "'unassigned' is a value the tool writes, so the late line is outreach, not malformed")
   assert.equal(await count('captures'), held.captures + 2)
   assert.equal(await count('journal_entries'), held.entries + 2)
   assert.equal(await count('journal_entry_revisions'), held.revisions + 2)
@@ -460,6 +539,43 @@ test('applying the whole file a second time changes nothing — which is what a 
      having count(*) > 1`)
   assert.equal(duplicates.length, 0)
   assert.equal((await entry(note.outreachMatched)).body, OUTREACH_MATCHED, 'nothing was rewritten either')
+  assert.equal((await entry(note.long)).body, LONG)
+  assert.equal((await entry(note.malformedDate)).legacy_kind, 'drawer_note')
+
+  // The corrections themselves are idempotent: one length check, now scoped
+  // to new input; one fingerprint column; one system_event column and its
+  // two checks — however many times the file has run.
+  const checks = await rows<{ conname: string; definition: string }>(
+    `select conname, pg_get_constraintdef(oid) as definition from pg_constraint
+      where conrelid in ('public.captures'::regclass, 'public.journal_entries'::regclass)
+        and conname in ('captures_original_text_check', 'journal_entries_system_event_check', 'journal_entries_system_event_origin_check')
+      order by conname`)
+  assert.deepEqual(checks.map(c => c.conname),
+    ['captures_original_text_check', 'journal_entries_system_event_check', 'journal_entries_system_event_origin_check'])
+  assert.match(checks[0].definition, /legacy/, 'the capture ceiling exempts migrated notes')
+  const columns = await rows<{ table_name: string; column_name: string }>(
+    `select table_name, column_name from information_schema.columns
+      where table_schema = 'public' and column_name in ('request_fingerprint', 'system_event') order by table_name`)
+  assert.deepEqual(columns.map(c => `${c.table_name}.${c.column_name}`), ['captures.request_fingerprint', 'journal_entries.system_event'])
+  assert.equal((await rows('select 1 from captures where request_fingerprint is not null')).length, 0,
+    'a legacy capture was never a request, so it has no fingerprint')
+  assert.equal((await rows('select 1 from journal_entries where system_event is not null')).length, 0,
+    'a migrated next-step line keeps its full text and no system event')
+})
+
+test('a database that ran this file\'s earlier text is brought to the corrected constraint by the re-run', async () => {
+  // The only database that ran the first text is the disposable local review
+  // stack; this is what a re-run does there. Put back the old column check —
+  // same name, legacy rows bounded too — and apply the file again.
+  await pg.exec(`alter table public.captures drop constraint captures_original_text_check;
+    alter table public.captures add constraint captures_original_text_check check (char_length(original_text) <= 20000) not valid;`)
+  await pg.exec(await journalSql())
+  const [check] = await rows<{ definition: string; validated: boolean }>(
+    `select pg_get_constraintdef(oid) as definition, convalidated as validated from pg_constraint
+      where conrelid = 'public.captures'::regclass and conname = 'captures_original_text_check'`)
+  assert.match(check.definition, /legacy/, 'the older definition was replaced by name')
+  assert.equal(check.validated, true)
+  assert.equal((await entry(note.long)).body, LONG, 'and the long note is still there')
 })
 
 test('deleting the prospect keeps what was written about it, as a tombstone — which is what `notes` got wrong', async () => {
@@ -574,6 +690,10 @@ test('the notes-drop follow-up picks up what the old build wrote last, then take
   assert.equal((await rows<{ t: string | null }>("select to_regclass('public.notes') as t"))[0].t, null, 'public.notes is gone')
   assert.equal((await rows("select 1 from pg_proc where proname = 'journal_migrate_notes'")).length, 0,
     'the backfill has nothing left to read, so it goes with the table')
+  assert.equal((await rows("select 1 from pg_proc where proname = 'journal_try_date'")).length, 0,
+    'and its date parse goes after it')
+  assert.equal((await rows<{ body: string }>('select body from journal_entries where id = $1', [note.long]))[0].body, LONG,
+    'the long legacy note outlives the table it came from')
   // The Journal is untouched by the drop: no cascade reaches it, because
   // nothing in it ever referenced `notes`.
   assert.equal(await count('journal_entries'), held.entries + 2)

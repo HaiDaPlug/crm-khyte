@@ -14,7 +14,7 @@ import type { Database, Queryable, Row } from '../lib/crm/database'
  *      are two sequential ones, and an advisory lock nobody contends for
  *      proves nothing. Every test after the first opens real connections and
  *      makes them race: two callers reaching the same invariant at once, and
- *      then — in the last two — one caller held at an exact statement while
+ *      then — in the last three — one caller held at an exact statement while
  *      the other runs, which is the only way to pin down a lock *order*. They
  *      CANNOT roll back (each side has to see the other's committed work), so
  *      they create their own organizations and accounts and delete them again
@@ -366,7 +366,10 @@ async function oauthPath() {
 async function removeTestData(sql: Sql, organizations: string[], accounts: string[]): Promise<void> {
   // Nothing was created — the test skipped before its scaffold.
   if (!organizations.length) return
-  for (const table of ['crm_tool_receipts', 'tasks', 'crm_events', 'crm_oauth_connections',
+  // The Journal's four tables first: their organization_id is a plain
+  // reference too, and a browser-write race leaves captures and entries.
+  for (const table of ['journal_entry_links', 'journal_entry_revisions', 'journal_entries', 'captures',
+    'crm_tool_receipts', 'tasks', 'crm_events', 'crm_oauth_connections',
     'crm_oauth_codes', 'app_sessions', 'organization_members']) {
     await sql.unsafe(`delete from ${table} where organization_id = any($1::uuid[])`, [organizations] as never[])
   }
@@ -530,6 +533,147 @@ test('a tool commit authorized under the account lock finishes, and the revocati
     await assert.rejects(
       commitAction(databaseOn(left), 'create_task', { ...input, requestId: randomUUID(), title: `Refused ${randomUUID()}` }, actor),
       /unauthorized|lost its access/)
+  } finally {
+    try {
+      await removeTestData(left, organizations, accounts)
+    } finally {
+      await left.end({ timeout: 5 })
+      await right.end({ timeout: 5 })
+      await observer.end({ timeout: 5 })
+    }
+  }
+})
+
+/* ———— The browser's Journal writes against a revoke (R3) ————
+ *
+ * The browser twin of the commit race above. A Server Action resolved its
+ * session when the request arrived; the Journal service re-checks that
+ * session and its membership generation inside the write's own transaction,
+ * after taking the account advisory lock — the lock revokeMember takes (after
+ * the organization lock) before it cuts sessions and rotates the generation.
+ * So exactly two interleavings exist, and each is pinned here with a barrier
+ * rather than a sleep:
+ *
+ *   1. The write holds the account lock first. The revoke waits on it; the
+ *      write, authorized before the revoke existed, commits; the revoke then
+ *      completes; the same session's next write is refused.
+ *   2. The revoke holds the account lock first. The write waits on it; the
+ *      revoke commits; the write then finds its session revoked and is
+ *      refused with nothing written.
+ *
+ * The write takes the account lock and never the organization lock after it,
+ * and no row lock before it, so neither order can deadlock.
+ */
+
+/** A browser session for this person, minted and resolved the way every
+ *  Server Action resolves one, as the Journal actor app/actions/journal.ts
+ *  builds from it. */
+async function browserSession(sql: Sql, world: { organizationId: string; person: { userId: string } }) {
+  process.env.AUTH_SECRET = 'test-only-session-secret-with-at-least-32-characters'
+  const { hashSessionToken, mintSession } = await import('../lib/auth/session')
+  const { resolveAuthContext } = await import('../lib/auth/context')
+  const minted = mintSession()
+  await sql`insert into app_sessions (user_id, organization_id, token_hash, expires_at)
+    values (${world.person.userId}, ${world.organizationId}, ${hashSessionToken(minted.token)}, ${minted.expiresAt.toISOString()})`
+  const context = await resolveAuthContext(databaseOn(sql), minted.cookie)
+  assert.ok(context, 'a freshly minted session resolves')
+  return {
+    organizationId: context.organizationId, userId: context.userId, source: 'typed' as const,
+    sessionId: context.sessionId, credentialGeneration: context.credentialGeneration,
+  }
+}
+
+test('a browser Journal write and a revoke of its author are serialized by the account lock, in either order, never deadlocked', {
+  skip: !process.env.MCP_TEST_DATABASE_URL,
+}, async (t) => {
+  const url = process.env.MCP_TEST_DATABASE_URL!
+  const { default: postgres } = await import('postgres')
+  const left = postgres(url, { max: 1 }), right = postgres(url, { max: 1 }), observer = postgres(url, { max: 1 })
+  const organizations: string[] = [], accounts: string[] = []
+  try {
+    const guard = await left`select 1 as present from pg_trigger where tgname = 'organizations_rollout_guard'`
+    if (guard.length) {
+      t.skip('organizations_rollout_guard is still on this database, so a second organization cannot be created. ' +
+        'Apply the rollout follow-up (supabase/followups/…drop_organization_rollout.sql) before running this test.')
+      return
+    }
+    const { createEntry } = await import('../lib/journal/service')
+    const { revokeMember } = await import('../lib/org/members')
+    const [{ pid: leftPid }] = await left`select pg_backend_pid()::int as pid`
+    const [{ pid: rightPid }] = await right`select pg_backend_pid()::int as pid`
+
+    /* 1. The write first. */
+    const first = await scaffold(left, 'Journal Race')
+    organizations.push(first.organizationId)
+    accounts.push(...first.accounts)
+    const writer = await browserSession(left, first)
+    const landedText = `Written under the account lock ${randomUUID()}`
+
+    // Held immediately after the statement that took the account lock: the
+    // write has the lock and has not yet asked whether its session is live.
+    const write = pauseAfter(left, statement => statement.includes('pg_advisory_xact_lock'))
+    const writing = createEntry(write.database, writer, { requestKey: randomUUID(), text: landedText })
+    await reachedOrFailed(write, writing)
+    assert.match(write.statements[0] ?? '', /pg_advisory_xact_lock/,
+      'the account lock is the first thing a browser write takes, before any row')
+
+    const revoking = revokeMember(databaseOn(right), first.organizationId, first.person.memberId)
+    assert.equal(await untilBlocked(observer, Number(rightPid)), true,
+      'the revoke must wait for the account lock the write holds, not slip past it')
+    write.release()
+    const [written, revoked] = await Promise.allSettled([writing, revoking])
+
+    assertNoDeadlock(written, 'the Journal write')
+    assertNoDeadlock(revoked, 'the membership revoke')
+    assert.equal(written.status, 'fulfilled')
+    assert.deepEqual(written.status === 'fulfilled' && { ok: written.value.ok }, { ok: true },
+      'the write was authorized before the revoke arrived, and landed')
+    assert.equal(revoked.status, 'fulfilled', 'and the revoke completed once the write let the lock go')
+    const [landed] = await observer`select count(*)::int as n from journal_entries
+      where organization_id = ${first.organizationId} and body = ${landedText}`
+    assert.equal(Number(landed.n), 1)
+    const [membership] = await observer`select status from organization_members where id = ${first.person.memberId}`
+    assert.equal(membership.status, 'revoked')
+
+    // The same session's next write is refused: it re-checks inside its own
+    // transaction rather than trusting the check the request passed earlier.
+    const next = await createEntry(databaseOn(left), writer, { requestKey: randomUUID(), text: `Refused ${randomUUID()}` })
+    assert.deepEqual(next, { ok: false, error: 'unauthorized' })
+    const [captured] = await observer`select count(*)::int as n from captures where organization_id = ${first.organizationId}`
+    assert.equal(Number(captured.n), 1, 'only the write that was authorized left a capture')
+
+    /* 2. The revoke first. */
+    const second = await scaffold(left, 'Journal Race Reverse')
+    organizations.push(second.organizationId)
+    accounts.push(...second.accounts)
+    const pending = await browserSession(left, second)
+
+    // Held immediately after its SECOND advisory lock — the account lock,
+    // taken after the organization lock — with the membership not yet cut.
+    let advisory = 0
+    const revoke = pauseAfter(right, statement => statement.includes('pg_advisory_xact_lock') && ++advisory === 2)
+    const revokingFirst = revokeMember(revoke.database, second.organizationId, second.person.memberId)
+    await reachedOrFailed(revoke, revokingFirst)
+    assert.equal(revoke.statements.filter(statement => statement.includes('pg_advisory_xact_lock')).length, 2,
+      'the revoke holds the organization lock and the account lock')
+
+    const refusedText = `Written after the revoke ${randomUUID()}`
+    const waiting = createEntry(databaseOn(left), pending, { requestKey: randomUUID(), text: refusedText })
+    assert.equal(await untilBlocked(observer, Number(leftPid)), true,
+      'the write must wait for the account lock the revoke holds')
+    revoke.release()
+    const [revokedFirst, refused] = await Promise.allSettled([revokingFirst, waiting])
+
+    assertNoDeadlock(revokedFirst, 'the membership revoke')
+    assertNoDeadlock(refused, 'the Journal write')
+    assert.equal(revokedFirst.status, 'fulfilled')
+    assert.equal(refused.status, 'fulfilled', 'a refusal is a value, not a thrown error')
+    assert.deepEqual(refused.status === 'fulfilled' && refused.value, { ok: false, error: 'unauthorized' },
+      'the write that waited found its session revoked and wrote nothing')
+    const [nothing] = await observer`select count(*)::int as n from captures where organization_id = ${second.organizationId}`
+    assert.equal(Number(nothing.n), 0)
+    const [none] = await observer`select count(*)::int as n from journal_entries where organization_id = ${second.organizationId}`
+    assert.equal(Number(none.n), 0)
   } finally {
     try {
       await removeTestData(left, organizations, accounts)

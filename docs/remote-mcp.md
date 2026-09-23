@@ -39,14 +39,20 @@ Since Stage 2 the timeline is the Journal (`docs/journal.md`), not the old
   Journal newest first. A `target` id that is not this organization's is
   `not_found`, exactly as `get_crm_record` answers.
 - Each entry carries `id`, `kind`, `title`, `body`, `occurredPrecision`,
-  `occurredOn`, `occurredAt`, `authorId`, `performer`, `origin`, `revision` and
-  `createdAt`. `occurredOn`/`occurredAt` are when the thing happened;
-  `createdAt` is when it was written down. `performer` is the colleague the
-  entry is about, which is not necessarily its author.
+  `occurredOn`, `occurredAt`, `authorId`, `performer`, `origin`,
+  `systemEvent`, `revision` and `createdAt`. `occurredOn`/`occurredAt` are when
+  the thing happened; `createdAt` is when it was written down. `performer` is
+  the colleague the entry is about, which is not necessarily its author.
 - `origin` is `person` when somebody wrote the entry and `system` when Donna
   recorded it — a next-step change, or the line behind logged outreach.
   `export_prospects` counts person entries only (see
   [export-schema.md](export-schema.md)).
+- `systemEvent` says which change a system entry records, and is `null`
+  otherwise. `next_step_changed` means `body` is the prospect's PREVIOUS next
+  step, alone — no "Next step:" label — recorded when somebody replaced it.
+  The outreach line and every migrated legacy line (including old
+  "Nästa steg: …" / "Next step: …" lines, which keep their full text) carry
+  `null`.
 - Cursors are opaque keyset tokens. Pass one back unchanged; never construct or
   edit one. A cursor that did not come from one of these reads is refused.
 

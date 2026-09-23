@@ -61,5 +61,7 @@ $do$;
 
 drop table if exists public.notes;
 
--- The backfill has nothing left to read.
+-- The backfill has nothing left to read, and its date parse has nothing left
+-- to parse. The helper goes second: the backfill is the only thing calling it.
 drop function if exists public.journal_migrate_notes();
+drop function if exists public.journal_try_date(text);

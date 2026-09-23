@@ -1,9 +1,10 @@
 import 'server-only'
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 import type { Database, Queryable } from '@/lib/crm/database'
 import { CrmError } from '@/lib/crm/errors'
+import { assertLiveSession } from '@/lib/org/members'
 import type { ColleagueId } from '@/lib/types'
 import {
   LINK_TARGET_TYPES,
@@ -11,6 +12,7 @@ import {
   editEntryInputSchema,
   linkTargetSchema,
   listInputSchema,
+  nextStepInputSchema,
   type CaptureSource,
   type ExportJournalEntry,
   type JournalCoverage,
@@ -22,9 +24,11 @@ import {
   type JournalOrigin,
   type JournalPage,
   type JournalRevisionView,
+  type JournalSystemEvent,
   type JournalWriteResult,
   type LinkTarget,
   type LinkTargetType,
+  type NextStepChangeResult,
   type OccurredPrecision,
   type ProcessingState,
 } from './contracts'
@@ -32,7 +36,7 @@ import {
 /**
  * The one place anything is written to the Journal.
  *
- * Every path into it — the composer, the drawer's next-step line, the MCP
+ * Every path into it — the composer, the drawer's next-step change, the MCP
  * `log_outreach` tool, a later voice action — comes through `writeEntry`, so
  * "a capture, its entry, its first revision and its links, or nothing at all"
  * is a property of this file rather than a convention each caller is trusted
@@ -62,6 +66,16 @@ import {
  * thrown error into an opaque digest the browser cannot act on. A broken
  * invariant (a capture with no entry) still throws: nobody can provoke it and
  * it must be loud.
+ *
+ * A BROWSER WRITE RE-CHECKS WHO IS WRITING. The session was resolved when the
+ * request arrived; the write happens later, possibly after an owner revoked
+ * the person sending it. Every mutation transaction below that a browser
+ * reaches — createEntry, editEntry, deleteEntry, addLink, removeLink and
+ * changeNextStep — goes through `mutation()`, which takes the account lock and
+ * asks lib/org/members.ts `assertLiveSession` whether that session is still
+ * live on the same membership generation before anything is written. The MCP
+ * path does not: its writes run inside `commitAction`, which revalidates the
+ * connection under the same lock for every commit.
  */
 
 /* ———— who is writing ———— */
@@ -74,21 +88,39 @@ export type JournalScope = { organizationId: string }
  *  their null from the backfill, not from here. */
 export type JournalEditor = { organizationId: string; userId: string | null }
 
-/** Who is writing, and how the text reached Donna. `source` is the capture's
- *  provenance, never the contact channel. */
-export type JournalActor = JournalEditor & { source: Extract<CaptureSource, 'typed' | 'mcp'> }
+/**
+ * Who is writing, and how the text reached Donna. `source` is the capture's
+ * provenance, never the contact channel.
+ *
+ * `sessionId` and `credentialGeneration` are the browser session the Server
+ * Action resolved (lib/auth/context.ts AuthContext). A `typed` actor without
+ * both is refused `unauthorized`: every browser write re-checks them under the
+ * account lock (see `mutation`). The MCP actor carries neither — its commit
+ * revalidates the connection instead.
+ */
+export type JournalActor = JournalEditor & {
+  source: Extract<CaptureSource, 'typed' | 'mcp'>
+  sessionId?: string
+  credentialGeneration?: string
+}
 
 /**
  * The server-only half of a write.
  *
  * `origin: 'system'` is here and nowhere in the input schema: the drawer's
- * next-step line and the MCP outreach line are Donna writing on somebody's
+ * next-step change and the MCP outreach line are Donna writing on somebody's
  * behalf, and a browser must not be able to post a line that reads that way.
- * `captureId` and `entryId` let the MCP path derive both ids from its
- * requestId, so a replayed tool call rebuilds the same rows (lib/crm/service.ts
- * `generatedId`).
+ * `systemEvent` says which change a system entry records (only
+ * `changeNextStep` sets it). `captureId` and `entryId` let the MCP path derive
+ * both ids from its requestId, so a replayed tool call rebuilds the same rows
+ * (lib/crm/service.ts `generatedId`).
  */
-export type WriteOptions = { origin?: JournalOrigin; captureId?: string; entryId?: string }
+export type WriteOptions = {
+  origin?: JournalOrigin
+  systemEvent?: JournalSystemEvent
+  captureId?: string
+  entryId?: string
+}
 
 /* ———— rows ———— */
 
@@ -99,6 +131,7 @@ type EntryRow = {
   author_id: string | null
   performer: ColleagueId | null
   origin: JournalOrigin
+  system_event: JournalSystemEvent | null
   kind: JournalKind
   title: string | null
   body: string
@@ -170,7 +203,7 @@ const isoText = (column: string) => `to_char(${column} at time zone 'UTC', 'YYYY
 
 /** Everything a card needs, from the entry, its capture and its author's
  *  membership. No table names here — the statements below supply those. */
-const ENTRY_COLUMNS = `e.id, e.organization_id, e.capture_id, e.author_id, e.performer, e.origin,
+const ENTRY_COLUMNS = `e.id, e.organization_id, e.capture_id, e.author_id, e.performer, e.origin, e.system_event,
     e.kind, e.title, e.body, e.occurred_precision, e.occurred_on::text as occurred_on,
     ${isoText('e.occurred_at')} as occurred_at, e.revision, e.legacy_kind,
     e.legacy_dismissed, e.legacy_applied, ${isoText('e.deleted_at')} as deleted_at,
@@ -202,6 +235,7 @@ function toEntryView(row: EntryRow, links: JournalEntryLinkView[]): JournalEntry
     authorName: row.author_name,
     performer: row.performer,
     origin: row.origin,
+    systemEvent: row.system_event ?? null,
     kind: row.kind,
     title: row.title,
     body: row.body,
@@ -394,18 +428,81 @@ async function appendRevision(db: Queryable, organizationId: string, entryId: st
 }
 
 /**
+ * What a retry has to match to be a replay: the write's EXPLICIT inputs, as a
+ * sha256 over one fixed-order JSON document.
+ *
+ * Text alone was not enough. The composer keeps its request key until a save
+ * succeeds, so a draft whose kind, date, title, performer or links changed
+ * after a save that did land (but whose answer was lost) arrives under the
+ * same key with the same text — and answering it with the first entry would
+ * tell the writer their second version was saved when it was not.
+ *
+ * EXPLICIT means what the caller actually sent: the parsed input with zod's
+ * defaults (the kind), never a value the server generates. An entry written
+ * with no event time is `exact` at the moment of writing, and that moment
+ * differs between the first attempt and its retry; hashing it would make
+ * every such retry a conflict. So the occurrence fields are hashed as sent,
+ * or null. The link set is sorted by type then id (and a repeated target
+ * collapses, because the partial unique index writes one link per record), so
+ * the same set in another order is the same request. `origin` is included
+ * because it is part of what was asked for, even though only the server can
+ * ask for `system`.
+ */
+function requestFingerprint(
+  entry: {
+    text: string
+    title?: string | null
+    kind: JournalKind
+    occurredPrecision?: 'exact' | 'day'
+    occurredOn?: string
+    occurredAt?: string
+    performer?: ColleagueId | null
+    links: LinkTarget[]
+  },
+  origin: JournalOrigin
+): string {
+  const unique = new Map<string, LinkTarget>()
+  for (const link of entry.links) {
+    const target: LinkTarget = { type: link.type, id: link.id.toLowerCase() }
+    unique.set(`${target.type}:${target.id}`, target)
+  }
+  const links = [...unique.values()].sort((a, b) =>
+    a.type < b.type ? -1 : a.type > b.type ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  const canonical = JSON.stringify({
+    text: entry.text,
+    title: entry.title ?? null,
+    kind: entry.kind,
+    occurredPrecision: entry.occurredPrecision ?? null,
+    occurredOn: entry.occurredOn ?? null,
+    occurredAt: entry.occurredAt ?? null,
+    performer: entry.performer ?? null,
+    origin,
+    links,
+  })
+  return createHash('sha256').update(canonical).digest('hex')
+}
+
+/**
  * A retry of a key that has already been used.
  *
- * Same author and same text is the same person pressing save twice (or the
- * same tool call replayed): the original entry comes back marked `replayed`
- * and nothing is written. Anything else is a key collision — a draft that was
- * edited after its first save succeeded, or two drafts sharing a key — and the
- * entry the key DID produce comes back with the refusal so the composer can
- * link to it rather than leaving the writer guessing what they lost.
+ * Same author and the same request — the fingerprint above, which covers the
+ * text and everything else the caller said about the entry — is the same
+ * person pressing save twice (or the same tool call replayed): the ORIGINAL
+ * entry comes back marked `replayed` and nothing is written. It is compared
+ * with the capture's stored fingerprint, never with the entry as it reads
+ * now, because the entry may have been edited since and a retry is a retry
+ * of what was first sent.
+ *
+ * Anything else is a key collision — a draft that was edited after its first
+ * save succeeded, or two drafts sharing a key — and the entry the key DID
+ * produce comes back with the refusal so the composer can link to it rather
+ * than leaving the writer guessing what they lost. A capture with no
+ * fingerprint (a legacy row, or one whose entry was deleted and redacted) can
+ * prove nothing about what it was asked for, so it is always a collision.
  */
-async function replayed(db: Queryable, actor: JournalActor, requestKey: string, text: string): Promise<JournalWriteResult> {
-  const [capture] = await db.query<{ id: string; author_id: string | null; original_text: string }>(
-    'select id, author_id, original_text from captures where organization_id = $1 and request_key = $2',
+async function replayed(db: Queryable, actor: JournalActor, requestKey: string, fingerprint: string): Promise<JournalWriteResult> {
+  const [capture] = await db.query<{ id: string; author_id: string | null; request_fingerprint: string | null }>(
+    'select id, author_id, request_fingerprint from captures where organization_id = $1 and request_key = $2',
     [actor.organizationId, requestKey]
   )
   if (!capture) {
@@ -419,7 +516,8 @@ async function replayed(db: Queryable, actor: JournalActor, requestKey: string, 
   }
   const existing = await viewOrThrow(db, actor.organizationId, entryRow.id)
   const sameAuthor = (capture.author_id ?? null) === (actor.userId ?? null)
-  if (sameAuthor && capture.original_text === text) return { ok: true, replayed: true, entry: existing }
+  const sameRequest = capture.request_fingerprint !== null && capture.request_fingerprint === fingerprint
+  if (sameAuthor && sameRequest) return { ok: true, replayed: true, entry: existing }
   return { ok: false, error: 'request_key_conflict', existing }
 }
 
@@ -470,18 +568,23 @@ export async function writeEntry(
   if (precision === 'day' && !entry.occurredOn) return { ok: false, error: 'invalid' }
   if (precision === 'exact' && entry.occurredOn) return { ok: false, error: 'invalid' }
 
+  const origin = options.origin ?? 'person'
+  // Only Donna records a system event; the table's check says the same.
+  if (options.systemEvent && origin !== 'system') return { ok: false, error: 'invalid' }
+  const fingerprint = requestFingerprint(entry, origin)
+
   // The capture first, and its uniqueness is what makes this idempotent: the
   // insert either takes the key or finds it taken, in one statement, with no
   // read-then-write race in between.
   const captureId = options.captureId ?? randomUUID()
   const claimed = await tx.query<{ id: string }>(
-    `insert into captures (id, organization_id, author_id, source, original_text, request_key, processing_state)
-     values ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, 'not_requested')
+    `insert into captures (id, organization_id, author_id, source, original_text, request_key, request_fingerprint, processing_state)
+     values ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, 'not_requested')
      on conflict (organization_id, request_key) do nothing
      returning id`,
-    [captureId, actor.organizationId, actor.userId, actor.source, entry.text, entry.requestKey]
+    [captureId, actor.organizationId, actor.userId, actor.source, entry.text, entry.requestKey, fingerprint]
   )
-  if (!claimed.length) return replayed(tx, actor, entry.requestKey, entry.text)
+  if (!claimed.length) return replayed(tx, actor, entry.requestKey, fingerprint)
 
   // Before the entry exists, so a bad target costs nothing to undo.
   const labels: Array<{ target: LinkTarget; label: string }> = []
@@ -498,12 +601,13 @@ export async function writeEntry(
   await tx.query(
     `insert into journal_entries (
        id, organization_id, capture_id, author_id, performer, origin, kind, title, body,
-       occurred_precision, occurred_on, occurred_at, revision)
+       occurred_precision, occurred_on, occurred_at, revision, system_event)
      select $1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::crm_colleague, $6, $7, $8, $9,
             $10,
             coalesce($11::date, (t.moment at time zone $13)::date),
             case when $10 = 'exact' then t.moment else null end,
-            1
+            1,
+            $14
        from (select coalesce($12::timestamptz, now()) as moment) t`,
     [
       entryId,
@@ -511,7 +615,7 @@ export async function writeEntry(
       captureId,
       actor.userId,
       entry.performer ?? null,
-      options.origin ?? 'person',
+      origin,
       entry.kind,
       entry.title ?? null,
       entry.text,
@@ -519,6 +623,7 @@ export async function writeEntry(
       entry.occurredOn ?? null,
       entry.occurredAt ?? null,
       timezone,
+      options.systemEvent ?? null,
     ]
   )
 
@@ -527,6 +632,10 @@ export async function writeEntry(
 
   return { ok: true, entry: await viewOrThrow(tx, actor.organizationId, entryId) }
 }
+
+/** Every refusal a write can answer with, and the one success shape. */
+type Refusal = Extract<JournalWriteResult, { ok: false }>
+type Accepted = Extract<JournalWriteResult, { ok: true }>
 
 /**
  * Carries a refusal out through a transaction that has to roll back.
@@ -537,11 +646,63 @@ export async function writeEntry(
  * Returning the refusal would commit that row: the write is refused, nothing
  * is acknowledged, and yet the key is taken by a capture with no entry, which
  * the next retry could not explain. So the refusal is thrown, the transaction
- * rolls back, and the result is handed back on the far side.
+ * rolls back, and the result is handed back on the far side. changeNextStep
+ * relies on the same thing: a refused system line takes the next-step update
+ * down with it.
  */
 class WriteRefused extends Error {
-  constructor(readonly result: JournalWriteResult) {
+  constructor(readonly result: Refusal) {
     super('journal write refused')
+  }
+}
+
+/**
+ * Whether the writer may still write, asked inside its own transaction.
+ *
+ * `typed` is a browser session, and a browser session can be revoked between
+ * the request arriving and the write landing. It is re-checked here under the
+ * account lock (lib/org/members.ts `assertLiveSession`, which documents the
+ * lock order): no session id or no generation is no session. `mcp` is not
+ * checked here: its writes run inside commitAction, which revalidates the
+ * connection and its membership under the same account lock for every commit
+ * (lib/crm/service.ts), and a second, different check would only disagree.
+ */
+async function writerIsLive(tx: Queryable, actor: JournalActor): Promise<boolean> {
+  if (actor.source !== 'typed') return true
+  if (!actor.userId || !actor.sessionId || !actor.credentialGeneration) return false
+  return assertLiveSession(tx, {
+    userId: actor.userId,
+    organizationId: actor.organizationId,
+    sessionId: actor.sessionId,
+    credentialGeneration: actor.credentialGeneration,
+  })
+}
+
+/**
+ * One browser-reachable mutation: its own transaction, the writer re-checked
+ * first, every refusal rolled back.
+ *
+ * The check comes before any statement of the write, so the account lock is
+ * the first lock the transaction takes and the row locks come after it — the
+ * order assertLiveSession states. A refusal of any kind is thrown through
+ * WriteRefused and handed back as a value, so nothing a refused call did
+ * inside the transaction survives it and nothing is acknowledged.
+ */
+async function mutation<S extends { ok: true }>(
+  db: Database,
+  actor: JournalActor,
+  run: (tx: Queryable) => Promise<S | Refusal>
+): Promise<S | Refusal> {
+  try {
+    return await db.transaction(async tx => {
+      if (!(await writerIsLive(tx, actor))) throw new WriteRefused({ ok: false, error: 'unauthorized' })
+      const result = await run(tx)
+      if (result.ok === false) throw new WriteRefused(result as Refusal)
+      return result as S
+    })
+  } catch (cause) {
+    if (cause instanceof WriteRefused) return cause.result
+    throw cause
   }
 }
 
@@ -552,16 +713,7 @@ export async function createEntry(
   input: unknown,
   options: WriteOptions = {}
 ): Promise<JournalWriteResult> {
-  try {
-    return await db.transaction(async tx => {
-      const result = await writeEntry(tx, actor, input, options)
-      if (!result.ok) throw new WriteRefused(result)
-      return result
-    })
-  } catch (cause) {
-    if (cause instanceof WriteRefused) return cause.result
-    throw cause
-  }
+  return mutation<Accepted>(db, actor, tx => writeEntry(tx, actor, input, options))
 }
 
 /* ———— editing ———— */
@@ -569,24 +721,26 @@ export async function createEntry(
 /**
  * Why an update that matched nothing matched nothing.
  *
- * The update filters on id, organization, revision and `deleted_at is null` at
- * once, which is what makes it safe — and what makes a miss ambiguous. This
- * second read, scoped to the organization but INCLUDING deleted rows,
- * separates the three answers the editor has to tell apart: an id that is not
- * theirs (or is nobody's), an entry somebody deleted while the editor was
- * open, and an entry somebody edited while the editor was open.
+ * The update filters on id, organization, revision, `deleted_at is null` and
+ * `origin = 'person'` at once, which is what makes it safe — and what makes a
+ * miss ambiguous. This second read, scoped to the organization but INCLUDING
+ * deleted and system rows, separates the four answers the editor has to tell
+ * apart: an id that is not theirs (or is nobody's), an entry somebody deleted
+ * while the editor was open, an entry Donna wrote (which nobody rewrites), and
+ * an entry somebody edited while the editor was open.
  */
 async function whyNotWritable(
   db: Queryable,
   organizationId: string,
   entryId: string,
   expectedRevision?: number
-): Promise<Extract<JournalError, 'not_found' | 'deleted' | 'revision_conflict'>> {
-  const [row] = await db.query<{ revision: number; deleted_at: string | null }>(
-    'select revision, deleted_at from journal_entries where id = $1 and organization_id = $2', [entryId, organizationId]
+): Promise<Extract<JournalError, 'not_found' | 'deleted' | 'system_entry' | 'revision_conflict'>> {
+  const [row] = await db.query<{ revision: number; deleted_at: string | null; origin: JournalOrigin }>(
+    'select revision, deleted_at, origin from journal_entries where id = $1 and organization_id = $2', [entryId, organizationId]
   )
   if (!row) return 'not_found'
   if (row.deleted_at) return 'deleted'
+  if (row.origin !== 'person') return 'system_entry'
   if (expectedRevision !== undefined && Number(row.revision) !== expectedRevision) return 'revision_conflict'
   // Every filter the update carried is satisfied on re-read, so the row moved
   // between the two statements. Reported as the conflict it is.
@@ -601,10 +755,16 @@ async function whyNotWritable(
  * both read revision 3 and both write revision 4, and the second would erase
  * the first without either being told. In the predicate, the second update
  * matches nothing and comes back `revision_conflict`.
+ *
+ * A SYSTEM ENTRY IS NOT EDITABLE. `origin = 'person'` is in the same
+ * predicate, so an entry Donna wrote — a next-step change, an outreach line,
+ * their legacy forms — comes back `system_entry` whatever the browser sends.
+ * Its wording records what the CRM did; letting a person rewrite it would make
+ * the provenance chip a claim only the UI enforced. It can still be deleted.
  */
 export async function editEntry(
   db: Database,
-  actor: JournalEditor,
+  actor: JournalActor,
   entryId: string,
   patch: unknown
 ): Promise<JournalWriteResult> {
@@ -612,7 +772,7 @@ export async function editEntry(
   if (!parsed.success) return { ok: false, error: 'invalid' }
   const input = parsed.data
 
-  return db.transaction(async tx => {
+  return mutation<Accepted>(db, actor, async tx => {
     const sets: string[] = []
     const values: unknown[] = []
     /** Binds a value and returns the placeholder that names it. */
@@ -647,7 +807,7 @@ export async function editEntry(
     const updated = await tx.query<{ id: string }>(
       `update journal_entries set ${sets.join(', ')}
         where id = $${values.length - 2} and organization_id = $${values.length - 1}
-          and revision = $${values.length} and deleted_at is null
+          and revision = $${values.length} and deleted_at is null and origin = 'person'
        returning id`,
       values
     )
@@ -680,14 +840,14 @@ async function writableEntry(
  *  the second one finds the partial unique index and does nothing. */
 export async function addLink(
   db: Database,
-  actor: JournalEditor,
+  actor: JournalActor,
   entryId: string,
   target: unknown
 ): Promise<JournalWriteResult> {
   const parsed = linkTargetSchema.safeParse(target)
   if (!parsed.success) return { ok: false, error: 'invalid' }
 
-  return db.transaction(async tx => {
+  return mutation<Accepted>(db, actor, async tx => {
     const refusal = await writableEntry(tx, actor.organizationId, entryId)
     if (refusal) return { ok: false as const, error: refusal }
     const label = await resolveTargetLabel(tx, actor.organizationId, parsed.data)
@@ -700,11 +860,11 @@ export async function addLink(
 /** Removes one link by its own id. The entry is untouched. */
 export async function removeLink(
   db: Database,
-  actor: JournalEditor,
+  actor: JournalActor,
   entryId: string,
   linkId: string
 ): Promise<JournalWriteResult> {
-  return db.transaction(async tx => {
+  return mutation<Accepted>(db, actor, async tx => {
     const refusal = await writableEntry(tx, actor.organizationId, entryId)
     if (refusal) return { ok: false as const, error: refusal }
     const removed = await tx.query<{ id: string }>(
@@ -729,6 +889,13 @@ export async function removeLink(
  * `ai_extracted` blob, which is content too and is the one field a reader
  * would not think of.
  *
+ * The capture's `request_fingerprint` goes too. It is a hash, not the text,
+ * but it is a hash OF the text (and its metadata), and a short line is easy
+ * to confirm by hashing guesses — keeping it would keep a way to test what
+ * the entry said. A retry of the key afterwards meets a capture that can
+ * prove nothing about its request, and is a `request_key_conflict` naming the
+ * deleted entry, which is the honest answer.
+ *
  * WHAT IS DELIBERATELY NOT REACHED. The links: `target_label` is a CRM
  * record's name, not Journal text, and clearing it would blank the tombstones
  * on records that are still there. Receipts hold no entry text at all (§6), so
@@ -736,9 +903,11 @@ export async function removeLink(
  *
  * Idempotent: `coalesce` keeps the first `deleted_at` and the first
  * `deleted_by`, so deleting twice is the same state and the same answer.
+ * Allowed on a system entry: removing Donna's line is a person's call to make,
+ * rewriting it is not (editEntry).
  */
-export async function deleteEntry(db: Database, actor: JournalEditor, entryId: string): Promise<JournalWriteResult> {
-  return db.transaction(async tx => {
+export async function deleteEntry(db: Database, actor: JournalActor, entryId: string): Promise<JournalWriteResult> {
+  return mutation<Accepted>(db, actor, async tx => {
     const redacted = await tx.query<{ capture_id: string }>(
       `update journal_entries
           set body = '', title = null, legacy_extraction = null,
@@ -753,7 +922,7 @@ export async function deleteEntry(db: Database, actor: JournalEditor, entryId: s
     if (!redacted.length) return { ok: false as const, error: 'not_found' as const }
 
     await tx.query(
-      `update captures set original_text = '', deleted_at = coalesce(deleted_at, now())
+      `update captures set original_text = '', request_fingerprint = null, deleted_at = coalesce(deleted_at, now())
         where id = $1 and organization_id = $2`,
       [redacted[0].capture_id, actor.organizationId]
     )
@@ -763,6 +932,88 @@ export async function deleteEntry(db: Database, actor: JournalEditor, entryId: s
       [entryId, actor.organizationId]
     )
     return { ok: true as const, entry: await viewOrThrow(tx, actor.organizationId, entryId) }
+  })
+}
+
+/* ———— the next step ———— */
+
+/**
+ * Changes a prospect's next step and records the value it replaced, in ONE
+ * transaction.
+ *
+ * Before this, the drawer made two calls — the opportunity update over
+ * PostgREST and a system line sent separately with the drawer's own copy of
+ * the old value — so either could land without the other, and the "previous
+ * next step" in the Journal was whatever the browser said it was. Now the
+ * server reads the previous value itself, under a row lock, writes the new
+ * one, and writes the system entry, or none of the three happens.
+ *
+ * WHAT THE ENTRY SAYS. `origin: 'system'`, `systemEvent: 'next_step_changed'`,
+ * `kind: 'update'`, linked to the opportunity (the label is the company's
+ * name, resolved by writeEntry), and `body` = the PREVIOUS next step alone.
+ * The label ("Nästa steg" / "Next step") is rendered by the reader from its
+ * own dictionary; storing it would freeze one language into the row. Nothing
+ * is logged when the previous value was empty (there was no step to record)
+ * or equals the new one.
+ *
+ * THE REQUEST KEY is `nextstep:<opportunity>:<updated_at before the change>`.
+ * The row lock serializes two submissions, so the second one normally reads
+ * the first one's result as its previous value and logs that transition, or
+ * nothing when the value is unchanged. The key covers the case the lock
+ * cannot: the same transition from the same row state arriving twice is one
+ * capture and one entry, answered `replayed`; any later transition starts
+ * from a later `updated_at` and gets its own. `updated_at` is formatted by the
+ * database to the microsecond in UTC, so the key does not depend on a
+ * connection's timezone setting.
+ *
+ * Order inside the transaction: the writer re-check (account lock), then the
+ * opportunity row lock, then the Journal rows — the order lib/org/members.ts
+ * `assertLiveSession` states. The `updated_at` trigger advances the row's
+ * version, which is what an MCP caller's `expectedVersion` compares against.
+ */
+export async function changeNextStep(
+  db: Database,
+  actor: JournalActor,
+  opportunityId: string,
+  next: unknown
+): Promise<NextStepChangeResult> {
+  const parsed = nextStepInputSchema.safeParse(next)
+  if (!parsed.success) return { ok: false, error: 'invalid' }
+  // Not an id at all is the same answer as an id from nowhere, and never a
+  // cast error from the database.
+  if (!UUID_PATTERN.test(opportunityId)) return { ok: false, error: 'not_found' }
+  const value = parsed.data
+
+  return mutation<Extract<NextStepChangeResult, { ok: true }>>(db, actor, async tx => {
+    const [row] = await tx.query<{ next_step: string | null; updated_at: string }>(
+      `select o.next_step, ${isoText('o.updated_at')} as updated_at
+         from opportunities o
+        where o.id = $1 and o.organization_id = $2
+        for update`,
+      [opportunityId, actor.organizationId]
+    )
+    if (!row) return { ok: false as const, error: 'not_found' as const }
+    const previous = row.next_step ?? ''
+
+    await tx.query(
+      'update opportunities set next_step = $1 where id = $2 and organization_id = $3',
+      [value, opportunityId, actor.organizationId]
+    )
+    if (!previous || previous === value) return { ok: true as const, entry: null, previous }
+
+    const written = await writeEntry(
+      tx,
+      actor,
+      {
+        requestKey: `nextstep:${opportunityId}:${row.updated_at}`,
+        text: previous,
+        kind: 'update',
+        links: [{ type: 'opportunity', id: opportunityId }],
+      },
+      { origin: 'system', systemEvent: 'next_step_changed' }
+    )
+    if (!written.ok) return written
+    return { ok: true as const, entry: written.entry, previous }
   })
 }
 

@@ -81,6 +81,31 @@
 -- backfill. `supabase db push` runs the file in one transaction, so a failure
 -- rolls it back whole — but the migration suite applies this file twice on
 -- purpose, and a second push after a partial rollback must be a no-op.
+--
+-- EDITED IN PLACE, BEFORE ANY DEPLOY (Stage 2 correction pass, 2026-09-23).
+-- This file had not been pushed to any hosted database when the review asked
+-- for four corrections, so they were made here rather than in a second
+-- migration — the same thing Stage 1 did with its own file before its deploy.
+-- The only database that ever ran the earlier text is the disposable local
+-- review stack. What changed, each statement restart-safe on a fresh database
+-- AND on one that ran the earlier text:
+--
+--   * captures.original_text's 20 000-character ceiling applies to new input
+--     only (source <> 'legacy'). A legacy note of any length is copied whole;
+--     refusing it would abort the whole push over a note that is valid today.
+--     The constraint is reconciled by name in a guarded block below.
+--   * captures.request_fingerprint (add column if not exists): the hash of a
+--     write's explicit inputs, so a retry under the same request key is only
+--     a replay when it asks for the same entry, not merely the same text.
+--   * journal_entries.system_event (add column if not exists): which change a
+--     system entry records. 'next_step_changed' is the one value today; the
+--     entry's body is then the PREVIOUS next step alone and the UI supplies
+--     the label. Null for every person entry and every legacy row.
+--   * public.journal_try_date(text) and the outreach parse that uses it: a
+--     line shaped like outreach but carrying an impossible date, or a channel
+--     or colleague the tool never wrote, is migrated as an ordinary legacy
+--     entry and counted as `outreach_malformed` instead of aborting the push
+--     on a failed cast.
 -- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
@@ -121,7 +146,8 @@ create table if not exists public.captures (
   -- and one word meaning two things is how a query ends up asking the wrong
   -- question.
   source           text not null check (source in ('typed', 'mcp', 'legacy')),
-  original_text    text not null check (char_length(original_text) <= 20000),
+  -- The ceiling is for new input only: see captures_original_text_check.
+  original_text    text not null,
   received_at      timestamptz not null default now(),
   -- Client-generated for a typed capture, the MCP requestId for a tool call,
   -- 'legacy:<note id>' for a migrated row. With the unique index below it is
@@ -134,11 +160,46 @@ create table if not exists public.captures (
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
   constraint captures_organization_request_key_key unique (organization_id, request_key),
-  constraint captures_id_organization_key unique (id, organization_id)
+  constraint captures_id_organization_key unique (id, organization_id),
+  -- 20 000 characters is the composer's promise and the write service's zod
+  -- limit, and it binds everything typed or sent by a tool. A migrated note is
+  -- exempt: it is already somebody's text, the old drawer set no limit on it,
+  -- and a backfill that refused it would abort the whole push over one long
+  -- note that is perfectly valid where it stands.
+  constraint captures_original_text_check check (source = 'legacy' or char_length(original_text) <= 20000)
 );
 
 comment on table public.captures is
   'The text exactly as it arrived, never rewritten. One row per thing said; (organization_id, request_key) makes a retry idempotent.';
+
+-- A database that ran this file's earlier text has a column-level check under
+-- the same name that bounded legacy rows too. Replaced by name when it is
+-- that older definition, added when it is missing, left alone otherwise — so
+-- a fresh database, a re-run and the old local stack all end in one state.
+do $do$
+begin
+  if exists (select 1 from pg_constraint
+              where conrelid = 'public.captures'::regclass and conname = 'captures_original_text_check'
+                and pg_get_constraintdef(oid) not like '%legacy%') then
+    alter table public.captures drop constraint captures_original_text_check;
+  end if;
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.captures'::regclass and conname = 'captures_original_text_check') then
+    alter table public.captures add constraint captures_original_text_check
+      check (source = 'legacy' or char_length(original_text) <= 20000);
+  end if;
+end
+$do$;
+
+-- What a retry has to match to be a replay. A sha256 over the write's
+-- EXPLICIT inputs — text, title, kind, the occurrence the caller named (never
+-- a default the server generated), performer, origin and the sorted link set
+-- — computed by lib/journal/service.ts. The same key with the same text but a
+-- different kind, date, title, performer or link set is a different request,
+-- and answering it with the first entry would drop what the second one said.
+-- Null on legacy rows, which were never written through a request, so a key
+-- that meets one is a conflict rather than a guess.
+alter table public.captures add column if not exists request_fingerprint text;
 
 -- ---------------------------------------------------------------------------
 -- journal_entries — what the text became
@@ -191,6 +252,28 @@ create table if not exists public.journal_entries (
   constraint journal_entries_capture_id_fkey foreign key (capture_id, organization_id)
     references public.captures (id, organization_id) on delete cascade
 );
+
+-- Which change a system entry records, when Donna wrote it on somebody's
+-- behalf. 'next_step_changed' means the body is the PREVIOUS next step, alone:
+-- the label ("Nästa steg" / "Next step") is the reader's dictionary's, not
+-- stored copy in one language. Null for person entries, for the outreach line
+-- and for every legacy row — a migrated next-step line keeps its full text,
+-- label and all, exactly as it was written.
+alter table public.journal_entries
+  add column if not exists system_event text
+    constraint journal_entries_system_event_check check (system_event in ('next_step_changed'));
+
+-- Only Donna records a system event. A person entry carrying one would read
+-- as a line nobody typed.
+do $do$
+begin
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.journal_entries'::regclass and conname = 'journal_entries_system_event_origin_check') then
+    alter table public.journal_entries add constraint journal_entries_system_event_origin_check
+      check (system_event is null or origin = 'system');
+  end if;
+end
+$do$;
 
 create index if not exists journal_entries_feed_idx
   on public.journal_entries (organization_id, created_at desc, id desc);
@@ -417,6 +500,18 @@ $do$;
 --                    interaction ('[<date> · <channel> · <colleague>] <text>').
 -- The last two are origin 'system'.
 --
+-- A LINE SHAPED LIKE OUTREACH IS NOT NECESSARILY OUTREACH. The shape is a
+-- regular expression, and a person can type `[2026-99-99 · email · hai] …` into
+-- the drawer as easily as the tool can write a real one. A line counts as
+-- outreach only when every field it carries is one the tool could have
+-- written: a date that exists (public.journal_try_date, which answers null
+-- rather than aborting the push on a failed cast), a channel from
+-- crm_interactions' own list, and a roster label or 'unassigned'. Anything
+-- else is migrated as what it demonstrably is — a line somebody typed, a
+-- drawer_note with origin 'person' and its created_at as an exact occurrence —
+-- and counted as `outreach_malformed`, so the number of lines that looked like
+-- outreach and were not is on record rather than silently reclassified.
+--
 -- DATES. A drawer note's timestamp is all that was ever known, so the entry
 -- takes it as an exact instant and its day is computed in the ORGANIZATION's
 -- timezone (`at time zone o.timezone`) — a note written at 22:30 UTC on a
@@ -436,6 +531,25 @@ $do$;
 -- `notes` rows are never modified or deleted here.
 -- ---------------------------------------------------------------------------
 
+-- A text-to-date cast that answers null instead of raising. `'2026-99-99'::date`
+-- aborts the statement, and inside the backfill that would abort the whole
+-- migration — one malformed legacy line holding every other row hostage.
+-- Dropped by the notes-drop follow-up together with the backfill it serves.
+create or replace function public.journal_try_date(p_value text)
+returns date
+language plpgsql
+stable
+as $fn$
+begin
+  return p_value::date;
+exception when others then
+  return null;
+end
+$fn$;
+
+comment on function public.journal_try_date(text) is
+  'The notes backfill''s date parse: the date, or null when the text is not one. Dropped with journal_migrate_notes() by the notes-drop follow-up.';
+
 create or replace function public.journal_migrate_notes()
 returns jsonb
 language plpgsql
@@ -453,6 +567,8 @@ declare
   v_outreach           integer := 0;
   v_outreach_linked    integer := 0;
   v_outreach_unmatched integer := 0;
+  v_outreach_malformed integer := 0;
+  v_outreach_date      date;
   v_rows               integer;
   v_is_outreach        boolean;
   v_is_next_step       boolean;
@@ -485,7 +601,21 @@ begin
       join public.organizations o on o.id = n.organization_id
      order by n.created_at, n.id
   loop
-    v_is_outreach  := r.outreach is not null;
+    -- The shape matched is not yet outreach: every field must be one the tool
+    -- could have written (see the header above). A line that fails any of the
+    -- three is an ordinary drawer note, counted as malformed.
+    v_outreach_date := null;
+    v_is_outreach   := false;
+    if r.outreach is not null then
+      v_outreach_date := public.journal_try_date(r.outreach[1]);
+      if v_outreach_date is not null
+         and r.outreach[2] in ('email', 'phone', 'meeting', 'linkedin', 'other')
+         and r.outreach[3] in ('erik', 'abdi', 'hai', 'unassigned') then
+        v_is_outreach := true;
+      else
+        v_outreach_malformed := v_outreach_malformed + 1;
+      end if;
+    end if;
     v_is_next_step := (not v_is_outreach) and r.raw ~ '^(Nästa steg|Next step): ';
 
     if v_is_outreach then
@@ -510,7 +640,7 @@ begin
 
     if v_is_outreach then
       v_precision   := 'day';
-      v_occurred_on := r.outreach[1]::date;
+      v_occurred_on := v_outreach_date;
       v_occurred_at := null;
     else
       v_precision   := 'exact';
@@ -626,7 +756,8 @@ begin
     'applied',             v_applied,
     'outreach_total',      v_outreach,
     'outreach_linked',     v_outreach_linked,
-    'outreach_unmatched',  v_outreach_unmatched
+    'outreach_unmatched',  v_outreach_unmatched,
+    'outreach_malformed',  v_outreach_malformed
   );
 end
 $fn$;

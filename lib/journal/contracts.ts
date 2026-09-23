@@ -17,8 +17,10 @@ import type { ColleagueId } from '@/lib/types'
  * `organizationId`, `authorId` or `entryId`: an entry written by a person is
  * `origin: 'person'` because the write service says so, and the ids come from
  * the session. `origin: 'system'` is reachable only through the server-side
- * options argument of writeEntry (the next-step line and the MCP tool), so a
- * browser cannot post a line that reads as though Donna wrote it.
+ * options argument of writeEntry (the next-step change and the MCP tool), so a
+ * browser cannot post a line that reads as though Donna wrote it — and once
+ * written, a system entry cannot be edited into one a person wrote either
+ * (`system_entry`).
  */
 
 /* ———— vocabulary ———— */
@@ -38,6 +40,12 @@ export type OccurredPrecision = (typeof OCCURRED_PRECISIONS)[number]
 /** Who wrote it: a person, or Donna on someone's behalf. */
 export const ORIGINS = ['person', 'system'] as const
 export type JournalOrigin = (typeof ORIGINS)[number]
+
+/** Which change a system entry records. `next_step_changed`: the body is the
+ *  PREVIOUS next step alone, and the reader's dictionary supplies the label.
+ *  Null on every person entry and on every legacy row. */
+export const SYSTEM_EVENTS = ['next_step_changed'] as const
+export type JournalSystemEvent = (typeof SYSTEM_EVENTS)[number]
 
 /** How the text entered Donna. Not `channel` — that means something else on
  *  crm_interactions. */
@@ -62,6 +70,9 @@ export const MAX_TEXT_LENGTH = 20000
 /** More than this many links on one entry is a program doing something odd,
  *  not a person describing a conversation. */
 export const MAX_LINKS = 20
+/** The longest next step a prospect carries — the same 500 the MCP tools'
+ *  `nextStep` field allows (lib/crm/contracts.ts). */
+export const MAX_NEXT_STEP_LENGTH = 500
 
 /* ———— inputs ———— */
 
@@ -142,6 +153,14 @@ export const editEntryInputSchema = z
 export type EditEntryInput = z.input<typeof editEntryInputSchema>
 
 /**
+ * A prospect's new next step, as the drawer submits it. May be empty — that
+ * clears it. The value it replaces is read by the server inside the same
+ * transaction, never sent by the browser, so the line that records the change
+ * cannot claim a previous value the row never had.
+ */
+export const nextStepInputSchema = z.string().max(MAX_NEXT_STEP_LENGTH)
+
+/**
  * One page of the feed.
  *
  * `targets` is an any-of filter: an entry linked to the prospect OR to its
@@ -180,6 +199,9 @@ export interface JournalEntryView {
   authorName: string | null
   performer: ColleagueId | null
   origin: JournalOrigin
+  /** Which change a system entry records; null for person entries and legacy
+   *  rows. With `next_step_changed`, `body` is the previous next step alone. */
+  systemEvent: JournalSystemEvent | null
   kind: JournalKind
   title: string | null
   body: string
@@ -254,15 +276,25 @@ export interface JournalCoverage {
  *                        like an id that belongs to nobody.
  *   deleted              the entry is there but redacted; an edit cannot be
  *                        applied to it, and the card says so in its own words.
- *   request_key_conflict the key was already used for different text. The
- *                        entry it was used for comes back so the composer can
- *                        link to it.
+ *   request_key_conflict the key was already used for a different request —
+ *                        different text, or the same text with a different
+ *                        kind, date, title, performer or link set. The entry
+ *                        it was used for comes back so the composer can link
+ *                        to it.
  *   revision_conflict    somebody edited it while this editor was open.
  *   target_not_found     a link target that is not in this organization. The
  *                        whole write fails; a half-linked entry is worse than
  *                        a refusal.
  *   invalid              the input did not pass the schema.
  *   unavailable          no database configured (demo mode).
+ *   unauthorized         a browser write whose session was revoked, expired or
+ *                        outlived its membership (revoked, re-added, password
+ *                        reset) while the request was in flight. Checked inside
+ *                        the write's own transaction, under the account lock;
+ *                        nothing is written.
+ *   system_entry         an edit of an entry Donna wrote (origin `system`).
+ *                        Its wording records what the CRM did; a person may
+ *                        delete it, not rewrite it.
  */
 export type JournalError =
   | 'not_found'
@@ -272,11 +304,21 @@ export type JournalError =
   | 'target_not_found'
   | 'invalid'
   | 'unavailable'
+  | 'unauthorized'
+  | 'system_entry'
 
 /** What every write returns. `replayed` marks a retry that found its own
  *  earlier entry rather than writing a second one. */
 export type JournalWriteResult =
   | { ok: true; entry: JournalEntryView; replayed?: boolean }
+  | { ok: false; error: JournalError; existing?: JournalEntryView }
+
+/** What a next-step change returns. `entry` is the system line recording the
+ *  value it replaced, or null when there was nothing to record (the previous
+ *  next step was empty, or unchanged). `previous` is that value as the row
+ *  held it inside the transaction. */
+export type NextStepChangeResult =
+  | { ok: true; entry: JournalEntryView | null; previous: string }
   | { ok: false; error: JournalError; existing?: JournalEntryView }
 
 /** One page of the feed. */

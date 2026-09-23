@@ -4,7 +4,6 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
 import { useTranslations } from '@/lib/hooks/useTranslations'
-import { CONTEXT_MISMATCH } from '@/lib/actions/scope'
 import { cn } from '@/lib/utils'
 import { useJournalTyping } from './JournalSync'
 import {
@@ -23,6 +22,7 @@ import {
   writeDraft,
   type JournalSurface,
 } from '@/lib/journal/drafts'
+import { isIdentityRefusal, settleSave, type ComposerNow, type SaveSnapshot } from '@/lib/journal/composer-state'
 
 interface JournalComposerProps {
   /** Which draft this box owns. One per place a composer appears. */
@@ -43,16 +43,29 @@ interface JournalComposerProps {
  * The box somebody writes in.
  *
  * ITS ONE PROMISE: text that has been typed is not lost. Not by a failed save,
- * not by a reload, not by closing the tab. Every branch below is that promise
- * — the draft is written to storage on each keystroke, the request key is
- * minted once and reused so a retry cannot become a second entry, and the
- * draft is cleared on exactly one result, `{ ok: true }`. A save that fails,
- * is refused, or collides keeps the words on screen and in storage.
+ * not by a reload, not by closing the tab, and not by a save that succeeds
+ * while the writer is still typing. Every branch below is that promise — the
+ * draft is written to storage on each keystroke, the request key is minted
+ * once and reused so a retry cannot become a second entry, and the draft is
+ * cleared on exactly one result, `{ ok: true }`, and then only when the box
+ * still holds what was sent. A save that fails, is refused, or collides keeps
+ * the words on screen and in storage.
+ *
+ * THE TEXTAREA STAYS WRITABLE DURING A SAVE, deliberately — a thought does not
+ * wait for a round-trip. So what was sent is frozen at the press (a
+ * `SaveSnapshot`) and the answer is weighed against what the box holds when
+ * it arrives, never against the closure's copy (`settleSave` in
+ * lib/journal/composer-state.ts decides; this file only carries it out).
  *
  * THE FIVE ANSWERS a save can come back with, and what each looks like here:
  *
- *   ok                   the entry is filed, the box empties, the status line
- *                        says so, and a fresh key is minted for the next one.
+ *   ok                   the entry is filed. If the box still says what was
+ *                        sent, it empties and the status line says "Saved".
+ *                        If it says something newer, the newer words stay,
+ *                        get a key of their own, and the line says the
+ *                        earlier text was saved. If the drawer has moved on
+ *                        to another prospect, the box is left alone and only
+ *                        the draft the save came from is settled.
  *   request_key_conflict this key already belongs to different text — the save
  *                        did land once, and then the text changed. The entry
  *                        it produced comes back so the box can point at it,
@@ -60,10 +73,11 @@ interface JournalComposerProps {
  *                        is in the box now. Never silently duplicated.
  *   unavailable          there is no database (decision 12). Said plainly,
  *                        with the text kept, rather than a cheerful "Saved".
- *   context_mismatch     the cookie now names somebody else. The ONE answer
- *                        that does not keep the text: the store has already
- *                        dropped this identity's drafts and the page is
- *                        reloading. A sentence, and no Retry to press.
+ *   context_mismatch     the cookie now names somebody else — or, answered as
+ *   / unauthorized       `unauthorized`, the session or membership ended. The
+ *                        ONE answer that does not keep the text: the store
+ *                        has already dropped this identity's drafts and the
+ *                        page is reloading. A sentence, and no Retry to press.
  *   anything else        inline error and Retry, text kept — including a
  *                        Server Action that REJECTED rather than answering,
  *                        which the store hands over in this same shape. The
@@ -99,10 +113,22 @@ export function JournalComposer({
   /** Minted on the first keystroke, kept until a save succeeds. */
   const [requestKey, setRequestKey] = useState<string | null>(null)
   const [status, setStatus] = useState<
-    'idle' | 'saving' | 'saved' | 'error' | 'unavailable' | 'conflict' | 'signedOut'
+    'idle' | 'saving' | 'saved' | 'savedKeptNewer' | 'error' | 'unavailable' | 'conflict' | 'signedOut'
   >('idle')
   const [error, setError] = useState<string | null>(null)
   const [conflict, setConflict] = useState<JournalEntryView | null>(null)
+
+  /**
+   * What the box holds right now, for code that runs after an await.
+   *
+   * `save` is a closure over the render it started in, so after the network
+   * its `text` is the text at the press, and its `surface` is the prospect the
+   * drawer showed then. The answer has to be weighed against the box as it is
+   * when the answer arrives — that is the whole of R1 — so every write to the
+   * box writes here too, and the surface flips in the same effect that swaps
+   * the draft on screen.
+   */
+  const live = useRef<ComposerNow>({ text: '', kind: 'update', occurredOn: '', surface, requestKey: null })
 
   /* ———— the draft ———— */
 
@@ -121,6 +147,13 @@ export function JournalComposer({
     setKind(draft?.kind ?? 'update')
     setOccurredOn(draft?.occurredOn ?? '')
     setRequestKey(draft?.requestKey ?? null)
+    live.current = {
+      text: draft?.text ?? '',
+      kind: draft?.kind ?? 'update',
+      occurredOn: draft?.occurredOn ?? '',
+      surface,
+      requestKey: draft?.requestKey ?? null,
+    }
     setStatus('idle')
     setError(null)
     setConflict(null)
@@ -153,17 +186,19 @@ export function JournalComposer({
     // The status line stops claiming "Saved" the moment the box is not empty
     // again, so a fresh sentence is never sitting under somebody else's
     // confirmation.
-    if (status === 'saved') setStatus('idle')
+    if (status === 'saved' || status === 'savedKeptNewer') setStatus('idle')
 
     if (!value.trim()) {
       // An emptied box has no draft to keep. The key goes with it: the next
       // sentence is a different entry and deserves its own.
       clearDraft(organizationId, userId, surface)
       setRequestKey(null)
+      live.current = { text: value, kind: nextKind, occurredOn: nextOn, surface, requestKey: null }
       return
     }
     const key = requestKey ?? newRequestKey()
     if (!requestKey) setRequestKey(key)
+    live.current = { text: value, kind: nextKind, occurredOn: nextOn, surface, requestKey: key }
     writeDraft(organizationId, userId, surface, {
       text: value,
       requestKey: key,
@@ -178,6 +213,7 @@ export function JournalComposer({
 
     const key = options.freshKey ? newRequestKey() : requestKey ?? newRequestKey()
     setRequestKey(key)
+    live.current = { ...live.current, requestKey: key }
     if (key !== requestKey) {
       // The key is part of the draft, not of this attempt. Minting one into
       // component state and leaving the stored draft on the old one means a
@@ -194,6 +230,9 @@ export function JournalComposer({
     setStatus('saving')
     setError(null)
     setConflict(null)
+
+    // Frozen here: what the answer below is an answer ABOUT.
+    const sent: SaveSnapshot = { text, kind, occurredOn, requestKey: key, surface }
 
     const input: CreateEntryInput = {
       requestKey: key,
@@ -230,15 +269,70 @@ export function JournalComposer({
       result = { ok: false, error: cause instanceof Error ? cause.message : String(cause) }
     }
 
+    const now = live.current
+
     if (result.ok) {
-      // The one place a draft is ever cleared.
-      clearDraft(organizationId, userId, surface)
-      setText('')
-      setOccurredOn('')
-      setRequestKey(null)
-      setStatus('saved')
+      const settled = settleSave(sent, now)
+
+      if (settled.announce === 'ignored') {
+        // The drawer moved to another prospect while this was in flight. The
+        // box now belongs to that prospect and is none of this answer's
+        // business; the draft this save came from is. It is settled by the
+        // same rule, against what storage holds for it — the writer may have
+        // kept typing there before switching — and only if it is still the
+        // draft this key was minted for.
+        const stored = readDraft(organizationId, userId, sent.surface)
+        if (stored && stored.requestKey === sent.requestKey) {
+          const old = settleSave(sent, {
+            text: stored.text,
+            kind: stored.kind,
+            occurredOn: stored.occurredOn ?? '',
+            surface: sent.surface,
+            requestKey: stored.requestKey,
+          })
+          if (old.clear) clearDraft(organizationId, userId, sent.surface)
+          else if (old.mintNewKey) writeDraft(organizationId, userId, sent.surface, { ...stored, requestKey: newRequestKey() })
+        }
+        return
+      }
+
+      if (settled.clear) {
+        // The one place a draft is ever cleared: the box says what was saved.
+        clearDraft(organizationId, userId, surface)
+        setText('')
+        setOccurredOn('')
+        setRequestKey(null)
+        live.current = { ...now, text: '', occurredOn: '', requestKey: null }
+        setStatus('saved')
+        return
+      }
+
+      // The writer kept going. What they sent is an entry now; what they have
+      // written since is still theirs, and still only in this box. It keeps
+      // its kind and its date, and it gets its own key — the old one belongs
+      // to the saved entry, and a Save on it would come back as a collision.
+      if (settled.mintNewKey) {
+        const fresh = newRequestKey()
+        setRequestKey(fresh)
+        live.current = { ...now, requestKey: fresh }
+        writeDraft(organizationId, userId, surface, {
+          text: now.text,
+          requestKey: fresh,
+          kind: now.kind,
+          occurredOn: now.occurredOn || null,
+        })
+      }
+      setStatus('savedKeptNewer')
       return
     }
+
+    // A refusal for a draft that is no longer on screen. Its words and its
+    // key are still in storage under its own surface, exactly as they were,
+    // and saying "could not save" over a different prospect's box would be a
+    // sentence about the wrong thing. The store has already acted on an
+    // identity refusal.
+    if (now.surface !== sent.surface) return
+
     if (result.error === 'request_key_conflict') {
       setConflict(result.existing ?? null)
       setStatus('conflict')
@@ -248,12 +342,13 @@ export function JournalComposer({
       setStatus('unavailable')
       return
     }
-    if (result.error === CONTEXT_MISMATCH) {
+    if (isIdentityRefusal(result.error)) {
       // This tab is finished. The store has already dropped this draft and
-      // SnapshotSync is reloading the page as whoever the cookie now names,
-      // so a Retry would submit from a tab that is going away — and the
-      // generic failure sentence would promise the text is still here when
-      // it is not. One line saying what is happening, and nothing to press.
+      // SnapshotSync is reloading the page as whoever the cookie now names
+      // (or to the sign-in page, for an ended session), so a Retry would
+      // submit from a tab that is going away — and the generic failure
+      // sentence would promise the text is still here when it is not. One
+      // line saying what is happening, and nothing to press.
       setStatus('signedOut')
       return
     }
@@ -274,15 +369,17 @@ export function JournalComposer({
       ? copy.saving
       : status === 'saved'
         ? copy.saved
-        : status === 'unavailable'
-          ? copy.unavailable
-          : status === 'conflict'
-            ? copy.alreadySaved
-            : status === 'signedOut'
-              ? copy.signingBackIn
-              : status === 'error' && error
-                ? copy.failed(error)
-                : ''
+        : status === 'savedKeptNewer'
+          ? copy.savedKeptNewer
+          : status === 'unavailable'
+            ? copy.unavailable
+            : status === 'conflict'
+              ? copy.alreadySaved
+              : status === 'signedOut'
+                ? copy.signingBackIn
+                : status === 'error' && error
+                  ? copy.failed(error)
+                  : ''
 
   return (
     <section

@@ -93,7 +93,10 @@ const journalTargets: Record<'company' | 'contact' | 'prospect' | 'lead' | 'task
  * `legacy*`/`source`/`processingState` fields describe the migration and Stage
  * 3, not the entry. What is kept is the spec's list, one for one:
  * id, kind, title, body, occurredPrecision, occurredOn, occurredAt, authorId,
- * performer, origin, revision, createdAt — every name unchanged from the view.
+ * performer, origin, systemEvent, revision, createdAt — every name unchanged
+ * from the view. `systemEvent` is what makes a system entry's body readable
+ * on its own: with `next_step_changed` the body is the previous next step
+ * alone, and without the event a model would read it as a bare sentence.
  *
  * A refusal is thrown rather than returned: every other read in this file
  * signals failure with a CrmError, and `run()` in lib/mcp/server.ts turns one
@@ -112,7 +115,7 @@ function journalPage(result: JournalPageResult): Row {
       id: entry.id, kind: entry.kind, title: entry.title, body: entry.body,
       occurredPrecision: entry.occurredPrecision, occurredOn: entry.occurredOn, occurredAt: entry.occurredAt,
       authorId: entry.authorId, performer: entry.performer, origin: entry.origin,
-      revision: entry.revision, createdAt: entry.createdAt,
+      systemEvent: entry.systemEvent, revision: entry.revision, createdAt: entry.createdAt,
     })),
     nextCursor, coverage,
   }
@@ -417,9 +420,10 @@ async function prepare(db: Queryable, action: ActionName, raw: unknown, actor: A
     }
     // `ok` is not yet proof that THIS entry exists. `writeEntry` answers
     // `{ ok: true, replayed: true }` when the request key is already held by a
-    // capture with the same author and byte-identical text — which a typed
-    // entry can be, since the composer and this tool write as the same account
-    // into the same key space. Nothing is then written under `entryId`, while
+    // capture with the same author and the same fingerprint of the creation
+    // inputs — which a typed entry can in principle be, since the composer and
+    // this tool write as the same account into the same key space. Nothing is
+    // then written under `entryId`, while
     // the preview above and the receipt below both claim a `journal_entry`
     // create for exactly that id. Fail the commit rather than receipt an entry
     // this call never wrote and hand the caller somebody else's note as its

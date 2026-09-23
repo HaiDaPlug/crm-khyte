@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 import { useCRMStore } from '@/lib/store'
+import { nextPollState, pollAction } from '@/lib/journal/composer-state'
 
 /** How often to ask whether anything in the Journal changed. */
 const CHECK_SECONDS = 12
@@ -83,7 +84,8 @@ export function useJournalTyping(): { hold: () => void; release: () => void } {
  *   - poll when the Journal is unavailable. Demo mode has no database, the
  *     stamp is the constant 'demo', and asking would be pure noise.
  *   - re-read a feed under somebody's hands. `refreshJournalViews` stands down
- *     while `journalTyping` is set; the next tick picks the change up.
+ *     while `journalTyping` is set and says so ('deferred'); the stamp stays
+ *     pending, and it is asked for again the moment the typing stops.
  *   - re-read a feed nobody is looking at. The store outlives navigation, so
  *     it refreshes only the views a mounted feed is holding a reference to
  *     (`acquireJournalView`), and it refreshes them in parallel.
@@ -91,9 +93,20 @@ export function useJournalTyping(): { hold: () => void; release: () => void } {
  * The first answer is recorded without refreshing: the feeds were read moments
  * ago by their own components, so the stamp that comes back describes what is
  * already on screen.
+ *
+ * A STAMP IS ONLY SEEN ONCE IT IS SHOWN. `seen` advances when the refresh it
+ * asked for reports 'applied', and at no other time. A refresh that was
+ * deferred (somebody typing) or failed (a read that did not come back) leaves
+ * `seen` where it was, so the next tick fetches the same stamp, finds it still
+ * differs from `seen`, and asks again. Marking the stamp seen the moment it
+ * was fetched, before the refresh had shown anything — which is what this did
+ * before — is how a colleague's line written while somebody typed was consumed
+ * and never shown. The decision is
+ * `pollAction` / `nextPollState` in lib/journal/composer-state.ts.
  */
 export function JournalSync() {
   const refreshJournalViews = useCRMStore((s) => s.refreshJournalViews)
+  const typing = useCRMStore((s) => s.journalTyping)
   // Any loaded view whose coverage says there is no database. One is enough:
   // the answer is a property of the deployment, not of the view.
   const unavailable = useCRMStore((s) =>
@@ -102,8 +115,12 @@ export function JournalSync() {
 
   /** The stamp whose data the feeds are currently showing. */
   const seen = useRef<string | null>(null)
+  /** A stamp fetched and not yet applied — deferred or failed. */
+  const pending = useRef<string | null>(null)
   /** Guards against a slow check overlapping the next tick. */
   const checking = useRef(false)
+  /** The running poll's signal, for the check the end of typing triggers. */
+  const pollSignal = useRef<AbortSignal | null>(null)
 
   const check = useCallback(
     async (signal: AbortSignal) => {
@@ -126,13 +143,21 @@ export function JournalSync() {
           return
         }
 
-        const first = seen.current === null
-        if (version === seen.current) return
-        seen.current = version
-        // The first answer describes the pages the feeds just read.
-        if (first) return
+        const action = pollAction(seen.current, version)
+        if (action === 'adopt') {
+          // The first answer describes the pages the feeds just read.
+          seen.current = version
+          return
+        }
+        if (action === 'skip') {
+          pending.current = null
+          return
+        }
 
-        await refreshJournalViews()
+        const outcome = await refreshJournalViews()
+        const next = nextPollState(seen.current, version, outcome)
+        seen.current = next.seen
+        pending.current = next.pending
       } catch {
         // Offline, aborted, or a malformed response. The feeds keep the last
         // good page and the next tick retries.
@@ -147,6 +172,7 @@ export function JournalSync() {
     if (unavailable) return
 
     const controller = new AbortController()
+    pollSignal.current = controller.signal
     void check(controller.signal)
     const id = setInterval(() => void check(controller.signal), CHECK_SECONDS * 1000)
 
@@ -157,10 +183,18 @@ export function JournalSync() {
 
     return () => {
       controller.abort()
+      pollSignal.current = null
       clearInterval(id)
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [check, unavailable])
+
+  // The typing stopped with a change still waiting for it: ask now rather
+  // than at the next tick, up to twelve seconds after the writer looked up.
+  useEffect(() => {
+    if (typing || pending.current === null || !pollSignal.current) return
+    void check(pollSignal.current)
+  }, [typing, check])
 
   return null
 }

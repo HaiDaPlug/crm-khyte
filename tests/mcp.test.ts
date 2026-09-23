@@ -13,7 +13,7 @@ import { commitAction, previewAction, generatedId, getRecord, listJournal, searc
 // The Journal's own write path, used here exactly as the composer uses it, so
 // a person-written entry in a fixture is the real thing rather than four rows
 // inserted by hand.
-import { createEntry } from '../lib/journal/service'
+import { createEntry, writeEntry, type JournalActor } from '../lib/journal/service'
 import { createCrmMcpServer } from '../lib/mcp/server'
 import type { CodeIdentity, Principal } from '../lib/mcp/oauth'
 import { authenticateBearer, exchangeToken, issueCode, revokeToken, validateAuthorization, authorizationMetadata } from '../lib/mcp/oauth'
@@ -110,6 +110,19 @@ async function login(userId: string, organizationId: string) {
 }
 
 /**
+ * This person writing in the Journal from the browser: a real session,
+ * resolved the way every Server Action resolves it, carried into the Journal
+ * actor the way app/actions/journal.ts builds it. A typed Journal write
+ * re-checks exactly this session and generation inside its own transaction,
+ * so a bare `{ organizationId, userId, source: 'typed' }` is refused.
+ */
+async function browserActor(userId: string, organizationId: string): Promise<JournalActor> {
+  const context = await resolveAuthContext(db, (await login(userId, organizationId)).cookie)
+  assert.ok(context, 'a freshly minted session resolves')
+  return { organizationId, userId, source: 'typed', sessionId: context.sessionId, credentialGeneration: context.credentialGeneration }
+}
+
+/**
  * The membership a credential is minted against, as it stands right now: its
  * id and its current credential generation. Every credential in this codebase
  * — wallpaper link, authorization code, MCP connection — records both, and is
@@ -194,7 +207,7 @@ test('export matches the CSV builder, filters contacted stages, and preserves pr
   // holds. The note columns count what a person wrote, so the fixture says one
   // thing in somebody's own words and the assertions below prove the system
   // entry standing beside it is not counted as a second.
-  const written = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+  const written = await createEntry(db, await browserActor(actor.userId, KHYTE),
     { requestKey: randomUUID(), text: 'Anna asked for a written quote before the summer.', links: [{ type: 'opportunity', id }] })
   assert.equal(written.ok, true)
   const linked = await db.query<{ origin: string }>(
@@ -452,6 +465,40 @@ test('outreach saves linked records and history, keeps owner and latest date, de
   assert.equal((linkedTask.record as Row).relatedCompanyId, record.companyId)
 })
 
+test('R6: a log_outreach retry is answered from its receipt, and the same Journal write made again replays by fingerprint', async () => {
+  const a = outreach()
+  const saved = await commitAction(db, 'log_outreach', a, actor)
+  assert.equal(saved.status, 'saved')
+  const record = saved.record as Row
+  // The receipt short-circuits a replayed tool call before any Journal write.
+  assert.equal((await commitAction(db, 'log_outreach', a, actor)).status, 'already_saved')
+
+  // The write plan.after makes, made again directly with identical inputs:
+  // the stored fingerprint matches, so it replays the original entry.
+  const entryId = generatedId(a.requestId, 'note')
+  const mcpActor: JournalActor = { organizationId: KHYTE, userId: actor.userId, source: 'mcp' }
+  const inputs = {
+    requestKey: a.requestId, text: a.summary, kind: 'update', occurredPrecision: 'day', occurredOn: a.occurredOn, performer: a.followedUpBy,
+    links: [
+      { type: 'opportunity', id: record.id as string },
+      { type: 'company', id: record.companyId as string },
+      { type: 'interaction', id: generatedId(a.requestId, 'interaction') },
+    ],
+  }
+  const options = { origin: 'system' as const, captureId: generatedId(a.requestId, 'capture'), entryId }
+  const replay = await db.transaction(tx => writeEntry(tx, mcpActor, inputs, options))
+  assert.ok(replay.ok)
+  assert.equal(replay.replayed, true)
+  assert.equal(replay.entry.id, entryId)
+
+  // The same key with a different day is a different request.
+  const moved = await db.transaction(tx => writeEntry(tx, mcpActor, { ...inputs, occurredOn: '2026-08-19' }, options))
+  assert.ok(!moved.ok)
+  assert.equal(moved.error, 'request_key_conflict')
+  assert.equal(moved.existing?.id, entryId)
+  assert.equal((await db.query('select id from captures where organization_id = $1 and request_key = $2', [KHYTE, a.requestId])).length, 1)
+})
+
 test('transaction failure rolls back company, contact, prospect, journal entry, event and receipt', async () => {
   const a = outreach()
   const failing: Database = { ...db, transaction: run => db.transaction(tx => run({
@@ -497,7 +544,7 @@ test('an outreach whose request key already belongs to a typed entry saves nothi
   // than contrived — and the entry that holds the key is not the one the tool
   // is about to claim it wrote.
   const held = 'A typed entry that took this key first.'
-  const taken = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+  const taken = await createEntry(db, await browserActor(actor.userId, KHYTE),
     { requestKey: requestId, text: held })
   assert.equal(taken.ok, true)
 
@@ -527,13 +574,17 @@ test('an outreach whose request key is held by a byte-identical typed entry save
   const prospect = await commitAction(db, 'log_outreach', outreach(), actor)
   const record = prospect.record as Row
   const requestId = randomUUID()
-  // The near miss the refusal above does not catch. Same account, same key,
-  // same text - so writeEntry finds the key taken by a capture it reads as this
-  // caller's own retry and answers { ok: true, replayed: true } with the TYPED
-  // entry. Nothing is written under generatedId(requestId, 'note'), which is the
-  // id the preview and the receipt both name.
+  // The near miss the refusal above does not catch by text alone. Same
+  // account, same key, same text. Before the request fingerprint (R6)
+  // writeEntry read that as this caller's own retry and answered
+  // { ok: true, replayed: true } with the TYPED entry, which the id guard in
+  // plan.after then refused. Now the fingerprint differs as well — origin,
+  // precision, date, performer and links are all part of the request — so
+  // writeEntry answers request_key_conflict first; the id guard stays as the
+  // second line. Either way nothing is written under generatedId(requestId,
+  // 'note'), which is the id the preview and the receipt both name.
   const summary = 'Rang Anna about the renewal.'
-  const taken = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+  const taken = await createEntry(db, await browserActor(actor.userId, KHYTE),
     { requestKey: requestId, text: summary })
   assert.equal(taken.ok, true)
 
@@ -565,7 +616,7 @@ test('a receipt carries the record, never the Journal text filed against it', as
   const first = await commitAction(db, 'log_outreach', outreach(), actor)
   const id = (first.record as Row).id as string
   const secret = `Private context nobody receipted: ${randomUUID()}`
-  const written = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+  const written = await createEntry(db, await browserActor(actor.userId, KHYTE),
     { requestKey: randomUUID(), text: secret, links: [{ type: 'opportunity', id }] })
   assert.equal(written.ok, true)
 
@@ -592,7 +643,7 @@ test('list_journal pages a prospect Journal with its cursor, and get_crm_record 
   for (let index = 0; index < 3; index += 1) {
     const text = `Journal page entry ${index} ${randomUUID()}`
     bodies.push(text)
-    const written = await createEntry(db, { organizationId: KHYTE, userId: actor.userId, source: 'typed' },
+    const written = await createEntry(db, await browserActor(actor.userId, KHYTE),
       { requestKey: randomUUID(), text, links: [{ type: 'opportunity', id }] })
     assert.equal(written.ok, true)
   }
@@ -618,8 +669,12 @@ test('list_journal pages a prospect Journal with its cursor, and get_crm_record 
   for (const body of bodies) assert.ok(journal.entries.some(item => item.body === body), body)
   // Exactly the fields the tool contract names — no organizationId, captureId
   // or migration bookkeeping leaking out of the view.
+  // Thirteen since R8: `systemEvent` joined the twelve, because a
+  // next-step-change entry's body is the previous step alone and reads as a
+  // bare sentence without it.
   assert.deepEqual(Object.keys(journal.entries[0]).sort(),
-    ['authorId', 'body', 'createdAt', 'id', 'kind', 'occurredAt', 'occurredOn', 'occurredPrecision', 'origin', 'performer', 'revision', 'title'])
+    ['authorId', 'body', 'createdAt', 'id', 'kind', 'occurredAt', 'occurredOn', 'occurredPrecision', 'origin', 'performer', 'revision', 'systemEvent', 'title'])
+  assert.ok(journal.entries.every(item => item.systemEvent === null), 'typed entries and the outreach line carry no system event')
   // journalCursor pages the prospect read the same way.
   const oneDeep = await listJournal(db, { target: { entity: 'prospect', id }, limit: 1 }, actor)
   const paged = await getRecord(db, { entity: 'prospect', id, journalCursor: oneDeep.nextCursor }, actor)

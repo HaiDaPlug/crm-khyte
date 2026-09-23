@@ -6,6 +6,7 @@ import type { Database, Queryable, Row } from '../lib/crm/database'
 import { CONTEXT_MISMATCH, scopeMismatch } from '../lib/actions/scope'
 import {
   addLink,
+  changeNextStep,
   countEntries,
   createEntry,
   deleteEntry,
@@ -17,8 +18,19 @@ import {
   writeEntry,
   type JournalActor,
 } from '../lib/journal/service'
-import type { LinkTarget } from '../lib/journal/contracts'
+import type { JournalEntryView, LinkTarget } from '../lib/journal/contracts'
+// Sessions are minted and resolved exactly the way tests/mcp.test.ts does it:
+// the token's keyed hash in app_sessions, then the database-backed
+// resolveAuthContext with the cookie value passed in. lib/auth/context
+// imports next/headers, but nothing here calls cookies().
+import { hashSessionToken, mintSession } from '../lib/auth/session'
+import { resolveAuthContext } from '../lib/auth/context'
+import { addMember, resetCredentials, revokeMember, revokeSessionsForUser } from '../lib/org/members'
 import { applyMigrations, finishRollout } from './support/migrations'
+
+// Session signing reads AUTH_SECRET at call time (lib/auth/session.ts). A
+// test-only value; no deployment's secret is read or needed.
+process.env.AUTH_SECRET = 'test-only-session-secret-with-at-least-32-characters'
 
 /**
  * The Journal write service, against a real Postgres.
@@ -55,7 +67,10 @@ const KHYTE = '7b1e3d2a-8f4c-4a6e-9b21-0c5d3e7f9a10'
 const OTHER_ORG = randomUUID()
 
 /** Who is writing. `source` is the capture's provenance — how the text reached
- *  Donna — and never the contact channel. */
+ *  Donna — and never the contact channel. Both are real browser sessions:
+ *  every typed write re-checks its session and membership inside its own
+ *  transaction (R3), so a hand-built `{ organizationId, userId }` is refused
+ *  as `unauthorized` before it writes anything. */
 let actorA: JournalActor
 let actorB: JournalActor
 
@@ -81,6 +96,35 @@ async function person(organizationId: string, displayName: string): Promise<stri
     [organizationId, userId, email, displayName]
   )
   return userId
+}
+
+/**
+ * What app/actions/auth.ts does once a password checks out — mint a session
+ * and store only the token's keyed hash — and then what every Server Action
+ * does with the cookie: resolve it to an AuthContext. The actor is built from
+ * that context exactly as app/actions/journal.ts `actorFor` builds it.
+ */
+async function signIn(userId: string, organizationId: string): Promise<JournalActor> {
+  const minted = mintSession()
+  await rows('insert into app_sessions (user_id, organization_id, token_hash, expires_at) values ($1, $2, $3, $4)',
+    [userId, organizationId, hashSessionToken(minted.token), minted.expiresAt.toISOString()])
+  const context = await resolveAuthContext(db, minted.cookie)
+  assert.ok(context, 'a freshly minted session resolves')
+  return {
+    organizationId: context.organizationId,
+    userId: context.userId,
+    source: 'typed',
+    sessionId: context.sessionId,
+    credentialGeneration: context.credentialGeneration,
+  }
+}
+
+/** A member whose membership can be revoked, re-added and reset. */
+async function teammate(organizationId: string, displayName: string) {
+  const userId = await person(organizationId, displayName)
+  const [row] = await rows<{ id: string; email: string }>(
+    'select id, email from organization_members where organization_id = $1 and user_id = $2', [organizationId, userId])
+  return { userId, memberId: row.id, email: row.email, displayName }
 }
 
 /** One of everything a Journal entry can be linked to. Inserted directly:
@@ -142,8 +186,8 @@ before(async () => {
   await finishRollout(pg, OTHER_ORG)
   await rows(`insert into organizations (id, name, slug) values ($1, 'Other AB', 'other')`, [OTHER_ORG])
 
-  actorA = { organizationId: KHYTE, userId: await person(KHYTE, 'Erik'), source: 'typed' }
-  actorB = { organizationId: OTHER_ORG, userId: await person(OTHER_ORG, 'Other Owner'), source: 'typed' }
+  actorA = await signIn(await person(KHYTE, 'Erik'), KHYTE)
+  actorB = await signIn(await person(OTHER_ORG, 'Other Owner'), OTHER_ORG)
   khyte = await fixture(KHYTE, NORDVIK)
   other = await fixture(OTHER_ORG, FJALLVIND)
 })
@@ -290,34 +334,47 @@ test('the same key with different text is a conflict, and reports the entry the 
   assert.equal(await count('from journal_entries where organization_id = $1 and capture_id = $2', [KHYTE, first.captureId]), 1)
 })
 
+/**
+ * A Database whose transaction throws on the first statement AFTER the one
+ * `after` recognizes, once that one has run — so by the time it throws, that
+ * statement's row exists and the rollback is what has to remove it. PGlite,
+ * like postgres.js, rolls a transaction back when its callback rejects.
+ * `reached()` says whether the recognized statement ran at all, so a test can
+ * prove it failed where it meant to rather than earlier.
+ */
+function failingAfter(after: (sql: string) => boolean) {
+  let seen = false
+  const database: Database = {
+    query: (sql, values) => db.query(sql, values),
+    async transaction(run) {
+      return pg.transaction(async tx => run({
+        async query<T extends Row>(sql: string, values: unknown[] = []) {
+          if (seen) throw new Error('connection lost mid-write')
+          const result = (await tx.query<T>(sql, values)).rows
+          if (after(sql)) seen = true
+          return result
+        },
+      }))
+    },
+  }
+  return { database, reached: () => seen }
+}
+
 test('a transaction that fails after the capture insert leaves no rows behind', async () => {
   const requestKey = randomUUID()
   const capturesBefore = await count('from captures where organization_id = $1', [KHYTE])
 
-  // The second statement inside the transaction is the one that throws. The
-  // first is the capture insert, so by then a row exists and the rollback is
-  // what has to remove it — PGlite, like postgres.js, rolls a transaction back
-  // when its callback rejects, and the counts below are what says so.
-  const failing: Database = {
-    query: (sql, values) => db.query(sql, values),
-    async transaction(run) {
-      return pg.transaction(async tx => {
-        let calls = 0
-        return run({
-          async query<T extends Row>(sql: string, values: unknown[] = []) {
-            calls += 1
-            if (calls === 2) throw new Error('connection lost mid-write')
-            return (await tx.query<T>(sql, values)).rows
-          },
-        })
-      })
-    },
-  }
+  // The statement after the capture insert is the one that throws. Since R3 the
+  // session re-check runs first in the same transaction, so "the second
+  // statement" is no longer the one after the capture; the capture insert is
+  // named instead, and asserted to have run.
+  const failing = failingAfter(sql => sql.includes('insert into captures'))
 
   await assert.rejects(
-    createEntry(failing, actorA, { requestKey, text: 'This must not survive.' }),
+    createEntry(failing.database, actorA, { requestKey, text: 'This must not survive.' }),
     /connection lost mid-write/
   )
+  assert.equal(failing.reached(), true, 'the capture insert ran before the failure, so a row existed to roll back')
   assert.equal(await count('from captures where organization_id = $1 and request_key = $2', [KHYTE, requestKey]), 0)
   assert.equal(await count('from captures where organization_id = $1', [KHYTE]), capturesBefore)
   assert.equal(await count('from journal_entries where organization_id = $1 and body = $2', [KHYTE, 'This must not survive.']), 0)
@@ -688,7 +745,7 @@ test('a dismissed legacy entry stays out of the feed, exactly as a dismissed not
 
 test('an account that disappears leaves its text standing and its author unknown', async () => {
   const userId = await person(KHYTE, 'Departing Colleague')
-  const actor: JournalActor = { organizationId: KHYTE, userId, source: 'typed' }
+  const actor = await signIn(userId, KHYTE)
   const entry = written(await createEntry(db, actor, { requestKey: randomUUID(), text: 'Written by someone who left.' }))
   assert.equal(entry.authorName, 'Departing Colleague')
 
@@ -857,4 +914,413 @@ test('writeEntry enlists in a caller transaction, and a caller rollback takes th
   )
   assert.equal(await count('from captures where organization_id = $1 and request_key = $2', [KHYTE, requestKey]), 0)
   assert.equal(await count('from journal_entries where organization_id = $1 and body = $2', [KHYTE, 'Written inside a bigger write.']), 0)
+})
+
+/* ———— R3: a browser write re-checks its session at the write ————
+ *
+ * The session was resolved when the request arrived. Every browser mutation
+ * asks again, inside its own transaction and under the account lock, whether
+ * that session is still live on the same membership generation. These are
+ * the sequential halves; tests/mcp-postgres.test.ts holds the two-connection
+ * races that prove the lock order.
+ */
+
+const UNAUTHORIZED = { ok: false, error: 'unauthorized' }
+
+/** Everything a refused write could have touched, read back so a refusal can
+ *  be proved to have changed nothing at all. */
+async function footprint(userId: string, entryId: string, opportunityId: string) {
+  const [entry] = await rows(
+    'select body, title, revision, deleted_at::text as deleted_at from journal_entries where id = $1 and organization_id = $2',
+    [entryId, KHYTE])
+  const [opportunity] = await rows(
+    'select next_step, updated_at::text as updated_at from opportunities where id = $1 and organization_id = $2',
+    [opportunityId, KHYTE])
+  return {
+    captures: await count('from captures where organization_id = $1 and author_id = $2', [KHYTE, userId]),
+    entries: await count('from journal_entries where organization_id = $1 and author_id = $2', [KHYTE, userId]),
+    revisions: await count('from journal_entry_revisions where organization_id = $1 and entry_id = $2', [KHYTE, entryId]),
+    links: await count('from journal_entry_links where organization_id = $1 and entry_id = $2', [KHYTE, entryId]),
+    entry,
+    opportunity,
+  }
+}
+
+/**
+ * The six browser mutations, each refused `unauthorized`, and not one row
+ * different afterwards. `entry` is an entry this person wrote while they
+ * still could, linked to `opportunityId`, whose next step is set.
+ */
+async function assertEveryWriteRefused(actor: JournalActor, entry: JournalEntryView, opportunityId: string, why: string) {
+  const unlinked = await prospect(KHYTE, `Unlinked ${randomUUID().slice(0, 8)}`)
+  const before = await footprint(actor.userId!, entry.id, opportunityId)
+  const results = {
+    createEntry: await createEntry(db, actor, { requestKey: randomUUID(), text: `Written ${why}.` }),
+    editEntry: await editEntry(db, actor, entry.id, { body: `Rewritten ${why}.`, expectedRevision: entry.revision }),
+    addLink: await addLink(db, actor, entry.id, { type: 'opportunity', id: unlinked.opportunityId }),
+    removeLink: await removeLink(db, actor, entry.id, entry.links[0].id),
+    changeNextStep: await changeNextStep(db, actor, opportunityId, `Changed ${why}`),
+    deleteEntry: await deleteEntry(db, actor, entry.id),
+  }
+  for (const [name, result] of Object.entries(results)) {
+    assert.deepEqual(result, UNAUTHORIZED, `${name} ${why} must be refused as unauthorized`)
+  }
+  assert.deepEqual(await footprint(actor.userId!, entry.id, opportunityId), before, `nothing changed ${why}`)
+  assert.equal(await count('from journal_entry_links where organization_id = $1 and opportunity_id = $2', [KHYTE, unlinked.opportunityId]), 0)
+}
+
+/** A prospect with a next step, and an entry about it written by `actor`. */
+async function livedIn(actor: JournalActor, label: string) {
+  const target = await prospect(KHYTE, `${label} AB`)
+  await rows('update opportunities set next_step = $1 where id = $2 and organization_id = $3', ['Call back', target.opportunityId, KHYTE])
+  const entry = written(await createEntry(db, actor, {
+    requestKey: randomUUID(),
+    text: `Written by ${label} while still a member.`,
+    links: [{ type: 'opportunity', id: target.opportunityId }],
+  }))
+  return { target, entry }
+}
+
+test('R3: a live session writes; after revokeMember the same session writes nothing through any of the six mutations', async () => {
+  const leaving = await teammate(KHYTE, 'Leaving Colleague')
+  const actor = await signIn(leaving.userId, KHYTE)
+
+  // (a) Live: every mutation goes through while the session and the
+  // membership behind it stand.
+  const { target, entry } = await livedIn(actor, 'Leaving')
+  assert.equal(entry.authorId, leaving.userId)
+  const edited = await editEntry(db, actor, entry.id, { body: 'Edited while still a member.', expectedRevision: 1 })
+  assert.ok(edited.ok)
+  const moved = await changeNextStep(db, actor, target.opportunityId, 'Send the contract')
+  assert.ok(moved.ok && moved.entry, 'a live session changes the next step and records the one it replaced')
+
+  // (b) Revoked: the membership, its sessions and its generation are cut.
+  await revokeMember(db, KHYTE, leaving.memberId)
+  await assertEveryWriteRefused(actor, edited.entry, target.opportunityId, 'after the revoke')
+})
+
+test('R3: a revoke and re-add rotates the generation, and nothing resolved before it writes again', async () => {
+  const returning = await teammate(KHYTE, 'Returning Colleague')
+  const stale = await signIn(returning.userId, KHYTE)
+  const { target, entry } = await livedIn(stale, 'Returning')
+
+  await revokeMember(db, KHYTE, returning.memberId)
+  await addMember(db, {
+    organizationId: KHYTE, userId: returning.userId, email: returning.email,
+    displayName: returning.displayName, role: 'member', colleague: null,
+  })
+  const [membership] = await rows<{ status: string }>('select status from organization_members where id = $1', [returning.memberId])
+  assert.equal(membership.status, 'active', 'the same membership row is active again')
+
+  // The session from before the revoke: revoked itself, and resolved under a
+  // generation the membership no longer carries.
+  await assertEveryWriteRefused(stale, entry, target.opportunityId, 'with a session from before the re-add')
+
+  // Each half on its own. A fresh session presenting the old generation is
+  // refused — the generation is what makes "active again" not mean "the same
+  // membership as before" — and the old session presenting the new one is
+  // refused because it was revoked.
+  const fresh = await signIn(returning.userId, KHYTE)
+  assert.notEqual(fresh.credentialGeneration, stale.credentialGeneration, 'the re-add rotated the generation')
+  assert.deepEqual(await createEntry(db, { ...fresh, credentialGeneration: stale.credentialGeneration },
+    { requestKey: randomUUID(), text: 'Fresh session, old generation.' }), UNAUTHORIZED)
+  assert.deepEqual(await createEntry(db, { ...stale, credentialGeneration: fresh.credentialGeneration },
+    { requestKey: randomUUID(), text: 'Old session, new generation.' }), UNAUTHORIZED)
+
+  // And the person, signed in again, writes normally.
+  const back = written(await createEntry(db, fresh, { requestKey: randomUUID(), text: 'Back on the team.' }))
+  assert.equal(back.authorId, returning.userId)
+})
+
+test('R3: a password reset ends the session a write carries; so does a session revoked or expired on its own', async () => {
+  const reset = await teammate(KHYTE, 'Reset Colleague')
+  const before = await signIn(reset.userId, KHYTE)
+  const { target, entry } = await livedIn(before, 'Reset')
+
+  // resetCredentials revokes the account's sessions everywhere and rotates
+  // the generation, under the same account lock these writes take.
+  await resetCredentials(db, { organizationId: KHYTE, memberId: reset.memberId }, {}, async () => {})
+  await assertEveryWriteRefused(before, entry, target.opportunityId, 'after a password reset')
+
+  // A session revoked alone (sign-out everywhere), the generation unchanged.
+  const signedOut = await signIn(reset.userId, KHYTE)
+  const second = await livedIn(signedOut, 'Signed Out')
+  await revokeSessionsForUser(db, reset.userId)
+  await assertEveryWriteRefused(signedOut, second.entry, second.target.opportunityId, 'after the session was revoked')
+
+  // A session that lapsed.
+  const lapsing = await signIn(reset.userId, KHYTE)
+  const third = await livedIn(lapsing, 'Lapsed')
+  await rows(`update app_sessions set expires_at = now() - interval '1 second' where id = $1`, [lapsing.sessionId])
+  await assertEveryWriteRefused(lapsing, third.entry, third.target.opportunityId, 'after the session expired')
+})
+
+test('R3: a typed actor without its session, or presenting it in another organization, is refused', async () => {
+  const text = { requestKey: randomUUID(), text: 'Whoever this is.' }
+  assert.deepEqual(await createEntry(db, { organizationId: KHYTE, userId: actorA.userId, source: 'typed' }, text), UNAUTHORIZED,
+    'no session id and no generation is no session')
+  assert.deepEqual(await createEntry(db, { ...actorA, sessionId: undefined }, text), UNAUTHORIZED)
+  assert.deepEqual(await createEntry(db, { ...actorA, credentialGeneration: undefined }, text), UNAUTHORIZED)
+  assert.deepEqual(await createEntry(db, { ...actorA, sessionId: 'not-a-session' }, text), UNAUTHORIZED,
+    'an id that is not one is a refusal, not a cast error')
+  assert.deepEqual(await createEntry(db, { ...actorA, organizationId: OTHER_ORG }, text), UNAUTHORIZED,
+    'a Khyte session cannot write into another organization')
+  assert.deepEqual(await createEntry(db, { ...actorA, userId: actorB.userId }, text), UNAUTHORIZED,
+    'nor can it write as somebody else')
+  assert.equal(await count('from captures where request_key = $1', [text.requestKey]), 0)
+  // The same actor, whole, writes.
+  written(await createEntry(db, actorA, text))
+})
+
+test('R3: an MCP actor carries no session and is not gated by this check — commitAction revalidates it instead', async () => {
+  const mcp: JournalActor = { organizationId: KHYTE, userId: actorA.userId, source: 'mcp' }
+  const entry = written(await createEntry(db, mcp, { requestKey: randomUUID(), text: 'Through the tool path.' }))
+  assert.equal(entry.source, 'mcp')
+  assert.equal(entry.authorId, actorA.userId)
+})
+
+/* ———— R6: a replay is the same request, not merely the same text ———— */
+
+test('R6: the same key replays only the same request — a changed kind, date, title, performer or link set is a conflict', async () => {
+  const target = await prospect(KHYTE, 'Fingerprint AB')
+  const base = {
+    text: 'Met Anna about the renewal.',
+    kind: 'conversation' as const,
+    title: 'Renewal',
+    occurredOn: '2026-09-17',
+    performer: 'erik' as const,
+    links: [
+      { type: 'opportunity' as const, id: target.opportunityId },
+      { type: 'company' as const, id: target.companyId },
+    ],
+  }
+  const requestKey = randomUUID()
+  const first = written(await createEntry(db, actorA, { requestKey, ...base }))
+
+  // Identical — the links in another order are the same set.
+  const again = await createEntry(db, actorA, { requestKey, ...base, links: [...base.links].reverse() })
+  assert.ok(again.ok)
+  assert.equal(again.replayed, true)
+  assert.equal(again.entry.id, first.id)
+
+  for (const [what, change] of [
+    ['kind', { kind: 'idea' }],
+    ['occurredOn', { occurredOn: '2026-09-18' }],
+    ['title', { title: 'Something else' }],
+    ['performer', { performer: 'hai' }],
+    ['link set', { links: [base.links[0]] }],
+  ] as const) {
+    const conflict = await createEntry(db, actorA, { requestKey, ...base, ...change })
+    assert.ok(!conflict.ok, `${what}: must not replay`)
+    assert.equal(conflict.error, 'request_key_conflict', what)
+    assert.equal(conflict.existing?.id, first.id, `${what}: the entry the key produced comes back beside the refusal`)
+  }
+
+  // Compared with what was first SENT, not with the entry as it reads now: an
+  // edit since does not turn the original request into a conflict.
+  assert.ok((await editEntry(db, actorA, first.id, { body: 'Edited afterwards.', expectedRevision: 1 })).ok)
+  const afterEdit = await createEntry(db, actorA, { requestKey, ...base })
+  assert.ok(afterEdit.ok)
+  assert.equal(afterEdit.replayed, true)
+  assert.equal(afterEdit.entry.id, first.id)
+
+  assert.equal(await count('from captures where organization_id = $1 and request_key = $2', [KHYTE, requestKey]), 1)
+  const [capture] = await rows<{ request_fingerprint: string | null }>(
+    'select request_fingerprint from captures where organization_id = $1 and request_key = $2', [KHYTE, requestKey])
+  assert.match(capture.request_fingerprint ?? '', /^[0-9a-f]{64}$/, 'a sha256, hex')
+})
+
+test('R6: a default the server generated is not part of the request, so an undated retry still replays', async () => {
+  // No event time: the entry is `exact` at the moment of writing, and that
+  // moment differs between the two attempts. It is not what was asked for.
+  const requestKey = randomUUID()
+  const first = written(await createEntry(db, actorA, { requestKey, text: 'No date given.', kind: 'idea' }))
+  const again = await createEntry(db, actorA, { requestKey, text: 'No date given.', kind: 'idea' })
+  assert.ok(again.ok)
+  assert.equal(again.replayed, true)
+  assert.equal(again.entry.id, first.id)
+  // But naming the instant IS a different request.
+  const dated = await createEntry(db, actorA, { requestKey, text: 'No date given.', kind: 'idea', occurredAt: first.occurredAt! })
+  assert.ok(!dated.ok)
+  assert.equal(dated.error, 'request_key_conflict')
+})
+
+test('R6: a capture with no fingerprint — a legacy row, or a deleted entry — answers every retry as a conflict', async () => {
+  const legacyKey = randomUUID()
+  const legacy = written(await createEntry(db, actorA, { requestKey: legacyKey, text: 'As if migrated.' }))
+  await rows('update captures set request_fingerprint = null where organization_id = $1 and request_key = $2', [KHYTE, legacyKey])
+  const legacyRetry = await createEntry(db, actorA, { requestKey: legacyKey, text: 'As if migrated.' })
+  assert.ok(!legacyRetry.ok)
+  assert.equal(legacyRetry.error, 'request_key_conflict')
+  assert.equal(legacyRetry.existing?.id, legacy.id)
+
+  // Deleting redacts the fingerprint with the text: it is a hash OF the text,
+  // and a short line is easy to confirm by hashing guesses.
+  const deletedKey = randomUUID()
+  const doomed = written(await createEntry(db, actorA, { requestKey: deletedKey, text: 'Deleted, then retried.' }))
+  assert.ok((await deleteEntry(db, actorA, doomed.id)).ok)
+  const [capture] = await rows<{ request_fingerprint: string | null; original_text: string }>(
+    'select request_fingerprint, original_text from captures where organization_id = $1 and request_key = $2', [KHYTE, deletedKey])
+  assert.equal(capture.request_fingerprint, null)
+  assert.equal(capture.original_text, '')
+  const deletedRetry = await createEntry(db, actorA, { requestKey: deletedKey, text: 'Deleted, then retried.' })
+  assert.ok(!deletedRetry.ok)
+  assert.equal(deletedRetry.error, 'request_key_conflict')
+  assert.equal(deletedRetry.existing?.id, doomed.id)
+  assert.ok(deletedRetry.existing?.deletedAt)
+})
+
+/* ———— R8: the next step, and system provenance enforced by the server ———— */
+
+async function nextStepOf(opportunityId: string) {
+  const [row] = await rows<{ next_step: string; updated_at: string }>(
+    'select next_step, updated_at::text as updated_at from opportunities where id = $1 and organization_id = $2', [opportunityId, KHYTE])
+  return row
+}
+
+const systemLinesAbout = (opportunityId: string) => count(
+  `from journal_entries e
+    where e.organization_id = $1 and e.origin = 'system'
+      and exists (select 1 from journal_entry_links l
+                   where l.entry_id = e.id and l.organization_id = e.organization_id and l.opportunity_id = $2)`,
+  [KHYTE, opportunityId])
+
+test('R8: changeNextStep saves the next step and the line recording the one it replaced, together', async () => {
+  const target = await prospect(KHYTE, 'Next Step AB')
+
+  // Nothing to record: the prospect had no next step.
+  assert.deepEqual(await changeNextStep(db, actorA, target.opportunityId, 'Send the quote'), { ok: true, entry: null, previous: '' })
+  assert.equal((await nextStepOf(target.opportunityId)).next_step, 'Send the quote')
+  assert.equal(await systemLinesAbout(target.opportunityId), 0, 'an empty previous value logs no entry')
+
+  const changed = await changeNextStep(db, actorA, target.opportunityId, 'Book the demo')
+  assert.ok(changed.ok)
+  assert.equal(changed.previous, 'Send the quote', 'the previous value is the one the row held')
+  assert.ok(changed.entry)
+  const entry = changed.entry
+  assert.equal(entry.origin, 'system')
+  assert.equal(entry.systemEvent, 'next_step_changed')
+  assert.equal(entry.body, 'Send the quote', 'the previous next step alone — the label is the reader\'s dictionary')
+  assert.equal(entry.kind, 'update')
+  assert.equal(entry.source, 'typed')
+  assert.equal(entry.authorId, actorA.userId)
+  assert.deepEqual(entry.links.map(link => [link.targetType, link.targetId, link.targetLabel]),
+    [['opportunity', target.opportunityId, 'Next Step AB']], "linked to the prospect, labelled with its company's name")
+  assert.equal((await nextStepOf(target.opportunityId)).next_step, 'Book the demo')
+  const [capture] = await rows<{ request_key: string }>('select request_key from captures where id = $1 and organization_id = $2', [entry.captureId, KHYTE])
+  assert.ok(capture.request_key.startsWith(`nextstep:${target.opportunityId}:`), capture.request_key)
+
+  // The same value again: saved, and nothing to record.
+  assert.deepEqual(await changeNextStep(db, actorA, target.opportunityId, 'Book the demo'), { ok: true, entry: null, previous: 'Book the demo' })
+
+  // A second transition is its own line, under its own key.
+  const second = await changeNextStep(db, actorA, target.opportunityId, 'Sign the contract')
+  assert.ok(second.ok && second.entry)
+  assert.notEqual(second.entry.id, entry.id)
+  assert.equal(second.entry.body, 'Book the demo')
+  assert.equal(await systemLinesAbout(target.opportunityId), 2)
+
+  // Clearing it records what was cleared.
+  const cleared = await changeNextStep(db, actorA, target.opportunityId, '')
+  assert.ok(cleared.ok && cleared.entry)
+  assert.equal(cleared.entry.body, 'Sign the contract')
+  assert.equal((await nextStepOf(target.opportunityId)).next_step, '')
+
+  // A person's entry carries no system event.
+  assert.equal(written(await createEntry(db, actorA, { requestKey: randomUUID(), text: 'Mine.' })).systemEvent, null)
+})
+
+test('R8: changeNextStep refuses what is not this organization\'s, not an id, or too long — and changes nothing', async () => {
+  const before = await rows<{ next_step: string }>('select next_step from opportunities where id = $1', [other.opportunityId])
+  assert.deepEqual(await changeNextStep(db, actorA, other.opportunityId, 'Theirs now'), { ok: false, error: 'not_found' })
+  assert.deepEqual(await rows('select next_step from opportunities where id = $1', [other.opportunityId]), before)
+  assert.deepEqual(await changeNextStep(db, actorA, 'not-an-id', 'Anything'), { ok: false, error: 'not_found' })
+  const target = await prospect(KHYTE, 'Too Long AB')
+  assert.deepEqual(await changeNextStep(db, actorA, target.opportunityId, 'x'.repeat(501)), { ok: false, error: 'invalid' })
+  assert.deepEqual(await changeNextStep(db, actorA, target.opportunityId, 42), { ok: false, error: 'invalid' })
+  assert.equal((await nextStepOf(target.opportunityId)).next_step, '')
+})
+
+test('R8: a failure after the next-step update leaves the prospect as it was, and no line behind', async () => {
+  const target = await prospect(KHYTE, 'Rolled Back AB')
+  await rows('update opportunities set next_step = $1 where id = $2 and organization_id = $3', ['Before', target.opportunityId, KHYTE])
+  const before = await nextStepOf(target.opportunityId)
+
+  const failing = failingAfter(sql => sql.includes('update opportunities set next_step'))
+  await assert.rejects(changeNextStep(failing.database, actorA, target.opportunityId, 'After'), /connection lost mid-write/)
+  assert.equal(failing.reached(), true, 'the next-step update ran before the failure')
+  assert.deepEqual(await nextStepOf(target.opportunityId), before, 'the value and its version, exactly as they were')
+  assert.equal(await systemLinesAbout(target.opportunityId), 0)
+  assert.equal(await count(`from captures where organization_id = $1 and request_key like $2`, [KHYTE, `nextstep:${target.opportunityId}:%`]), 0)
+})
+
+test('R8: the same transition submitted twice is one line, and the request key replays it', async () => {
+  const target = await prospect(KHYTE, 'Twice AB')
+  await rows('update opportunities set next_step = $1 where id = $2 and organization_id = $3', ['Call Anna', target.opportunityId, KHYTE])
+  const start = await nextStepOf(target.opportunityId)
+
+  const first = await changeNextStep(db, actorA, target.opportunityId, 'Email Anna')
+  assert.ok(first.ok && first.entry)
+
+  // A double submit: the row lock serializes the two, and the second reads the
+  // first one's result as its previous value — nothing left to record.
+  assert.deepEqual(await changeNextStep(db, actorA, target.opportunityId, 'Email Anna'), { ok: true, entry: null, previous: 'Email Anna' })
+
+  // What the key is for: the same transition from the same row state. Put the
+  // row back exactly as it was — value and version, the trigger held off so
+  // the version is the old one — and submit the change again.
+  await rows('alter table opportunities disable trigger opportunities_set_updated_at')
+  try {
+    await rows('update opportunities set next_step = $1, updated_at = $2::timestamptz where id = $3 and organization_id = $4',
+      [start.next_step, start.updated_at, target.opportunityId, KHYTE])
+  } finally {
+    await rows('alter table opportunities enable trigger opportunities_set_updated_at')
+  }
+  const replay = await changeNextStep(db, actorA, target.opportunityId, 'Email Anna')
+  assert.ok(replay.ok && replay.entry)
+  assert.equal(replay.entry.id, first.entry.id, 'the same transition is the same line')
+  assert.equal(replay.previous, 'Call Anna')
+  assert.equal(await systemLinesAbout(target.opportunityId), 1)
+})
+
+test('R8: a system entry is refused an edit — whoever wrote it — and can still be deleted', async () => {
+  const target = await prospect(KHYTE, 'Provenance AB')
+  await rows('update opportunities set next_step = $1 where id = $2 and organization_id = $3', ['Old plan', target.opportunityId, KHYTE])
+  const changed = await changeNextStep(db, actorA, target.opportunityId, 'New plan')
+  assert.ok(changed.ok && changed.entry)
+  const line = changed.entry
+
+  const edited = await editEntry(db, actorA, line.id, { body: 'A person rewriting what Donna recorded.', expectedRevision: 1 })
+  assert.deepEqual(edited, { ok: false, error: 'system_entry' })
+  const retitled = await editEntry(db, actorA, line.id, { title: 'Mine now', expectedRevision: 1 })
+  assert.deepEqual(retitled, { ok: false, error: 'system_entry' })
+  // Also the older kinds of system line: the outreach entry and the legacy
+  // next-step line are written with origin 'system' by the server as well.
+  const legacyStyle = written(await createEntry(db, actorA,
+    { requestKey: randomUUID(), text: 'Next step: an older line', links: [{ type: 'opportunity', id: target.opportunityId }] },
+    { origin: 'system' }))
+  assert.deepEqual(await editEntry(db, actorA, legacyStyle.id, { body: 'Rewritten.', expectedRevision: 1 }), { ok: false, error: 'system_entry' })
+
+  const detail = await getEntry(db, { organizationId: KHYTE }, line.id)
+  assert.ok(detail.ok)
+  assert.equal(detail.entry.body, 'Old plan')
+  assert.equal(detail.entry.revision, 1)
+  assert.equal(detail.entry.revisions.length, 1, 'a refused edit appends no revision')
+
+  const deleted = await deleteEntry(db, actorA, line.id)
+  assert.ok(deleted.ok, 'removing the line is allowed; rewriting it is not')
+  assert.ok(deleted.entry.deletedAt)
+  // A deleted system entry reports that it is deleted.
+  assert.deepEqual(await editEntry(db, actorA, line.id, { body: 'Too late.', expectedRevision: 1 }), { ok: false, error: 'deleted' })
+})
+
+test('R8: only Donna records a system event — the table refuses one on a person entry', async () => {
+  await assert.rejects(rows(
+    `insert into journal_entries (organization_id, capture_id, origin, kind, body, occurred_precision, occurred_on, system_event)
+     select organization_id, id, 'person', 'update', 'Pretending.', 'day', '2026-09-20', 'next_step_changed'
+       from captures where organization_id = $1 limit 1`, [KHYTE]),
+    /journal_entries_system_event_origin_check/)
+  // And writeEntry refuses the combination before the database has to.
+  const refused = await createEntry(db, actorA, { requestKey: randomUUID(), text: 'Pretending.' }, { systemEvent: 'next_step_changed' })
+  assert.deepEqual(refused, { ok: false, error: 'invalid' })
 })
