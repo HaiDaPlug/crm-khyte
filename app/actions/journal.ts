@@ -1,7 +1,7 @@
 'use server'
 
-import { requireAuth, type AuthContext } from '@/lib/auth/guard'
-import { scopeMismatch } from '@/lib/actions/scope'
+import { getAuthContext, type AuthContext } from '@/lib/auth/context'
+import { UNAUTHORIZED, scopeMismatch } from '@/lib/actions/scope'
 import { crmDatabase } from '@/lib/crm/database'
 import { isDirectDbConfigured } from '@/lib/db/pg'
 import { isSupabaseConfigured } from '@/lib/supabase/server'
@@ -27,8 +27,13 @@ import type { ActionScope } from '@/lib/types'
  * UI, so each one runs the same four checks in the same order before it
  * touches anything:
  *
- *   1. requireAuth()   — the session, thrown on rather than redirected, the
- *                        way every Server Action in this app resolves it.
+ *   1. the session     — getAuthContext(), and `unauthorized` REPORTED when
+ *                        there is none. Not requireAuth(): that throws, and a
+ *                        thrown action reaches the browser as a message the
+ *                        store cannot read as "this session has ended" —
+ *                        found on screen in the second correction round, when
+ *                        a revoked member's pending save showed a retry that
+ *                        could never succeed instead of the sign-in page.
  *   2. scopeMismatch() — what the tab believed it was, against what arrived
  *                        (lib/actions/scope.ts). Refused before any read.
  *   3. configured()    — without a database there is nowhere for an entry to
@@ -51,7 +56,7 @@ import type { ActionScope } from '@/lib/types'
  * in the same transaction as the next-step update; the browser sends only the
  * new next step.
  *
- * THE SESSION IS RE-CHECKED AT THE WRITE. requireAuth() resolved the session
+ * THE SESSION IS RE-CHECKED AT THE WRITE. getAuthContext() resolved the session
  * when the request arrived; every write below also hands the service that
  * session's id and membership generation, and the service asks again inside
  * its transaction, under the account lock, whether both are still current. A
@@ -120,10 +125,17 @@ function failed(what: string, cause: unknown): { ok: false; error: string } {
   return { ok: false, error: message }
 }
 
+/** No session behind the request. Reported as the code the store acts on —
+ *  drafts kept, the page reloading to sign in — never thrown. */
+function noSession(): { ok: false; error: string } {
+  return { ok: false, error: UNAUTHORIZED }
+}
+
 /* ———— writes ———— */
 
 export async function createJournalEntry(input: unknown, scope: ActionScope): Promise<JournalActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
@@ -135,7 +147,8 @@ export async function createJournalEntry(input: unknown, scope: ActionScope): Pr
 }
 
 export async function editJournalEntry(id: string, patch: unknown, scope: ActionScope): Promise<JournalActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
@@ -147,7 +160,8 @@ export async function editJournalEntry(id: string, patch: unknown, scope: Action
 }
 
 export async function deleteJournalEntry(id: string, scope: ActionScope): Promise<JournalActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
@@ -159,7 +173,8 @@ export async function deleteJournalEntry(id: string, scope: ActionScope): Promis
 }
 
 export async function linkJournalEntry(id: string, target: unknown, scope: ActionScope): Promise<JournalActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
@@ -171,7 +186,8 @@ export async function linkJournalEntry(id: string, target: unknown, scope: Actio
 }
 
 export async function unlinkJournalEntry(id: string, linkId: string, scope: ActionScope): Promise<JournalActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
@@ -199,7 +215,8 @@ export async function unlinkJournalEntry(id: string, linkId: string, scope: Acti
  * to record: the previous next step was empty, or the same.
  */
 export async function changeNextStep(opportunityId: string, next: string, scope: ActionScope): Promise<NextStepActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
@@ -213,7 +230,8 @@ export async function changeNextStep(opportunityId: string, next: string, scope:
 /* ———— reads ———— */
 
 export async function loadJournalPage(input: unknown, scope: ActionScope): Promise<JournalPageActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   // An empty page rather than a refusal, with `coverage.unavailable` set: the
@@ -228,7 +246,8 @@ export async function loadJournalPage(input: unknown, scope: ActionScope): Promi
 }
 
 export async function loadJournalEntry(id: string, scope: ActionScope): Promise<JournalEntryActionResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   if (!configured()) return { ok: false, error: 'unavailable' }
@@ -254,7 +273,8 @@ export async function loadJournalEntry(id: string, scope: ActionScope): Promise<
  * CRM generated about its own columns.
  */
 export async function loadExportJournal(opportunityIds: string[], scope: ActionScope): Promise<ExportJournalResult> {
-  const context = await requireAuth()
+  const context = await getAuthContext()
+  if (!context) return noSession()
   const mismatch = scopeMismatch(context, scope)
   if (mismatch) return mismatch
   // Reported honestly rather than as an empty history: a CSV whose Journal

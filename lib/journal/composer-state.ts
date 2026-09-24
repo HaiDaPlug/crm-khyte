@@ -1,4 +1,4 @@
-import { CONTEXT_MISMATCH } from '@/lib/actions/scope'
+import { CONTEXT_MISMATCH, UNAUTHORIZED } from '@/lib/actions/scope'
 import type { JournalKind } from './contracts'
 import type { JournalDraft } from './drafts'
 
@@ -28,7 +28,7 @@ import type { JournalDraft } from './drafts'
  * sentence, no Retry — because a retry from a tab in either state is a write
  * that cannot succeed, or one that would succeed as the wrong person.
  */
-export const UNAUTHORIZED = 'unauthorized'
+export { UNAUTHORIZED }
 
 export function isIdentityRefusal(error: string): boolean {
   return error === CONTEXT_MISMATCH || error === UNAUTHORIZED

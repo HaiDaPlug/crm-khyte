@@ -38,6 +38,17 @@ import type { ActionScope } from '@/lib/types'
  */
 export const CONTEXT_MISMATCH = 'context_mismatch'
 
+/**
+ * No session behind the request: it expired, or the membership was revoked.
+ * The Journal actions REPORT this, never throw it — a thrown Server Action
+ * reaches the browser as a message (in production an opaque digest) that the
+ * store cannot read as "this tab is finished", so the composer would offer a
+ * retry that can never succeed instead of the page reloading to sign in with
+ * the drafts kept. The store's `finishIdentity` keeps drafts for this code and
+ * clears them for `context_mismatch`.
+ */
+export const UNAUTHORIZED = 'unauthorized'
+
 /** The refusal shape, assignable to every action's own result type. */
 export type ScopeRefusal = { ok: false; error: string }
 

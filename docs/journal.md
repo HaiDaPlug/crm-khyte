@@ -305,8 +305,8 @@ only**: the old build selects from a table that no longer exists.
 | Typecheck | `npx tsc --noEmit` | 0 errors |
 | MCP behaviour: the Journal write inside `commitAction`, replay, preview, the request-key collision that aborts a commit, receipts without Journal text, `get_crm_record.journal` with a cursor, `list_journal` paging and isolation, the export counting person-written entries only, the bulk path without the Journal read, `journal_quality` | `npm run test:mcp` | 51 / 51 |
 | Stage 1 migration rehearsal, rollout guard and follow-up | `npm run test:org` | 7 / 7 |
-| Scoping lint: 25 organization-owned tables (the four Journal tables joined automatically), 36 Server Action statements over 12 tables, 91 SQL statements over six files including `lib/journal/service.ts` | `npm run test:scoping` | 3 / 3 |
-| Client store: normalized Journal slice, view filing, edit across views, optimistic delete with restore on refusal and on a rejected promise, coverage accumulation, poller merge for paged views, view release, drafts keyed by identity and cleared on identity change and sign-out, the mount sweep, a throwing storage, `formatJournalDate` / `formatJournalDateTime` in the organization's zone, `buildExportRows` over Journal entries, and from the correction pass: the save settlement (unchanged, changed, other surface), the edit session (base captured, incoming revision does not move it, rebase), the poller decision (applied advances, deferred and failed retry), the range refresh dropping a deleted entry and updating an edited one, `changeNextStep` optimistic and restored, `unauthorized` keeping drafts while `context_mismatch` clears them | `npm run test:store` | 31 / 31 |
+| Scoping lint: 25 organization-owned tables (the four Journal tables joined automatically), 36 Server Action statements over 12 tables, 91 SQL statements over six files including `lib/journal/service.ts`; from the second round: the Journal actions resolve the session without throwing and report `unauthorized` | `npm run test:scoping` | 4 / 4 |
+| Client store: normalized Journal slice, view filing, edit across views, optimistic delete with restore on refusal and on a rejected promise, coverage accumulation, poller merge for paged views, view release, drafts keyed by identity and cleared on identity change and sign-out, the mount sweep, a throwing storage, `formatJournalDate` / `formatJournalDateTime` in the organization's zone, `buildExportRows` over Journal entries, and from the correction pass: the save settlement (unchanged, changed, other surface), the edit session (base captured, incoming revision does not move it, rebase), the poller decision (applied advances, deferred and failed retry), the range refresh dropping a deleted entry and updating an edited one, `changeNextStep` optimistic and restored, `unauthorized` keeping drafts while `context_mismatch` clears them; from the second round: the editor's save settlement (unchanged closes, changed keeps the newer words on the saved revision), the stored-draft settlement across tabs (equal → cleared, advanced by another tab → kept and adopted, both changed → this tab's words under a fresh key), the two-tab replay that fails without the fix, the adopt-from-storage guard | `npm run test:store` | 36 / 36 |
 | Journal migration rehearsal: nine legacy notes of every shape, ids and dates preserved, authors unknown, precision and Stockholm days, the unique interaction match linked, `legacy_*` carried, revision 1 written, RLS and policies on all four tables, the file applied twice, the follow-up catching up two late notes and dropping `notes`; from the correction pass: a 20 001-character legacy note migrated losslessly, an outreach-shaped line with an invalid date migrated as an ordinary entry and counted malformed, the earlier length check swapped for the named constraint | `npm run test:journal:migration` | 14 / 14 |
 | Journal service: A01, A02 (once with either target), A08 durability, A20 tombstone (with the legacy `notes` row still cascading, stated), A23 read-back and a three-page cursor walk stable under an insert, retry → `replayed`, changed text → `request_key_conflict` with `existing`, a transaction that fails after the capture insert leaving nothing, redaction reaching every content column, edit → revision 2, `revision_conflict`, `deleted`, `not_found`, two organizations invisible to each other, `author_id` nulled when the account goes, the 22:30Z day, `target_not_found`, the 20 000-character bound, explicit precision honoured and incoherent precision refused, `scopeMismatch`; from the correction pass: a real session revoked, re-added, reset or expired is `unauthorized` on every mutation with no row changed while a live one writes and an MCP actor is not gated; retries with changed kind, date, title, performer or links are `request_key_conflict` while an identical retry replays once; `changeNextStep` writes the prospect and the system line in one transaction, logs nothing for an empty previous value, replays a repeated transition, edits of system entries are `system_entry` | `npm run test:journal` | 41 / 41 |
 | Production build | `npm run build` | passes (compiled in 27 s; a first attempt earlier the same day was stopped by the machine running out of memory and was repeated) |
@@ -375,8 +375,10 @@ migration, the MCP command path and the client store sequentially, and the
 scoping lint covers the browser write path structurally. The Server Actions
 are not exercised through a real cookie; their scope comparison is unit-tested
 in `lib/actions/scope.ts` and every action follows the same four-step shape as
-`app/actions/crm.ts`. Genuine concurrency across two connections is what
-`npm run test:postgres` adds (4 / 4 above). No browser end-to-end flow is
+`app/actions/crm.ts`. That gap is exactly where the on-screen finding of the
+second round lived: a session that had ended reached the browser as a thrown
+error, not as the `unauthorized` code the store acts on. Genuine concurrency across two connections is what
+`npm run test:postgres` adds (5 / 5 above). No browser end-to-end flow is
 automated. The manual review covered the happy paths and the deletion paths
 on screen; the composer's failed-save and conflict states were exercised only
 by the store suite in the first pass and are exercised on screen in the
@@ -496,7 +498,132 @@ page's `fetch` for Server Action requests only.
   (Docker's VM disk was the last straw), the local database container lost
   its port and the Docker VM went read-only. R4 is covered by the poller
   decision and store tests; R3 by the service tests for every mutation and by
-  the two-connection PostgreSQL scenario in both orders.
+  the two-connection PostgreSQL scenario in both orders. Both were exercised
+  on screen in the second round, below.
+
+**Correction round 2 — Astra's review of `f36b90c` (2026-09-24).** Two
+text-loss cases remained, both client-side and both reproduced by Astra
+through the component handlers; the other findings were confirmed closed.
+
+- *Editing an entry while Save is pending.* The editor stayed writable but a
+  successful save closed it and discarded words typed after the press. The
+  card now snapshots the editor at the press and settles the answer against
+  what the editor holds when it arrives (`settleEditSave`): unchanged → the
+  editor closes; changed → it stays open with the newer words, its base moves
+  to exactly the revision the save produced (a new `saved` step in the edit
+  session, deliberately not the "latest seen" rebase, so it never silently
+  builds on a colleague's edit that arrived meanwhile), and a status line says
+  the earlier wording is saved and the newer text is not yet.
+- *Two tabs sharing one stored draft.* Both tabs on a surface read and write
+  the same storage key, so a delayed save in one tab, finding its own box
+  unchanged, cleared the stored draft another tab had since advanced; a
+  reload then lost that text. The composer now settles against storage as
+  well as its own box (`settleStoredDraft`): the stored draft is cleared only
+  when it still equals the snapshot in request key, text, kind and date; a
+  draft advanced by another tab is left in place and, when this tab's own
+  box is unchanged, adopted into it with its request key; when both changed,
+  this tab keeps its words under a fresh key and storage is neither cleared
+  nor overwritten. A `storage` listener lets an idle tab (no focus in its
+  box) take up what another tab typed, with a guard that never overwrites the
+  only copy of this tab's own words. A tab that then saves under a key another
+  tab already consumed gets `request_key_conflict` and the existing conflict
+  strip.
+- *What stays in the box after a delayed save* (found by Hai on screen during
+  this round). Round 1 kept everything the box held, the saved sentence
+  included, so a second save would have filed it twice, and a fast answer and a
+  slow one ended in different boxes. Now, when the writer simply kept typing,
+  the saved sentence leaves the box and only the words after it stay
+  (`typedSince`; whitespace and sentence punctuation typed right after the
+  saved words go with them); when the sent words were edited rather than
+  continued, or the kind or date changed, the whole text stays because the
+  saved and the newer words can no longer be told apart. The same rule at any
+  network speed.
+- *A revoked member's pending save* (found on screen during this round's
+  revocation check, step 5 below). The actions' own contract is that errors
+  are reported, never thrown — but the session itself was resolved with
+  `requireAuth()`, which throws, so a save that reached the server after the
+  account had been revoked came back not as `unauthorized` but as a thrown
+  `Unauthorized` (in production, an opaque digest). The store cannot read that
+  as "this tab is finished": the composer showed "Det gick inte att spara:
+  Unauthorized. Texten ligger kvar." with a Retry that could never succeed, a
+  toast said the change "syns här men ligger inte i databasen", and the tab
+  stayed on the Journal instead of reloading to the sign-in page. The
+  service's own re-check under the account lock (R3) was never reached: the
+  gate had already thrown. Every Journal action now resolves the session with
+  `getAuthContext()` and returns `{ ok: false, error: 'unauthorized' }`
+  without one, ahead of the scope and configuration checks, and a fourth
+  scoping lint keeps `requireAuth()` out of `app/actions/journal.ts`. The code
+  itself moved to `lib/actions/scope.ts` beside `context_mismatch`, where the
+  server can import it; the composer re-exports it. The store's side —
+  `unauthorized` keeps this person's drafts and reloads the page, which the
+  server then sends to sign in — was already in place and is covered by the
+  store suite. The corrected path was replayed on screen after a fresh
+  sign-in (last bullet of the on-screen paragraph below).
+
+Evidence: typecheck and build pass (the build rerun after the action-file
+change); mcp 51, org 7, scoping 4 (one new), store 36 (five new),
+journal:migration 14, journal 41, mcp:http 3. The PostgreSQL suite was not
+rerun for this round: no SQL changed.
+
+*On screen, round 2 (2026-09-24, the same local stack, Chrome at 1920 × 855).*
+The review tab sat in Hai's own browser window behind their working tab for
+most of the pass, so steps 3–5 were driven through the page's own handlers
+from the developer console rather than the keyboard, and screenshots exist
+for steps 1–2 only (`round2-*.jpg` in `docs/review/stage-2/`). Network
+conditions were produced as in round 1 by wrapping the page's `fetch` for
+Server Action requests only.
+- Delayed save at both speeds: "Snabb mening." then " Fortsättning snabb."
+  with no delay, and "Långsam mening." then " Fortsättning långsam." with the
+  answer held six seconds. Both ended the same way: the card shows the sent
+  sentence, the box holds only the continuation, the stored draft holds the
+  same words under a new key, and the line reads "Det du skrev först är
+  sparat. Det du skrivit sedan ligger kvar."
+- Editor save while typing: the entry "Långsam mening." was opened,
+  " Redigerad del. Nyare ord." typed, Save pressed with the answer held six
+  seconds and " Efter spara." typed meanwhile. The editor stayed open with all
+  four sentences, the line said "Den tidigare formuleringen är sparad. Det du
+  skrivit sedan ligger kvar och är inte sparat än.", and after Cancel the card
+  read "Långsam mening. Redigerad del. Nyare ord." with its history links.
+- Two tabs, one draft, both settlements. (a) Tab A held "Utkast från flik A."
+  with focus in its box and saved with the answer held; tab B appended " Mer
+  från flik B." meanwhile. A's answer found its own box unchanged and storage
+  advanced: the box adopted B's words under B's key, storage was left intact,
+  and the line said the first text was saved. Save on the adopted words
+  answered the conflict strip ("Det här utkastet är redan sparat, i en
+  tidigare version." with "Spara den här versionen som ett nytt inlägg"),
+  which filed them as a new entry and emptied the box in both tabs. (b) Tab B,
+  with no focus in its box, saved "Rad från B." with the answer held; tab A
+  appended " Fortsatt i A." meanwhile; B took the words up through the
+  `storage` listener while the save was in flight, and when the answer came B
+  kept "Fortsatt i A." under a fresh key, storage held the same, A followed to
+  the same words, the card read "Rad från B.", and a reload of B came back with
+  "Fortsatt i A." under that key.
+- A line arriving while typing (R4): with focus in A's box, tab B saved
+  "Kollegans rad medan A skriver."; A's poll fetched the new stamp and
+  deferred — the feed stayed at "Visar 9" without the line for fifteen
+  seconds; on blur, the release check ran within five seconds and the feed
+  went to "Visar 11" with both new lines. The poller skips its checks while
+  `document.hidden` is true, and this tab was hidden, so `document.hidden`
+  was overridden to false for this step alone; the hidden-tab gate itself was
+  seen in round 1.
+- Revocation with a save pending (R3): "Fortsatt i A." was submitted with the
+  request held 25 seconds before leaving the browser; `revoke --email
+  review@local.test` ran meanwhile (a second owner had to be added first —
+  the CLI refuses to revoke the last one), and the request left three seconds
+  after the revoke finished. The write was refused and nothing was filed, the
+  box kept its text, and the other tab's next navigation met the sign-in gate
+  — but the composer showed the generic retry rather than "Du loggas in
+  igen…" and the tab did not reload: the finding above. The account was
+  re-added afterwards.
+- Replay after the fix, fresh sign-in: "Rad skriven strax innan kontot
+  spärras." was submitted with the request held thirty seconds, the account
+  was revoked ten seconds in, and the request left twenty seconds after the
+  revoke. Within the next twenty seconds the tab had reloaded to the sign-in
+  page; the stored draft still held the sentence under its key; the database
+  held no entry with that text and no capture from the attempt (live entries
+  still 11). The "Du loggas in igen…" line itself was not caught between the
+  answer and the reload — it is the store suite's `signedOut` state — but the
+  outcome it announces was: nothing filed, the page at sign-in, the text kept.
 
 ## The exact next stage
 

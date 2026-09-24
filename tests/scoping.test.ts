@@ -277,3 +277,27 @@ test('lint: the service layer stamps and filters the organization in the helpers
     'update() must filter by the actor\'s organization')
   console.log('[scoping] 2 service-layer write helpers checked (insert, update)')
 })
+
+test('lint: the Journal actions report a missing session as `unauthorized` instead of throwing it', async () => {
+  const file = 'app/actions/journal.ts'
+  const source = await readFile(file, 'utf8')
+  // requireAuth() throws, and a thrown Server Action reaches the browser as a
+  // message (an opaque digest in production) that the store cannot read as
+  // "this session has ended": the composer then offers a retry that can never
+  // succeed instead of the page reloading to sign in. Found on screen in the
+  // second correction round of Stage 2.
+  // Comments may name requireAuth() to say why it is not used; the code may not.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  assert.ok(!/\brequireAuth\b/.test(code),
+    `${file}: requireAuth() throws; resolve the session with getAuthContext() and return noSession() without one`)
+  const names = [...source.matchAll(/export async function (\w+)\(/g)].map((m) => m[1])
+  assert.ok(names.length >= 9, `only ${names.length} exported actions found in ${file}; the lint has stopped seeing the code`)
+  for (const name of names) {
+    const start = source.indexOf(`export async function ${name}(`)
+    const end = source.indexOf('\n}', start)
+    const body = source.slice(start, end)
+    assert.ok(body.includes('await getAuthContext()') && body.includes('if (!context) return noSession()'),
+      `${file}: ${name} does not resolve the session with getAuthContext() and refuse without one`)
+  }
+  console.log(`[scoping] ${names.length} Journal actions report a missing session instead of throwing`)
+})
