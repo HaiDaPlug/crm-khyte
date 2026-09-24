@@ -589,6 +589,9 @@ const sv = {
       latestVersion: 'Senaste versionen',
       useLatestBase: 'Utgå från den senaste versionen',
       rebased: 'Sparar du nu ersätts den senaste versionen med din text.',
+      // Redigeringen sparades medan skribenten fortsatte skriva: det som
+      // skickades är sparat, det som skrivits sedan ligger kvar i redigeraren.
+      editSavedKeptNewer: 'Den tidigare formuleringen är sparad. Det du skrivit sedan ligger kvar och är inte sparat än.',
       notFound: 'Inlägget finns inte längre.',
       // Sista utvägen i kortet: en kod utan egen mening skrivs inte ut rå.
       actionFailed: 'Det gick inte att genomföra åtgärden. Försök igen.',
@@ -958,6 +961,7 @@ const en: Dictionary = {
       latestVersion: 'Latest version',
       useLatestBase: 'Use the latest version as the base',
       rebased: 'Saving now replaces the latest version with your text.',
+      editSavedKeptNewer: 'The earlier wording is saved. What you wrote since is still here, not saved yet.',
       notFound: 'This entry no longer exists.',
       actionFailed: 'That did not go through. Try again.',
     },

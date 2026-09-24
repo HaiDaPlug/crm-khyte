@@ -16,13 +16,22 @@ import {
 } from '@/lib/journal/contracts'
 import {
   clearDraft,
+  draftKey,
   newRequestKey,
+  parseDraft,
   readDraft,
   sweepForeignDrafts,
   writeDraft,
   type JournalSurface,
 } from '@/lib/journal/drafts'
-import { isIdentityRefusal, settleSave, type ComposerNow, type SaveSnapshot } from '@/lib/journal/composer-state'
+import {
+  adoptDraft,
+  isIdentityRefusal,
+  settleStoredDraft,
+  shouldAdoptStored,
+  type ComposerNow,
+  type SaveSnapshot,
+} from '@/lib/journal/composer-state'
 
 interface JournalComposerProps {
   /** Which draft this box owns. One per place a composer appears. */
@@ -47,9 +56,16 @@ interface JournalComposerProps {
  * while the writer is still typing. Every branch below is that promise — the
  * draft is written to storage on each keystroke, the request key is minted
  * once and reused so a retry cannot become a second entry, and the draft is
- * cleared on exactly one result, `{ ok: true }`, and then only when the box
- * still holds what was sent. A save that fails, is refused, or collides keeps
- * the words on screen and in storage.
+ * cleared on exactly one result, `{ ok: true }`, and then only when the stored
+ * draft still holds exactly what was sent. A save that fails, is refused, or
+ * collides keeps the words on screen and in storage.
+ *
+ * THE STORED DRAFT IS SHARED by every tab open on the same surface (see
+ * lib/journal/drafts.ts). So a save's answer is settled against storage as
+ * well as against this box — another tab may have written newer words into
+ * the draft meanwhile — and a tab nobody is writing in follows what the others
+ * write, through the `storage` event, rather than sitting on the words it
+ * loaded with.
  *
  * THE TEXTAREA STAYS WRITABLE DURING A SAVE, deliberately — a thought does not
  * wait for a round-trip. So what was sent is frozen at the press (a
@@ -60,9 +76,11 @@ interface JournalComposerProps {
  * THE FIVE ANSWERS a save can come back with, and what each looks like here:
  *
  *   ok                   the entry is filed. If the box still says what was
- *                        sent, it empties and the status line says "Saved".
- *                        If it says something newer, the newer words stay,
- *                        get a key of their own, and the line says the
+ *                        sent, it empties and the status line says "Saved" —
+ *                        unless another tab has written newer words into the
+ *                        stored draft, which the box then takes up instead.
+ *                        If the box says something newer, the newer words
+ *                        stay, get a key of their own, and the line says the
  *                        earlier text was saved. If the drawer has moved on
  *                        to another prospect, the box is left alone and only
  *                        the draft the save came from is settled.
@@ -158,6 +176,40 @@ export function JournalComposer({
     setError(null)
     setConflict(null)
   }, [organizationId, userId, surface])
+
+  /** Puts a whole draft in the box — and in `live` — in one step. */
+  const show = useCallback((draft: ComposerNow) => {
+    setText(draft.text)
+    setKind(draft.kind)
+    setOccurredOn(draft.occurredOn)
+    setRequestKey(draft.requestKey ?? null)
+    live.current = draft
+  }, [])
+
+  // Another tab on this surface writes the same stored draft. While nobody is
+  // writing in this box, it follows along — text, kind, date and request key —
+  // so a tab left open shows what was typed elsewhere instead of the words it
+  // loaded with, which a Save or a keystroke from here would otherwise write
+  // back over the newer ones. A box somebody is writing in ignores the event:
+  // their own text wins, and is written on their next keystroke. "Writing in"
+  // is the document having focus AND the textarea being its active element; a
+  // background tab keeps its active element, and would otherwise never follow.
+  // `storage` fires only in the OTHER tabs of this origin, never the writer.
+  useEffect(() => {
+    const key = draftKey(organizationId, userId, surface)
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== key) return
+      const next = parseDraft(event.newValue)
+      // A value that is there but is not a draft is nothing to adopt.
+      if (event.newValue !== null && next === null) return
+      const focused = document.hasFocus() && document.activeElement === textareaRef.current
+      if (!shouldAdoptStored(live.current, focused, parseDraft(event.oldValue))) return
+      show(adoptDraft(next, live.current))
+      setStatus((current) => (current === 'saved' || current === 'savedKeptNewer' ? 'idle' : current))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [organizationId, userId, surface, show])
 
   const grow = useCallback(() => {
     const el = textareaRef.current
@@ -272,52 +324,58 @@ export function JournalComposer({
     const now = live.current
 
     if (result.ok) {
-      const settled = settleSave(sent, now)
+      // Settled against the stored draft as well as the box. Storage is shared
+      // by every tab on this surface, and another one may have written newer
+      // words into it while this was in flight: clearing it because THIS box
+      // is unchanged would erase them, and a reload would find nothing.
+      const stored = readDraft(organizationId, userId, sent.surface)
+      const settled = settleStoredDraft(sent, now, stored)
 
-      if (settled.announce === 'ignored') {
-        // The drawer moved to another prospect while this was in flight. The
-        // box now belongs to that prospect and is none of this answer's
-        // business; the draft this save came from is. It is settled by the
-        // same rule, against what storage holds for it — the writer may have
-        // kept typing there before switching — and only if it is still the
-        // draft this key was minted for.
-        const stored = readDraft(organizationId, userId, sent.surface)
-        if (stored && stored.requestKey === sent.requestKey) {
-          const old = settleSave(sent, {
-            text: stored.text,
-            kind: stored.kind,
-            occurredOn: stored.occurredOn ?? '',
-            surface: sent.surface,
-            requestKey: stored.requestKey,
-          })
-          if (old.clear) clearDraft(organizationId, userId, sent.surface)
-          else if (old.mintNewKey) writeDraft(organizationId, userId, sent.surface, { ...stored, requestKey: newRequestKey() })
-        }
-        return
+      // The one place a draft is ever cleared: storage still holds exactly
+      // what was saved, key and all.
+      if (settled.stored === 'clear') clearDraft(organizationId, userId, sent.surface)
+      // Another surface's draft, typed on under the key this save used up.
+      else if (settled.stored === 'rekey' && stored) {
+        writeDraft(organizationId, userId, sent.surface, { ...stored, requestKey: newRequestKey() })
       }
 
-      if (settled.clear) {
-        // The one place a draft is ever cleared: the box says what was saved.
-        clearDraft(organizationId, userId, surface)
-        setText('')
-        setOccurredOn('')
-        setRequestKey(null)
-        live.current = { ...now, text: '', occurredOn: '', requestKey: null }
+      // The drawer moved to another prospect while this was in flight. The
+      // box now belongs to that prospect and is none of this answer's
+      // business; the draft this save came from was settled just above.
+      if (settled.box === 'ignore') return
+
+      if (settled.box === 'clear') {
+        show({ ...now, text: '', occurredOn: '', requestKey: null })
         setStatus('saved')
         return
       }
 
+      if (settled.box === 'adopt' && stored) {
+        // This box sat unchanged while another tab kept writing the draft. The
+        // box takes the stored words — with their key, never dropped — so both
+        // tabs agree with storage, and the line says the earlier text was saved.
+        show(adoptDraft(stored, now))
+        setStatus('savedKeptNewer')
+        return
+      }
+
       // The writer kept going. What they sent is an entry now; what they have
-      // written since is still theirs, and still only in this box. It keeps
-      // its kind and its date, and it gets its own key — the old one belongs
-      // to the saved entry, and a Save on it would come back as a collision.
-      if (settled.mintNewKey) {
-        const fresh = newRequestKey()
-        setRequestKey(fresh)
-        live.current = { ...now, requestKey: fresh }
-        writeDraft(organizationId, userId, surface, {
-          text: now.text,
-          requestKey: fresh,
+      // written since is still theirs. It keeps its kind and its date, and it
+      // gets its own key — the old one belongs to the saved entry, and a Save
+      // on it would come back as a collision. Storage takes it too, unless
+      // storage holds another tab's words, which are not this tab's to erase;
+      // this box's words are written on its next keystroke as ever.
+      // When the writer simply kept typing, the sentence that is now an entry
+      // leaves the box and only the words after it stay (`settled.text`); an
+      // edited sentence stays whole, because the saved and the newer words
+      // can no longer be told apart.
+      const key = settled.mintNewKey || !now.requestKey ? newRequestKey() : now.requestKey
+      const kept = settled.text ?? now.text
+      if (key !== now.requestKey || kept !== now.text) show({ ...now, text: kept, requestKey: key })
+      if (settled.stored === 'write') {
+        writeDraft(organizationId, userId, sent.surface, {
+          text: kept,
+          requestKey: key,
           kind: now.kind,
           occurredOn: now.occurredOn || null,
         })

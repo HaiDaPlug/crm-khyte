@@ -27,6 +27,13 @@ import type { JournalKind } from './contracts'
  * and comes back as the original entry instead of writing a second one. A key
  * minted per attempt would make every retry a duplicate.
  *
+ * TWO TABS ON ONE SURFACE SHARE ONE DRAFT — the key has no tab in it, on
+ * purpose: a reload must find the words whichever tab typed them. So the
+ * stored draft is not this tab's property. A save that lands clears it only
+ * when it still holds exactly what that save sent (`settleStoredDraft` in
+ * ./composer-state.ts decides), and an idle tab follows what another tab
+ * writes through the `storage` event (`shouldAdoptStored`).
+ *
  * EVERY ACCESS IS WRAPPED. `localStorage` throws on access in a Safari private
  * window, is absent during server rendering, and can be full. None of those is
  * worth an exception in a composer — the failure mode is "the draft is not
@@ -112,8 +119,23 @@ export function readDraft(
   const store = resolve(storage)
   if (!store) return null
   try {
-    const raw = store.getItem(draftKey(organizationId, userId, surface))
-    if (!raw) return null
+    return parseDraft(store.getItem(draftKey(organizationId, userId, surface)))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * One stored value, as a draft — or null when it is not one.
+ *
+ * Separate from `readDraft` because a `storage` event hands over the value a
+ * key held BEFORE another tab wrote it (`oldValue`), which is not in storage
+ * any more and can only be parsed. The composer needs it to tell whether the
+ * words it is holding were in storage when the other tab wrote over them.
+ */
+export function parseDraft(raw: string | null | undefined): JournalDraft | null {
+  if (!raw) return null
+  try {
     const parsed = JSON.parse(raw) as Partial<JournalDraft>
     // A blob written by an older build, or hand-edited: anything without both
     // halves of the identity-of-a-save is not a draft this module can honour.

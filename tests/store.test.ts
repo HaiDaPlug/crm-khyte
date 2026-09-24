@@ -13,6 +13,7 @@ import { createCRMStore, type JournalApi } from '../lib/store/store'
 import type { NextStepActionResult } from '../app/actions/journal'
 import type { JournalEntryView } from '../lib/journal/contracts'
 import {
+  adoptDraft,
   beginEdit,
   editSessionReducer,
   incomingRevision,
@@ -20,12 +21,22 @@ import {
   nextPollState,
   pollAction,
   rebase,
+  savedAt,
+  settleEditSave,
   settleSave,
+  settleStoredDraft,
+  shouldAdoptStored,
+  type ComposerNow,
+  type EditDraft,
   type SaveSnapshot,
+  type StoredDraft,
 } from '../lib/journal/composer-state'
 import {
   clearDraft,
   clearDraftsFor,
+  draftKey,
+  newRequestKey,
+  parseDraft,
   readDraft,
   sweepForeignDrafts,
   writeDraft,
@@ -758,14 +769,27 @@ test('settleSave — an unchanged draft clears, a newer one is kept with a new k
   assert.equal(settleSave(sent, { text: 'Called Elena  ', kind: 'conversation', occurredOn: '', surface: 'journal' }).clear, true,
     'trailing whitespace is not a newer draft — the entry is the trimmed text')
 
-  // Typed on after pressing Save: the words stay, and the old key — which now
-  // belongs to the saved entry — is replaced.
+  // Typed on after pressing Save: the saved sentence leaves the box, the words
+  // after it stay, and the old key — which now belongs to the saved entry — is
+  // replaced. The same at any network speed: a fast answer and a slow one end
+  // in the same box.
   assert.deepEqual(
     settleSave(sent, { text: 'Called Elena. Budget locked in.', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: 'k1' }),
-    { clear: false, mintNewKey: true, announce: 'savedKeptNewer' }
+    { clear: false, mintNewKey: true, text: 'Budget locked in.', announce: 'savedKeptNewer' }
   )
-  // The kind or the date changed: the same.
-  assert.equal(settleSave(sent, { text: 'Called Elena', kind: 'decision', occurredOn: '', surface: 'journal' }).announce, 'savedKeptNewer')
+  // Only punctuation or whitespace after the sentence: nothing newer to keep.
+  assert.equal(settleSave(sent, { text: 'Called Elena.', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: 'k1' }).clear, true,
+    'a full stop typed after the saved sentence is not a newer draft')
+  // The sent sentence was edited rather than continued: the saved and the newer
+  // words cannot be told apart, so the whole text stays.
+  const edited = settleSave(sent, { text: 'I called Elena twice', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: 'k1' })
+  assert.equal(edited.clear, false)
+  assert.equal(edited.text, undefined, 'an edited sentence is kept whole')
+  // The kind or the date changed: kept whole too, since the entry that was
+  // saved is not the one the box now describes.
+  const rekinded = settleSave(sent, { text: 'Called Elena', kind: 'decision', occurredOn: '', surface: 'journal' })
+  assert.equal(rekinded.announce, 'savedKeptNewer')
+  assert.equal(rekinded.text, undefined)
   assert.equal(settleSave(sent, { text: 'Called Elena', kind: 'conversation', occurredOn: '2026-09-21', surface: 'journal' }).mintNewKey, true)
 
   // Emptied and restarted while the save was in flight: that draft already
@@ -810,6 +834,148 @@ test('settleSave settles the draft a save left behind on another surface, by the
   assert.equal(kept?.requestKey, 'k-fresh', 'under a key of its own')
 })
 
+/* ———— round 2, B: two tabs share one stored draft ———— */
+
+test('settleStoredDraft — cleared only while storage holds what was sent; adopted when another tab advanced it; kept when both moved', () => {
+  const sent: SaveSnapshot = { text: 'Called Elena', kind: 'conversation', occurredOn: '', requestKey: 'k1', surface: 'journal' }
+  const unchanged: ComposerNow = { text: 'Called Elena', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: 'k1' }
+  const asSent: StoredDraft = { text: 'Called Elena', kind: 'conversation', occurredOn: null, requestKey: 'k1' }
+  // Tab B read k1 on mount and typed on under it while tab A's save was out.
+  const tabB: StoredDraft = { text: 'Called Elena. Budget locked in.', kind: 'decision', occurredOn: '2026-09-21', requestKey: 'k1' }
+
+  // 1. Storage still holds exactly what was sent: forgotten, box emptied.
+  assert.deepEqual(settleStoredDraft(sent, unchanged, asSent),
+    { box: 'clear', mintNewKey: false, stored: 'clear', announce: 'saved' })
+  assert.equal(settleStoredDraft(sent, unchanged, { ...asSent, text: 'Called Elena  ' }).stored, 'clear',
+    'trailing whitespace is not a newer draft — the entry is the trimmed text')
+
+  // 2. Another tab advanced the stored draft; this box did not move. Storage
+  //    is left alone and the box takes it up, key included.
+  assert.deepEqual(settleStoredDraft(sent, unchanged, tabB),
+    { box: 'adopt', mintNewKey: false, stored: 'keep', announce: 'savedKeptNewer' })
+  assert.equal(settleStoredDraft(sent, unchanged, { ...asSent, requestKey: 'k2' }).stored, 'keep',
+    'the same words under another key are not what this save sent')
+  assert.equal(settleStoredDraft(sent, unchanged, { ...asSent, occurredOn: '2026-09-20' }).box, 'adopt',
+    'a changed date is a newer draft too')
+
+  // 3. Both moved: this box keeps its own newer words — the saved sentence
+  //    leaves it — under a fresh key, and storage, the other tab's words, is
+  //    neither cleared nor overwritten.
+  const tabA: ComposerNow = { ...unchanged, text: 'Called Elena. Sent the deck.' }
+  assert.deepEqual(settleStoredDraft(sent, tabA, tabB),
+    { box: 'keep', mintNewKey: true, text: 'Sent the deck.', stored: 'keep', announce: 'savedKeptNewer' })
+
+  // R1 still holds for one tab. Typed on after Save: storage IS this box's
+  // words, so it is rewritten under the fresh key.
+  assert.deepEqual(settleStoredDraft(sent, tabA, { ...asSent, text: tabA.text }),
+    { box: 'keep', mintNewKey: true, text: 'Sent the deck.', stored: 'write', announce: 'savedKeptNewer' })
+  // Emptied and restarted in flight: that draft already has its own key.
+  assert.deepEqual(settleStoredDraft(sent, { ...tabA, requestKey: 'k2' }, { ...asSent, text: tabA.text, requestKey: 'k2' }),
+    { box: 'keep', mintNewKey: false, text: 'Sent the deck.', stored: 'write', announce: 'savedKeptNewer' })
+  // No stored draft (none, or a private window): decided on the box alone.
+  assert.deepEqual(settleStoredDraft(sent, unchanged, null),
+    { box: 'clear', mintNewKey: false, stored: 'keep', announce: 'saved' })
+  assert.deepEqual(settleStoredDraft(sent, tabA, null),
+    { box: 'keep', mintNewKey: true, text: 'Sent the deck.', stored: 'write', announce: 'savedKeptNewer' })
+  // An emptied box stays empty, and another tab's stored words stay stored.
+  assert.deepEqual(settleStoredDraft(sent, { ...unchanged, text: '', requestKey: null }, tabB),
+    { box: 'clear', mintNewKey: false, stored: 'keep', announce: 'saved' })
+
+  // The drawer moved on: the old surface's draft is settled on its own.
+  const elsewhere: ComposerNow = { ...unchanged, surface: 'prospect:b' }
+  const fromA = { ...sent, surface: 'prospect:a' }
+  assert.deepEqual(settleStoredDraft(fromA, elsewhere, asSent),
+    { box: 'ignore', mintNewKey: false, stored: 'clear', announce: 'ignored' })
+  assert.equal(settleStoredDraft(fromA, elsewhere, tabB).stored, 'rekey', 'typed on under the used key: kept, re-keyed')
+  assert.equal(settleStoredDraft(fromA, elsewhere, { ...tabB, requestKey: 'k2' }).stored, 'keep', 'a draft with its own key is left alone')
+})
+
+test('a save in one tab no longer erases the newer draft another tab stored', () => {
+  const org = randomUUID(), user = randomUUID()
+  const storage = new FakeStorage()
+
+  // What JournalComposer.save does with `{ ok: true }`, step for step, against
+  // the fake storage: re-read, ask, carry the answer out.
+  const settle = (sent: SaveSnapshot, now: ComposerNow): ComposerNow => {
+    const stored = readDraft(org, user, sent.surface, storage)
+    const settled = settleStoredDraft(sent, now, stored)
+    if (settled.stored === 'clear') clearDraft(org, user, sent.surface, storage)
+    else if (settled.stored === 'rekey' && stored) writeDraft(org, user, sent.surface, { ...stored, requestKey: newRequestKey() }, storage)
+    if (settled.box === 'ignore') return now
+    if (settled.box === 'clear') return { ...now, text: '', occurredOn: '', requestKey: null }
+    if (settled.box === 'adopt' && stored) return adoptDraft(stored, now)
+    const key = settled.mintNewKey || !now.requestKey ? newRequestKey() : now.requestKey
+    if (settled.stored === 'write') {
+      writeDraft(org, user, sent.surface, { text: now.text, requestKey: key, kind: now.kind, occurredOn: now.occurredOn || null }, storage)
+    }
+    return { ...now, requestKey: key }
+  }
+
+  // Tab A submits S under k1. Tab B, open on the same surface, types newer
+  // words into the stored draft — still under k1, which it read on mount.
+  const sent: SaveSnapshot = { text: 'Called Elena', kind: 'update', occurredOn: '', requestKey: 'k1', surface: 'journal' }
+  const tabA: ComposerNow = { text: 'Called Elena', kind: 'update', occurredOn: '', surface: 'journal', requestKey: 'k1' }
+  writeDraft(org, user, 'journal', { text: 'Called Elena. Tab B kept going.', requestKey: 'k1', kind: 'idea', occurredOn: '2026-09-21' }, storage)
+
+  // A's success finds its own box unchanged. It used to clear storage here.
+  const boxA = settle(sent, tabA)
+  const reloaded = readDraft(org, user, 'journal', storage)
+  assert.equal(reloaded?.text, 'Called Elena. Tab B kept going.', 'a reload of tab B still finds its words')
+  assert.equal(reloaded?.requestKey, 'k1')
+  assert.deepEqual(boxA, { text: 'Called Elena. Tab B kept going.', kind: 'idea', occurredOn: '2026-09-21', surface: 'journal', requestKey: 'k1' },
+    'and tab A now shows what storage holds, request key and all')
+
+  // Both tabs moved: A keeps its own words under a fresh key; B's stay stored.
+  writeDraft(org, user, 'journal', { text: 'Tab B, newer still', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  const keptA = settle(sent, { ...tabA, text: 'Called Elena. Tab A kept going.' })
+  assert.equal(keptA.text, 'Called Elena. Tab A kept going.')
+  assert.ok(keptA.requestKey && keptA.requestKey !== 'k1', 'under a key of its own')
+  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'Tab B, newer still', 'storage is not cleared, nor overwritten')
+
+  // One tab, nothing else writing: exactly as before — cleared.
+  writeDraft(org, user, 'journal', { text: 'Called Elena', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  assert.equal(settle(sent, tabA).text, '')
+  assert.equal(readDraft(org, user, 'journal', storage), null, 'saved as it was left: forgotten')
+})
+
+test('shouldAdoptStored — an idle tab follows storage; a tab being written in, or holding words storage lost, does not', () => {
+  const box: ComposerNow = { text: 'Called Elena', kind: 'update', occurredOn: '', surface: 'journal', requestKey: 'k1' }
+  const previous: StoredDraft = { text: 'Called Elena', kind: 'update', occurredOn: null, requestKey: 'k1' }
+
+  assert.equal(shouldAdoptStored(box, false, previous), true, 'idle and in step with storage: follows the other tab')
+  assert.equal(shouldAdoptStored(box, true, previous), false, 'somebody is writing here: their text wins')
+  assert.equal(shouldAdoptStored({ ...box, text: '' }, false, null), true, 'an empty box has nothing to lose')
+  assert.equal(shouldAdoptStored(box, false, { ...previous, text: 'something older' }), false,
+    'this box holds words storage no longer had — adopting would erase the only copy')
+  assert.equal(shouldAdoptStored(box, false, null), false)
+
+  // Another tab emptied or saved the draft: an idle box in step with it empties.
+  assert.deepEqual(adoptDraft(null, box), { ...box, text: '', occurredOn: '', requestKey: null })
+})
+
+test('the drafts module round-trips every field a tab adopts, and parses a storage event value', () => {
+  const org = randomUUID(), user = randomUUID()
+  const storage = new FakeStorage()
+  const box: ComposerNow = { text: '', kind: 'update', occurredOn: '', surface: 'prospect:a', requestKey: null }
+
+  writeDraft(org, user, 'prospect:a', { text: 'Tab B wrote this', requestKey: 'k1', kind: 'decision', occurredOn: '2026-09-21' }, storage)
+  const stored = readDraft(org, user, 'prospect:a', storage)
+  assert.ok(stored)
+  assert.deepEqual(adoptDraft(stored, box),
+    { text: 'Tab B wrote this', kind: 'decision', occurredOn: '2026-09-21', requestKey: 'k1', surface: 'prospect:a' },
+    'text, kind, date and request key all come across — the key is never dropped')
+
+  // What a `storage` event carries is the raw value under the same key.
+  const raw = storage.getItem(draftKey(org, user, 'prospect:a'))
+  assert.deepEqual(parseDraft(raw), stored)
+  assert.equal(parseDraft(null), null, 'a removed draft')
+  assert.equal(parseDraft('not json'), null)
+  assert.equal(parseDraft(JSON.stringify({ text: 'no key' })), null, 'a blob without a request key is not a draft')
+
+  writeDraft(org, user, 'prospect:a', { text: 'Tab B wrote this', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  assert.deepEqual(adoptDraft(readDraft(org, user, 'prospect:a', storage), box).occurredOn, '', '"now" is an empty date field')
+})
+
 /* ———— R2: an open editor stays on the revision it was opened on ———— */
 
 test('the edit session keeps its base; an incoming revision does not move it, a rebase does', () => {
@@ -833,6 +999,41 @@ test('the edit session keeps its base; an incoming revision does not move it, a 
 
   assert.equal(editSessionReducer(session, { type: 'end' }), null)
   assert.equal(editSessionReducer(null, { type: 'incomingRevision', revision: 9 }), null, 'no editor, no session')
+})
+
+/* ———— round 2, A: an edit that comes back after the writer kept typing ———— */
+
+test('settleEditSave — an unchanged editor closes; newer words keep it open on the revision the save produced', () => {
+  const sent: EditDraft = { title: 'Call', body: 'Called Elena', kind: 'conversation' }
+
+  // 1. The editor still says what was sent: it closes, as before.
+  assert.deepEqual(settleEditSave(sent, { ...sent }, 4), { close: true, announce: 'saved' })
+  assert.deepEqual(settleEditSave(sent, { title: 'Call ', body: 'Called Elena  ', kind: 'conversation' }, 4),
+    { close: true, announce: 'saved' }, 'whitespace the save trims away is not a newer draft')
+
+  // 2. Typed on in the body after Save: the editor stays, based on revision 4.
+  assert.deepEqual(settleEditSave(sent, { ...sent, body: 'Called Elena. Budget locked in.' }, 4),
+    { close: false, newBase: 4, announce: 'savedKeptNewer' })
+
+  // 3. The title or the kind changed after Save: the same.
+  assert.deepEqual(settleEditSave(sent, { ...sent, title: 'Call with Elena' }, 4),
+    { close: false, newBase: 4, announce: 'savedKeptNewer' })
+  assert.deepEqual(settleEditSave(sent, { ...sent, kind: 'decision' }, 4),
+    { close: false, newBase: 4, announce: 'savedKeptNewer' })
+
+  // The session moves to the saved revision, so the next Save is checked
+  // against the writer's own save rather than colliding with it.
+  const session = editSessionReducer(beginEdit(3), { type: 'saved', revision: 4 })
+  assert.deepEqual(session, { base: 4, latest: 4, conflict: false })
+  assert.equal(isStale(incomingRevision(session!, 4)), false, 'the card now showing revision 4 is not a conflict')
+  assert.equal(editSessionReducer(null, { type: 'saved', revision: 4 }), null, 'no editor, no session')
+
+  // Unlike a rebase, it does not jump past a colleague revision the card has
+  // already been shown: that one still holds Save.
+  const moved = savedAt(incomingRevision(beginEdit(3), 5), 4)
+  assert.deepEqual(moved, { base: 4, latest: 5, conflict: false })
+  assert.equal(isStale(moved), true)
+  assert.equal(savedAt({ base: 3, latest: 3, conflict: true }, 4).conflict, false, 'the save landed: no conflict left open')
 })
 
 test('a revision_conflict re-reads the entry, so the editor can be offered the version it lost to', async () => {

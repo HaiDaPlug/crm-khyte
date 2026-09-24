@@ -1,6 +1,6 @@
 'use client'
 
-import { useId, useReducer, useState } from 'react'
+import { useId, useReducer, useRef, useState } from 'react'
 import { Pencil, Trash2 } from 'lucide-react'
 import { Button } from '@/components/crm/Button'
 import { useCRMStore } from '@/lib/store'
@@ -21,6 +21,8 @@ import {
   incomingRevision,
   isIdentityRefusal,
   isStale,
+  settleEditSave,
+  type EditDraft,
 } from '@/lib/journal/composer-state'
 
 /**
@@ -55,6 +57,12 @@ import {
  * it. Until then Save is held, the local words stay in the editor, and Cancel
  * is the other way out.
  *
+ * AN EDITOR STAYS WRITABLE WHILE SAVE IS PENDING, like the composer's box, so
+ * a save's answer is weighed against what the editor holds when it arrives
+ * (`settleEditSave`): still what was sent, and the editor closes; something
+ * newer, and it stays open with those words, based on the revision the save
+ * produced, and says the earlier wording is saved.
+ *
  * Original text and History are read on demand (`loadJournalEntry`) rather
  * than shipped with every feed page: the original only differs from the body
  * once an entry has been edited, and most never are.
@@ -83,6 +91,15 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
   const [kindDraft, setKindDraft] = useState<JournalKind>(entry.kind)
   /** The writer pressed "use the latest version as the base" in this editor. */
   const [rebased, setRebased] = useState(false)
+  /** A save landed while the writer kept typing; the newer words are still here. */
+  const [keptNewer, setKeptNewer] = useState(false)
+  /**
+   * What the editor holds right now, for code that runs after an await —
+   * `saveEdit` is a closure over the render Save was pressed in, so its
+   * drafts are the words at the press. Every write to the editor goes through
+   * `editDraft`, which writes here too.
+   */
+  const live = useRef<EditDraft>({ title: '', body: '', kind: entry.kind })
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
@@ -128,18 +145,25 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
   /** What a rejected promise is, as a string `explain` can take. */
   const reasonOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause))
 
+  const editDraft = (next: Partial<EditDraft>) => {
+    live.current = { ...live.current, ...next }
+    if (next.title !== undefined) setTitleDraft(next.title)
+    if (next.body !== undefined) setBodyDraft(next.body)
+    if (next.kind !== undefined) setKindDraft(next.kind)
+  }
+
   const openEditor = () => {
-    setTitleDraft(entry.title ?? '')
-    setBodyDraft(entry.body)
-    setKindDraft(entry.kind)
+    editDraft({ title: entry.title ?? '', body: entry.body, kind: entry.kind })
     setProblem(null)
     setRebased(false)
+    setKeptNewer(false)
     dispatch({ type: 'beginEdit', revision: entry.revision })
   }
 
   const closeEditor = () => {
     dispatch({ type: 'end' })
     setRebased(false)
+    setKeptNewer(false)
     releasePoller()
   }
 
@@ -147,6 +171,7 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
   const adoptLatestAsBase = () => {
     dispatch({ type: 'rebase', revision: entry.revision })
     setRebased(true)
+    setKeptNewer(false)
     setProblem(null)
   }
 
@@ -158,7 +183,11 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
   const saveEdit = async () => {
     const body = bodyDraft.trim()
     if (!body || busy || !edit || stale) return
+    // Frozen here: what the answer below is an answer ABOUT. The editor stays
+    // writable while this is in flight.
+    const sent: EditDraft = { title: titleDraft, body: bodyDraft, kind: kindDraft }
     setBusy(true)
+    setKeptNewer(false)
     try {
       const result = await editEntry(entry.id, {
         title: titleDraft.trim() || null,
@@ -170,10 +199,21 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
         expectedRevision: edit.base,
       })
       if (result.ok) {
-        closeEditor()
         setProblem(null)
         // Anything already expanded was read at the old wording.
         setDetail(null)
+        const settled = settleEditSave(sent, live.current, result.entry.revision)
+        if (settled.close) {
+          closeEditor()
+          return
+        }
+        // The writer kept going. What they sent is the entry now; what they
+        // have written since stays in the editor as a further edit of the
+        // revision this save produced — not of the one it was opened on,
+        // which would come back as a conflict with their own save.
+        dispatch({ type: 'saved', revision: settled.newBase ?? result.entry.revision })
+        setRebased(false)
+        setKeptNewer(true)
         return
       }
       if (result.error === 'revision_conflict') {
@@ -305,7 +345,7 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
             value={titleDraft}
             onChange={(e) => {
               holdPoller()
-              setTitleDraft(e.target.value)
+              editDraft({ title: e.target.value })
             }}
             onFocus={holdPoller}
             onBlur={releasePoller}
@@ -316,7 +356,7 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
             value={bodyDraft}
             onChange={(e) => {
               holdPoller()
-              setBodyDraft(e.target.value)
+              editDraft({ body: e.target.value })
             }}
             onFocus={holdPoller}
             onBlur={releasePoller}
@@ -354,6 +394,7 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
               </div>
             )}
             {!stale && rebased && <p className="text-[12.5px] text-foreground/60">{copy.rebased}</p>}
+            {keptNewer && <p className="text-[12.5px] text-foreground/60">{copy.editSavedKeptNewer}</p>}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -363,7 +404,7 @@ export function JournalEntryCard({ entry }: { entry: JournalEntryView }) {
             <select
               id={`${fieldId}-kind`}
               value={kindDraft}
-              onChange={(e) => setKindDraft(e.target.value as JournalKind)}
+              onChange={(e) => editDraft({ kind: e.target.value as JournalKind })}
               className="h-11 rounded-lg border border-border-subtle bg-background-raised px-2.5 text-[16px] text-foreground outline-none focus:border-accent/50 sm:h-9 sm:text-[13.5px]"
             >
               {JOURNAL_KINDS.map((option) => (
