@@ -22,24 +22,34 @@ import {
   pollAction,
   rebase,
   savedAt,
+  followStorage,
   settleEditSave,
   settleSave,
-  settleStoredDraft,
-  shouldAdoptStored,
+  settleSentSlot,
   type ComposerNow,
   type EditDraft,
+  type FollowBox,
   type SaveSnapshot,
+  type StorageChange,
   type StoredDraft,
 } from '../lib/journal/composer-state'
+import { DraftBox, type HandedOver } from '../lib/journal/draft-box'
 import {
-  clearDraft,
   clearDraftsFor,
   draftKey,
-  newRequestKey,
+  forgetOwnDraft,
+  listDrafts,
+  loadDraftFor,
+  ownDraft,
+  ownDraftKey,
   parseDraft,
-  readDraft,
+  readDraftSlot,
+  rememberOwnDraft,
+  removeDraftSlot,
+  slotKey,
+  slotOf,
   sweepForeignDrafts,
-  writeDraft,
+  writeDraftSlot,
   type DraftStorage,
 } from '../lib/journal/drafts'
 import { formatJournalDate, formatJournalDateTime } from '../lib/journal/format'
@@ -214,7 +224,7 @@ test('a failed submitCapture keeps the draft and reports the error', async () =>
   // The composer writes the draft before it submits; the store never touches
   // it. This is that draft.
   const requestKey = randomUUID()
-  writeDraft(org, user, 'journal', { text: 'the call went well', requestKey, kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'journal', { text: 'the call went well', requestKey, kind: 'update', occurredOn: null }, storage)
 
   const result = await store.getState().submitCapture(
     { requestKey, text: 'the call went well' },
@@ -225,7 +235,7 @@ test('a failed submitCapture keeps the draft and reports the error', async () =>
   assert.equal(result.ok === false && result.error, 'boom', 'the failure is reported, not swallowed')
 
   // The one thing that must not happen: losing the words.
-  const kept = readDraft(org, user, 'journal', storage)
+  const kept = readDraftSlot(org, user, 'journal', requestKey, storage)
   assert.equal(kept?.text, 'the call went well')
   assert.equal(kept?.requestKey, requestKey,
     'and the same key, so a retry of a save that did land returns the original entry')
@@ -246,7 +256,7 @@ test('request_key_conflict surfaces the entry the key already produced', async (
   })
 
   const requestKey = randomUUID()
-  writeDraft(org, user, 'journal', { text: 'edited afterwards', requestKey, kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'journal', { text: 'edited afterwards', requestKey, kind: 'update', occurredOn: null }, storage)
 
   const result = await store.getState().submitCapture(
     { requestKey, text: 'edited afterwards' },
@@ -257,7 +267,7 @@ test('request_key_conflict surfaces the entry the key already produced', async (
   assert.equal(result.ok === false && result.error, 'request_key_conflict')
   assert.equal(result.ok === false && result.existing?.id, existing.id,
     'the composer needs the entry to be able to link to it')
-  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'edited afterwards',
+  assert.equal(readDraftSlot(org, user, 'journal', requestKey, storage)?.text, 'edited afterwards',
     'the edited text is not lost to a collision')
   // The composer says "already saved" in place; a toast on top would be noise.
   assert.equal(store.getState().toasts.length, 0)
@@ -418,7 +428,7 @@ test('a rejected save resolves as a refusal, so the composer keeps its words', a
   })
 
   const requestKey = randomUUID()
-  writeDraft(org, user, 'journal', { text: 'the call went well', requestKey, kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'journal', { text: 'the call went well', requestKey, kind: 'update', occurredOn: null }, storage)
 
   const result = await store.getState().submitCapture(
     { requestKey, text: 'the call went well' },
@@ -430,7 +440,7 @@ test('a rejected save resolves as a refusal, so the composer keeps its words', a
   // the words it is holding unsubmittable.
   assert.equal(result.ok, false)
   assert.equal(result.ok === false && result.error, 'Failed to fetch')
-  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'the call went well',
+  assert.equal(readDraftSlot(org, user, 'journal', requestKey, storage)?.text, 'the call went well',
     'and the one promise the composer makes is kept')
   assert.ok(store.getState().toasts.some((t) => t.message === 'Save entry — Failed to fetch'))
 })
@@ -766,7 +776,7 @@ test('settleSave — an unchanged draft clears, a newer one is kept with a new k
     settleSave(sent, { text: 'Called Elena', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: 'k1' }),
     { clear: true, mintNewKey: false, announce: 'saved' }
   )
-  assert.equal(settleSave(sent, { text: 'Called Elena  ', kind: 'conversation', occurredOn: '', surface: 'journal' }).clear, true,
+  assert.equal(settleSave(sent, { text: 'Called Elena  ', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: 'k1' }).clear, true,
     'trailing whitespace is not a newer draft — the entry is the trimmed text')
 
   // Typed on after pressing Save: the saved sentence leaves the box, the words
@@ -787,10 +797,10 @@ test('settleSave — an unchanged draft clears, a newer one is kept with a new k
   assert.equal(edited.text, undefined, 'an edited sentence is kept whole')
   // The kind or the date changed: kept whole too, since the entry that was
   // saved is not the one the box now describes.
-  const rekinded = settleSave(sent, { text: 'Called Elena', kind: 'decision', occurredOn: '', surface: 'journal' })
+  const rekinded = settleSave(sent, { text: 'Called Elena', kind: 'decision', occurredOn: '', surface: 'journal', requestKey: 'k1' })
   assert.equal(rekinded.announce, 'savedKeptNewer')
   assert.equal(rekinded.text, undefined)
-  assert.equal(settleSave(sent, { text: 'Called Elena', kind: 'conversation', occurredOn: '2026-09-21', surface: 'journal' }).mintNewKey, true)
+  assert.equal(settleSave(sent, { text: 'Called Elena', kind: 'conversation', occurredOn: '2026-09-21', surface: 'journal', requestKey: 'k1' }).mintNewKey, true)
 
   // Emptied and restarted while the save was in flight: that draft already
   // minted its own key and keeps it.
@@ -798,182 +808,1425 @@ test('settleSave — an unchanged draft clears, a newer one is kept with a new k
     settleSave(sent, { text: 'Something else entirely', kind: 'update', occurredOn: '', surface: 'journal', requestKey: 'k2' }),
     { clear: false, mintNewKey: false, announce: 'savedKeptNewer' }
   )
-  assert.equal(settleSave(sent, { text: '', kind: 'conversation', occurredOn: '', surface: 'journal' }).clear, true,
+  // A box with words and no key cannot keep a key it does not have.
+  assert.equal(settleSave(sent, { text: 'Stray words', kind: 'update', occurredOn: '', surface: 'journal', requestKey: null }).mintNewKey, true)
+})
+
+test('Astra round 3, case 1 — an old save never truncates a new draft that begins with its words', () => {
+  // Save "Call Erik" (K1), empty the box, type "Call Erik tomorrow" — which
+  // minted K2. Round 2 compared text alone, took the new draft for a
+  // continuation of the sent one, and the answer left "tomorrow": in the box,
+  // and on the next keystroke in storage.
+  const sent: SaveSnapshot = { text: 'Call Erik', kind: 'update', occurredOn: '', requestKey: 'K1', surface: 'journal' }
+  const fresh: ComposerNow = { text: 'Call Erik tomorrow', kind: 'update', occurredOn: '', surface: 'journal', requestKey: 'K2' }
+
+  assert.deepEqual(settleSave(sent, fresh), { clear: false, mintNewKey: false, announce: 'savedKeptNewer' },
+    'another key is another draft: its whole text stays, under its own key, with no `text` to cut it to')
+  assert.deepEqual(settleSave(sent, { ...fresh, text: 'Call Erik' }), { clear: false, mintNewKey: false, announce: 'savedKeptNewer' },
+    'even the exact sent words, typed again as a new draft, are that draft — not the saved one')
+
+  // The same words under the SENT key are the writer typing on after Save:
+  // the round-1 rule, unchanged.
+  assert.deepEqual(settleSave(sent, { ...fresh, requestKey: 'K1' }),
+    { clear: false, mintNewKey: true, text: 'tomorrow', announce: 'savedKeptNewer' })
+  assert.equal(settleSave(sent, { text: '', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: null }).clear, true,
     'an emptied box has nothing in it to keep')
 
   // The drawer moved to another prospect: nothing on screen is this save's.
   assert.deepEqual(
-    settleSave({ ...sent, surface: 'prospect:a' }, { text: 'Called Elena', kind: 'conversation', occurredOn: '', surface: 'prospect:b' }),
+    settleSave({ ...sent, surface: 'prospect:a' }, { text: 'Called Elena', kind: 'conversation', occurredOn: '', surface: 'prospect:b', requestKey: 'k1' }),
     { clear: false, mintNewKey: false, announce: 'ignored' }
   )
 })
 
-test('settleSave settles the draft a save left behind on another surface, by the same rule', () => {
-  const org = randomUUID(), user = randomUUID()
-  const storage = new FakeStorage()
-  const sent: SaveSnapshot = { text: 'Called Elena', kind: 'update', occurredOn: '', requestKey: 'k1', surface: 'prospect:a' }
+/* ———— round 3: one slot per draft, one owner per tab ———— */
 
-  // What the composer does on 'ignored', against storage: the stored draft is
-  // asked the same question the box would have been.
-  const settleStored = () => {
-    const stored = readDraft(org, user, sent.surface, storage)
-    if (!stored || stored.requestKey !== sent.requestKey) return
-    const decision = settleSave(sent, { ...stored, occurredOn: stored.occurredOn ?? '', surface: sent.surface })
-    if (decision.clear) clearDraft(org, user, sent.surface, storage)
-    else if (decision.mintNewKey) writeDraft(org, user, sent.surface, { ...stored, requestKey: 'k-fresh' }, storage)
-  }
-
-  writeDraft(org, user, 'prospect:a', { text: 'Called Elena', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  settleStored()
-  assert.equal(readDraft(org, user, 'prospect:a', storage), null, 'saved as it was left: forgotten')
-
-  writeDraft(org, user, 'prospect:a', { text: 'Called Elena, and then some', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  settleStored()
-  const kept = readDraft(org, user, 'prospect:a', storage)
-  assert.equal(kept?.text, 'Called Elena, and then some', 'typed on before switching prospect: kept')
-  assert.equal(kept?.requestKey, 'k-fresh', 'under a key of its own')
-})
-
-/* ———— round 2, B: two tabs share one stored draft ———— */
-
-test('settleStoredDraft — cleared only while storage holds what was sent; adopted when another tab advanced it; kept when both moved', () => {
+test('settleSentSlot — the sent slot goes only while it still holds the sent words', () => {
   const sent: SaveSnapshot = { text: 'Called Elena', kind: 'conversation', occurredOn: '', requestKey: 'k1', surface: 'journal' }
-  const unchanged: ComposerNow = { text: 'Called Elena', kind: 'conversation', occurredOn: '', surface: 'journal', requestKey: 'k1' }
   const asSent: StoredDraft = { text: 'Called Elena', kind: 'conversation', occurredOn: null, requestKey: 'k1' }
-  // Tab B read k1 on mount and typed on under it while tab A's save was out.
-  const tabB: StoredDraft = { text: 'Called Elena. Budget locked in.', kind: 'decision', occurredOn: '2026-09-21', requestKey: 'k1' }
 
-  // 1. Storage still holds exactly what was sent: forgotten, box emptied.
-  assert.deepEqual(settleStoredDraft(sent, unchanged, asSent),
-    { box: 'clear', mintNewKey: false, stored: 'clear', announce: 'saved' })
-  assert.equal(settleStoredDraft(sent, unchanged, { ...asSent, text: 'Called Elena  ' }).stored, 'clear',
+  assert.equal(settleSentSlot(sent, asSent), 'clear', 'still the sent words, under the sent key: they are an entry now')
+  assert.equal(settleSentSlot(sent, { ...asSent, text: 'Called Elena  ' }), 'clear',
     'trailing whitespace is not a newer draft — the entry is the trimmed text')
+  assert.equal(settleSentSlot(sent, null), 'clear', 'already gone: nothing to do, and removing it again is harmless')
 
-  // 2. Another tab advanced the stored draft; this box did not move. Storage
-  //    is left alone and the box takes it up, key included.
-  assert.deepEqual(settleStoredDraft(sent, unchanged, tabB),
-    { box: 'adopt', mintNewKey: false, stored: 'keep', announce: 'savedKeptNewer' })
-  assert.equal(settleStoredDraft(sent, unchanged, { ...asSent, requestKey: 'k2' }).stored, 'keep',
-    'the same words under another key are not what this save sent')
-  assert.equal(settleStoredDraft(sent, unchanged, { ...asSent, occurredOn: '2026-09-20' }).box, 'adopt',
-    'a changed date is a newer draft too')
-
-  // 3. Both moved: this box keeps its own newer words — the saved sentence
-  //    leaves it — under a fresh key, and storage, the other tab's words, is
-  //    neither cleared nor overwritten.
-  const tabA: ComposerNow = { ...unchanged, text: 'Called Elena. Sent the deck.' }
-  assert.deepEqual(settleStoredDraft(sent, tabA, tabB),
-    { box: 'keep', mintNewKey: true, text: 'Sent the deck.', stored: 'keep', announce: 'savedKeptNewer' })
-
-  // R1 still holds for one tab. Typed on after Save: storage IS this box's
-  // words, so it is rewritten under the fresh key.
-  assert.deepEqual(settleStoredDraft(sent, tabA, { ...asSent, text: tabA.text }),
-    { box: 'keep', mintNewKey: true, text: 'Sent the deck.', stored: 'write', announce: 'savedKeptNewer' })
-  // Emptied and restarted in flight: that draft already has its own key.
-  assert.deepEqual(settleStoredDraft(sent, { ...tabA, requestKey: 'k2' }, { ...asSent, text: tabA.text, requestKey: 'k2' }),
-    { box: 'keep', mintNewKey: false, text: 'Sent the deck.', stored: 'write', announce: 'savedKeptNewer' })
-  // No stored draft (none, or a private window): decided on the box alone.
-  assert.deepEqual(settleStoredDraft(sent, unchanged, null),
-    { box: 'clear', mintNewKey: false, stored: 'keep', announce: 'saved' })
-  assert.deepEqual(settleStoredDraft(sent, tabA, null),
-    { box: 'keep', mintNewKey: true, text: 'Sent the deck.', stored: 'write', announce: 'savedKeptNewer' })
-  // An emptied box stays empty, and another tab's stored words stay stored.
-  assert.deepEqual(settleStoredDraft(sent, { ...unchanged, text: '', requestKey: null }, tabB),
-    { box: 'clear', mintNewKey: false, stored: 'keep', announce: 'saved' })
-
-  // The drawer moved on: the old surface's draft is settled on its own.
-  const elsewhere: ComposerNow = { ...unchanged, surface: 'prospect:b' }
-  const fromA = { ...sent, surface: 'prospect:a' }
-  assert.deepEqual(settleStoredDraft(fromA, elsewhere, asSent),
-    { box: 'ignore', mintNewKey: false, stored: 'clear', announce: 'ignored' })
-  assert.equal(settleStoredDraft(fromA, elsewhere, tabB).stored, 'rekey', 'typed on under the used key: kept, re-keyed')
-  assert.equal(settleStoredDraft(fromA, elsewhere, { ...tabB, requestKey: 'k2' }).stored, 'keep', 'a draft with its own key is left alone')
+  // Somebody typed on under the key after the words left. Not this save's to erase.
+  assert.equal(settleSentSlot(sent, { ...asSent, text: 'Called Elena. Budget locked in.' }), 'keep', 'advanced')
+  assert.equal(settleSentSlot(sent, { ...asSent, kind: 'decision' }), 'keep', 'reshaped: a changed kind is newer words')
+  assert.equal(settleSentSlot(sent, { ...asSent, occurredOn: '2026-09-20' }), 'keep', 'and so is a changed date')
+  assert.equal(settleSentSlot(sent, { ...asSent, requestKey: 'k2' }), 'keep',
+    'the same words under another key are another draft, not what this save sent')
 })
 
-test('a save in one tab no longer erases the newer draft another tab stored', () => {
-  const org = randomUUID(), user = randomUUID()
-  const storage = new FakeStorage()
+test('followStorage — mirrors follow; typed words are never adopted over or emptied: restored, or forked', () => {
+  const box = (over: Partial<FollowBox> = {}): FollowBox => ({
+    text: 'Called Elena', kind: 'update', occurredOn: '', surface: 'journal', requestKey: 'k1',
+    typedHere: true, typedText: over.text ?? 'Called Elena', letGo: new Set<string>(), ...over,
+  })
+  const stored = (text: string, over: Partial<StoredDraft> = {}): StoredDraft =>
+    ({ text, kind: 'update', occurredOn: null, requestKey: 'k1', ...over })
+  const on = (requestKey: string, previous: StoredDraft | null, next: StoredDraft | null): StorageChange =>
+    ({ requestKey, previous, next })
+  const empty = box({ text: '', requestKey: null, typedHere: false })
+  const mirror = box({ typedHere: false })
+  const mirrored = (draft: StoredDraft | null) => ({ do: 'adopt', draft, typedHere: false })
 
-  // What JournalComposer.save does with `{ ok: true }`, step for step, against
-  // the fake storage: re-read, ask, carry the answer out.
-  const settle = (sent: SaveSnapshot, now: ComposerNow): ComposerNow => {
-    const stored = readDraft(org, user, sent.surface, storage)
-    const settled = settleStoredDraft(sent, now, stored)
-    if (settled.stored === 'clear') clearDraft(org, user, sent.surface, storage)
-    else if (settled.stored === 'rekey' && stored) writeDraft(org, user, sent.surface, { ...stored, requestKey: newRequestKey() }, storage)
-    if (settled.box === 'ignore') return now
-    if (settled.box === 'clear') return { ...now, text: '', occurredOn: '', requestKey: null }
-    if (settled.box === 'adopt' && stored) return adoptDraft(stored, now)
-    const key = settled.mintNewKey || !now.requestKey ? newRequestKey() : now.requestKey
-    if (settled.stored === 'write') {
-      writeDraft(org, user, sent.surface, { text: now.text, requestKey: key, kind: now.kind, occurredOn: now.occurredOn || null }, storage)
-    }
-    return { ...now, requestKey: key }
-  }
+  // Another slot on this surface.
+  const started = stored('Tab B started this', { requestKey: 'k2' })
+  assert.deepEqual(followStorage(empty, false, on('k2', null, started)), mirrored(started),
+    'an empty tab follows what another tab starts')
+  assert.deepEqual(followStorage(empty, true, on('k2', null, started)), mirrored(started),
+    'focused or not: an empty box has nothing to lose')
+  assert.deepEqual(followStorage(box({ ...empty, letGo: new Set(['k2']) }), false, on('k2', null, started)), { do: 'ignore' },
+    'but never a key this box let go of — a draft it saved or emptied does not come back to it')
+  assert.deepEqual(followStorage(empty, false, on('k2', started, null)), { do: 'ignore' }, 'nothing to follow')
+  assert.deepEqual(followStorage(mirror, false, on('k2', null, started)), { do: 'ignore' }, 'a box holding a draft ignores another one')
+  assert.deepEqual(followStorage(box(), false, on('k2', null, started)), { do: 'ignore' })
 
-  // Tab A submits S under k1. Tab B, open on the same surface, types newer
-  // words into the stored draft — still under k1, which it read on mount.
-  const sent: SaveSnapshot = { text: 'Called Elena', kind: 'update', occurredOn: '', requestKey: 'k1', surface: 'journal' }
-  const tabA: ComposerNow = { text: 'Called Elena', kind: 'update', occurredOn: '', surface: 'journal', requestKey: 'k1' }
-  writeDraft(org, user, 'journal', { text: 'Called Elena. Tab B kept going.', requestKey: 'k1', kind: 'idea', occurredOn: '2026-09-21' }, storage)
+  // This box's slot, removed — the other tab saved it, or emptied its box.
+  assert.deepEqual(followStorage(box({ text: '' }), false, on('k1', stored('x'), null)), mirrored(null),
+    'an empty box drops the key')
+  assert.deepEqual(followStorage(mirror, false, on('k1', stored('Called Elena'), null)), mirrored(null),
+    'a mirror in step with the slot: its owner is finished with it')
+  assert.deepEqual(followStorage(mirror, false, on('k1', stored('Called Elena  '), null)), mirrored(null),
+    'in step, as a saved entry reads it: trimmed')
+  assert.deepEqual(followStorage(mirror, false, on('k1', stored('something older'), null)), { do: 'restore' },
+    'a mirror holding words the slot did not have writes them back')
+  assert.deepEqual(followStorage(mirror, false, on('k1', null, null)), { do: 'restore' }, 'and so does one that cannot tell')
+  // (b) Astra's listener bug: the box's words equalled the old value, but they
+  // were TYPED here. That another tab saved or emptied the same words proves
+  // nothing about this tab's copy, which may be the only one: kept — under the
+  // SAME key, so saving them again replays the filed entry rather than filing
+  // a second one.
+  assert.deepEqual(followStorage(box(), false, on('k1', stored('Called Elena'), null)), { do: 'restore' },
+    'typed here: restores, never adopts the removal, never mints a key')
+  assert.deepEqual(followStorage(box(), true, on('k1', stored('Called Elena'), null)), { do: 'restore' })
 
-  // A's success finds its own box unchanged. It used to clear storage here.
-  const boxA = settle(sent, tabA)
-  const reloaded = readDraft(org, user, 'journal', storage)
-  assert.equal(reloaded?.text, 'Called Elena. Tab B kept going.', 'a reload of tab B still finds its words')
-  assert.equal(reloaded?.requestKey, 'k1')
-  assert.deepEqual(boxA, { text: 'Called Elena. Tab B kept going.', kind: 'idea', occurredOn: '2026-09-21', surface: 'journal', requestKey: 'k1' },
-    'and tab A now shows what storage holds, request key and all')
+  // This box's slot, written by another tab.
+  const onward = stored('Called Elena, and then some')
+  assert.deepEqual(followStorage(box({ text: '' }), true, on('k1', null, onward)), mirrored(onward), 'empty: follows')
+  assert.deepEqual(followStorage(mirror, false, on('k1', stored('Called Elena'), onward)), mirrored(onward),
+    'a mirror follows its source')
+  const rewritten = stored('Something else entirely', { kind: 'decision' })
+  assert.deepEqual(followStorage(mirror, true, on('k1', stored('Called Elena'), rewritten)), mirrored(rewritten),
+    'whatever the source writes, focused or not: nothing in a mirror was typed here')
+  // Typed here, idle, and the new words carry on from the box: nothing typed
+  // here is lost — and it is still in the box, as the start of the new words,
+  // so the box stays typed-here and no later rule may empty it.
+  assert.deepEqual(followStorage(box(), false, on('k1', stored('Called Elena'), onward)),
+    { do: 'adopt', draft: onward, typedHere: true })
+  assert.deepEqual(followStorage(box({ text: 'Called Elena ' }), false, on('k1', null, onward)),
+    { do: 'adopt', draft: onward, typedHere: true }, 'compared trimmed: a trailing space in the box is not words')
+  assert.deepEqual(followStorage(box(), true, on('k1', stored('Called Elena'), onward)), { do: 'fork' },
+    'somebody is writing HERE: their words move to a key of their own rather than change under the cursor')
+  assert.deepEqual(followStorage(box(), false, on('k1', null, stored('Called Elena, and then some', { kind: 'decision' }))),
+    { do: 'fork' }, 'a continuation with another kind is not this box carried on')
+  assert.deepEqual(followStorage(box(), false, on('k1', null, stored('Called Elena, and then some', { occurredOn: '2026-09-21' }))),
+    { do: 'fork' }, 'nor one with another date')
+  // (a) The other named loss: a tab that typed words is written over with
+  // DIFFERENT words under the same key. Adopting would erase the only copy.
+  assert.deepEqual(followStorage(box(), false, on('k1', stored('Called Elena'), stored('Called Erik instead'))), { do: 'fork' },
+    'typed here, and the other tab wrote different words: fork, never adopt')
+  // What counts is what was TYPED here, not the box: after taking up another
+  // tab's " Erik", that tab taking its own words back still continues "Call".
+  const took = box({ text: 'Call Erik', typedText: 'Call' })
+  assert.deepEqual(followStorage(took, false, on('k1', stored('Call Erik'), stored('Call Eri'))),
+    { do: 'adopt', draft: stored('Call Eri'), typedHere: true }, 'a backspace in the other tab does not fork this one')
+  assert.deepEqual(followStorage(took, false, on('k1', stored('Call Erik'), stored('Cal'))), { do: 'fork' },
+    'a backspace into the words typed HERE does')
 
-  // Both tabs moved: A keeps its own words under a fresh key; B's stay stored.
-  writeDraft(org, user, 'journal', { text: 'Tab B, newer still', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  const keptA = settle(sent, { ...tabA, text: 'Called Elena. Tab A kept going.' })
-  assert.equal(keptA.text, 'Called Elena. Tab A kept going.')
-  assert.ok(keptA.requestKey && keptA.requestKey !== 'k1', 'under a key of its own')
-  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'Tab B, newer still', 'storage is not cleared, nor overwritten')
-
-  // One tab, nothing else writing: exactly as before — cleared.
-  writeDraft(org, user, 'journal', { text: 'Called Elena', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  assert.equal(settle(sent, tabA).text, '')
-  assert.equal(readDraft(org, user, 'journal', storage), null, 'saved as it was left: forgotten')
+  // Adopting nothing empties the box the way a save empties it.
+  assert.deepEqual(adoptDraft(null, box()), { ...box(), text: '', occurredOn: '', requestKey: null })
 })
 
-test('shouldAdoptStored — an idle tab follows storage; a tab being written in, or holding words storage lost, does not', () => {
-  const box: ComposerNow = { text: 'Called Elena', kind: 'update', occurredOn: '', surface: 'journal', requestKey: 'k1' }
-  const previous: StoredDraft = { text: 'Called Elena', kind: 'update', occurredOn: null, requestKey: 'k1' }
-
-  assert.equal(shouldAdoptStored(box, false, previous), true, 'idle and in step with storage: follows the other tab')
-  assert.equal(shouldAdoptStored(box, true, previous), false, 'somebody is writing here: their text wins')
-  assert.equal(shouldAdoptStored({ ...box, text: '' }, false, null), true, 'an empty box has nothing to lose')
-  assert.equal(shouldAdoptStored(box, false, { ...previous, text: 'something older' }), false,
-    'this box holds words storage no longer had — adopting would erase the only copy')
-  assert.equal(shouldAdoptStored(box, false, null), false)
-
-  // Another tab emptied or saved the draft: an idle box in step with it empties.
-  assert.deepEqual(adoptDraft(null, box), { ...box, text: '', occurredOn: '', requestKey: null })
-})
-
-test('the drafts module round-trips every field a tab adopts, and parses a storage event value', () => {
+test('the draft slots round-trip every field a tab adopts, and parse a storage event value', () => {
   const org = randomUUID(), user = randomUUID()
   const storage = new FakeStorage()
   const box: ComposerNow = { text: '', kind: 'update', occurredOn: '', surface: 'prospect:a', requestKey: null }
 
-  writeDraft(org, user, 'prospect:a', { text: 'Tab B wrote this', requestKey: 'k1', kind: 'decision', occurredOn: '2026-09-21' }, storage)
-  const stored = readDraft(org, user, 'prospect:a', storage)
+  writeDraftSlot(org, user, 'prospect:a', { text: 'Tab B wrote this', requestKey: 'k1', kind: 'decision', occurredOn: '2026-09-21' }, storage)
+  const stored = readDraftSlot(org, user, 'prospect:a', 'k1', storage)
   assert.ok(stored)
   assert.deepEqual(adoptDraft(stored, box),
     { text: 'Tab B wrote this', kind: 'decision', occurredOn: '2026-09-21', requestKey: 'k1', surface: 'prospect:a' },
     'text, kind, date and request key all come across — the key is never dropped')
 
-  // What a `storage` event carries is the raw value under the same key.
-  const raw = storage.getItem(draftKey(org, user, 'prospect:a'))
-  assert.deepEqual(parseDraft(raw), stored)
+  // What a `storage` event carries is the raw value under the slot's key, and
+  // the key itself says which draft it is.
+  const key = slotKey(org, user, 'prospect:a', 'k1')
+  assert.equal(key, `${draftKey(org, user, 'prospect:a')}:k1`)
+  assert.equal(slotOf(key, org, user, 'prospect:a'), 'k1')
+  assert.equal(slotOf(draftKey(org, user, 'prospect:a'), org, user, 'prospect:a'), null, 'the legacy single key is not a slot')
+  assert.equal(slotOf(key, org, user, 'prospect'), null, 'nor is a longer surface a slot of a shorter one')
+  assert.equal(slotOf(slotKey(org, randomUUID(), 'prospect:a', 'k1'), org, user, 'prospect:a'), null, 'nor somebody else’s')
+  assert.equal(slotOf('khyte-settings', org, user, 'prospect:a'), null)
+  assert.deepEqual(parseDraft(storage.getItem(key)), stored)
   assert.equal(parseDraft(null), null, 'a removed draft')
   assert.equal(parseDraft('not json'), null)
   assert.equal(parseDraft(JSON.stringify({ text: 'no key' })), null, 'a blob without a request key is not a draft')
 
-  writeDraft(org, user, 'prospect:a', { text: 'Tab B wrote this', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  assert.deepEqual(adoptDraft(readDraft(org, user, 'prospect:a', storage), box).occurredOn, '', '"now" is an empty date field')
+  writeDraftSlot(org, user, 'prospect:a', { text: 'Tab B wrote this', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  assert.deepEqual(adoptDraft(readDraftSlot(org, user, 'prospect:a', 'k1', storage), box).occurredOn, '', '"now" is an empty date field')
+
+  removeDraftSlot(org, user, 'prospect:a', 'k1', storage)
+  assert.equal(readDraftSlot(org, user, 'prospect:a', 'k1', storage), null)
+})
+
+test('loadDraftFor — the owned slot wins, a tab owning nothing takes the newest, a legacy slot is moved not dropped', () => {
+  const org = randomUUID(), user = randomUUID()
+  const local = new FakeStorage()
+  const mine = new FakeStorage()
+  writeDraftSlot(org, user, 'journal',
+    { text: 'mine', requestKey: 'k1', kind: 'update', occurredOn: null, updatedAt: '2026-09-24T08:00:00.000Z' }, local)
+  writeDraftSlot(org, user, 'journal',
+    { text: 'theirs, newer', requestKey: 'k2', kind: 'idea', occurredOn: null, updatedAt: '2026-09-24T09:00:00.000Z' }, local)
+  rememberOwnDraft(org, user, 'journal', 'k1', mine)
+
+  assert.deepEqual(listDrafts(org, user, 'journal', local).map(d => d.requestKey), ['k2', 'k1'], 'newest first')
+  assert.equal(loadDraftFor(org, user, 'journal', local, mine)?.text, 'mine',
+    'a reload gets its own words back, however much newer another tab’s are')
+  assert.equal(ownDraftKey(org, user, 'journal', mine), 'k1')
+
+  const fresh = new FakeStorage()
+  assert.equal(loadDraftFor(org, user, 'journal', local, fresh)?.text, 'theirs, newer', 'a new tab takes the newest')
+  assert.equal(ownDraftKey(org, user, 'journal', fresh), 'k2', 'and remembers it as its own')
+
+  // The owned slot is gone (saved, or emptied elsewhere): the newest remaining.
+  removeDraftSlot(org, user, 'journal', 'k1', local)
+  assert.equal(loadDraftFor(org, user, 'journal', local, mine)?.requestKey, 'k2')
+  assert.equal(ownDraftKey(org, user, 'journal', mine), 'k2')
+
+  // Nothing at all: nothing shown, and a key naming a slot that is gone forgotten.
+  const stale = new FakeStorage()
+  rememberOwnDraft(org, user, 'dashboard', 'gone', stale)
+  assert.equal(loadDraftFor(org, user, 'dashboard', local, stale), null)
+  assert.equal(ownDraftKey(org, user, 'dashboard', stale), null)
+
+  // An older build's single slot: moved to the slot its key names, then removed.
+  local.setItem(draftKey(org, user, 'dashboard'),
+    JSON.stringify({ text: 'from the old build', requestKey: 'k9', kind: 'idea', occurredOn: '2026-09-20', updatedAt: '2026-09-23T08:00:00.000Z' }))
+  const migrated = loadDraftFor(org, user, 'dashboard', local, new FakeStorage())
+  assert.equal(migrated?.text, 'from the old build')
+  assert.equal(migrated?.requestKey, 'k9', 'with its key, so a save that landed still comes back as itself')
+  assert.equal(readDraftSlot(org, user, 'dashboard', 'k9', local)?.occurredOn, '2026-09-20')
+  assert.equal(local.getItem(draftKey(org, user, 'dashboard')), null, 'and the legacy key is gone')
+
+  // A legacy draft whose key is already taken by different words: both kept.
+  local.setItem(draftKey(org, user, 'prospect:a'), JSON.stringify({ text: 'old build words', requestKey: 'k7', kind: 'update' }))
+  writeDraftSlot(org, user, 'prospect:a', { text: 'new build words', requestKey: 'k7', kind: 'update', occurredOn: null }, local)
+  assert.deepEqual(listDrafts(org, user, 'prospect:a', local).map(d => d.text).sort(), ['new build words', 'old build words'])
+  assert.equal(readDraftSlot(org, user, 'prospect:a', 'k7', local)?.text, 'new build words', 'the slot is not written over')
+  assert.equal(local.getItem(draftKey(org, user, 'prospect:a')), null)
+
+  // A legacy draft already in its slot, word for word: only the legacy key goes.
+  writeDraftSlot(org, user, 'prospect:b', { text: 'same', requestKey: 'k8', kind: 'update', occurredOn: null }, local)
+  local.setItem(draftKey(org, user, 'prospect:b'), JSON.stringify({ text: 'same', requestKey: 'k8', kind: 'update', occurredOn: null }))
+  assert.equal(listDrafts(org, user, 'prospect:b', local).length, 1)
+  assert.equal(local.getItem(draftKey(org, user, 'prospect:b')), null,
+    'the legacy key itself is gone — listing alone would pass even if it stayed, since it is not a slot')
+
+  // A slot without a stamp (hand-edited, or an older build's) is the oldest,
+  // not the newest: a tab owning nothing must not be handed it over real words.
+  local.setItem(slotKey(org, user, 'prospect:c', 'unstamped'), JSON.stringify({ text: 'no stamp', requestKey: 'unstamped', kind: 'update' }))
+  writeDraftSlot(org, user, 'prospect:c',
+    { text: 'stamped', requestKey: 'stamped', kind: 'update', occurredOn: null, updatedAt: '2020-01-01T00:00:00.000Z' }, local)
+  assert.deepEqual(listDrafts(org, user, 'prospect:c', local).map(d => d.requestKey), ['stamped', 'unstamped'])
+  assert.equal(parseDraft(local.getItem(slotKey(org, user, 'prospect:c', 'unstamped')))?.updatedAt, '')
+})
+
+/**
+ * One origin's localStorage, shared by several tabs. A write fires `storage`
+ * in the OTHER tabs — as a browser does, on a later task, so the events queue
+ * here until `deliver()` — and only when the value actually changed. The
+ * clock gives every write its own `updatedAt`, so "newest" is unambiguous;
+ * `full` makes every write throw, as a quota does.
+ */
+class Origin {
+  readonly local = new FakeStorage()
+  readonly tabs: BrowserTab[] = []
+  full = false
+  private clock = Date.parse('2026-09-24T08:00:00.000Z')
+  private queue: Array<{ from: BrowserTab; key: string; oldValue: string | null; newValue: string | null }> = []
+
+  readonly now = (): string => {
+    this.clock += 1000
+    return new Date(this.clock).toISOString()
+  }
+
+  storageFor(tab: BrowserTab): DraftStorage {
+    const origin = this
+    const { local, queue } = this
+    return {
+      get length() { return local.length },
+      key: (index) => local.key(index),
+      getItem: (key) => local.getItem(key),
+      setItem: (key, value) => {
+        if (origin.full) throw new Error('QuotaExceededError')
+        const oldValue = local.getItem(key)
+        local.setItem(key, value)
+        if (oldValue !== value) queue.push({ from: tab, key, oldValue, newValue: value })
+      },
+      removeItem: (key) => {
+        const oldValue = local.getItem(key)
+        local.removeItem(key)
+        if (oldValue !== null) queue.push({ from: tab, key, oldValue, newValue: null })
+      },
+    }
+  }
+
+  deliver(): void {
+    for (let event = this.queue.shift(); event; event = this.queue.shift()) {
+      for (const tab of this.tabs) if (tab !== event.from) tab.hear(event)
+    }
+  }
+}
+
+/**
+ * A browser tab: its own sessionStorage, whether it has focus, and the REAL
+ * `DraftBox` of the composer on screen — lib/journal/draft-box.ts, the module
+ * JournalComposer.tsx calls, not a copy of it. Nothing here decides anything;
+ * it only routes the origin's `storage` events to the draft box, as the
+ * component's listener does, and names things for the assertions.
+ */
+class BrowserTab {
+  focused = false
+  draft!: DraftBox
+  /** Answers handed to the box on screen by one unmounted mid-save — what the
+   *  component's `listen` callback renders. */
+  readonly heard: HandedOver[] = []
+  readonly session: FakeStorage
+  private readonly local: DraftStorage
+
+  constructor(
+    private readonly origin: Origin,
+    private readonly org: string,
+    private readonly user: string,
+    session = new FakeStorage()
+  ) {
+    this.session = session
+    this.local = origin.storageFor(this)
+    origin.tabs.push(this)
+  }
+
+  /** The composer mounting on a surface — or the drawer swapping to one. */
+  mount(surface = 'journal'): this {
+    this.draft?.unmount()
+    this.draft = new DraftBox({
+      organizationId: this.org, userId: this.user, surface,
+      storage: this.local, session: this.session, now: this.origin.now,
+    })
+    this.draft.mount()
+    this.draft.listen((handedOver) => this.heard.push(handedOver))
+    return this
+  }
+
+  hear(event: { key: string; oldValue: string | null; newValue: string | null }): void {
+    this.draft.onStorage(event.key, event.oldValue, event.newValue, this.focused)
+  }
+
+  get box() {
+    return this.draft.box
+  }
+
+  type(text: string): this {
+    this.draft.change({ text })
+    return this
+  }
+
+  /** Save pressed; the answer is `settleOk(sent)` or `settleRefused(sent, refusal)`. */
+  press(options: { freshKey?: boolean } = {}): SaveSnapshot {
+    const start = this.draft.beginSave(options)
+    assert.ok(start, 'there was something to save')
+    return start.sent
+  }
+
+  slot(requestKey: string | null, surface = this.box.surface) {
+    return requestKey ? readDraftSlot(this.org, this.user, surface, requestKey, this.local) : null
+  }
+
+  own(surface = this.box.surface) {
+    return ownDraftKey(this.org, this.user, surface, this.session)
+  }
+
+  /** The tab closes: its composer unmounts, and it hears nothing more. */
+  close(): void {
+    this.draft.unmount()
+    this.origin.tabs.splice(this.origin.tabs.indexOf(this), 1)
+  }
+
+  /** A reload: the same sessionStorage, a new page. */
+  reload(surface = this.box.surface): BrowserTab {
+    this.close()
+    return new BrowserTab(this.origin, this.org, this.user, this.session).mount(surface)
+  }
+}
+
+/**
+ * The service's request-key contract, as the composer meets it: a key files
+ * its words once; the same key with the same words again is a replay of that
+ * entry; the same key with other words is `request_key_conflict`.
+ */
+class Service {
+  readonly entries = new Map<string, string>()
+
+  /** Save pressed in `tab`, answered, and the answer settled — as `save` does. */
+  save(tab: BrowserTab, options: { freshKey?: boolean } = {}): 'filed' | 'replayed' | 'request_key_conflict' {
+    const start = tab.draft.beginSave(options)
+    assert.ok(start, 'there was something to save')
+    const answer = this.answer(start.sent)
+    if (answer === 'request_key_conflict') tab.draft.settleRefused(start.sent, { error: answer, existing: null })
+    else tab.draft.settleOk(start.sent)
+    return answer
+  }
+
+  answer(sent: SaveSnapshot): 'filed' | 'replayed' | 'request_key_conflict' {
+    const words = sent.text.trim()
+    const filed = this.entries.get(sent.requestKey)
+    if (filed === undefined) {
+      this.entries.set(sent.requestKey, words)
+      return 'filed'
+    }
+    return filed === words ? 'replayed' : 'request_key_conflict'
+  }
+}
+
+test('Astra round 3, case 2 — divergent drafts in two tabs end in two slots, each tab owning its own', () => {
+  // The old model, replayed in words. Both tabs wrote ONE slot per surface,
+  // `khyte:journal-draft:<org>:<user>:journal`. When A wrote "X Z" over it,
+  // B's box held "X Y" — exactly the event's old value, since B had written
+  // it — and B was idle, so B adopted "X Z": "X Y" then existed nowhere, the
+  // listener having overwritten the last copy of B's words. Had B been
+  // focused instead, it would have kept "X Y" in memory alone, with storage
+  // holding "X Z", and B's reload would have come back with A's words.
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('X')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  assert.ok(k1)
+  assert.equal(a.own(), k1, 'the tab that minted the key owns it')
+
+  // B opens, owning nothing: it mirrors the newest draft, and owns it too.
+  const b = new BrowserTab(origin, org, user).mount()
+  assert.deepEqual([b.box.text, b.box.requestKey, b.box.typedHere], ['X', k1, false])
+  assert.equal(b.own(), k1)
+
+  // B types on. A, idle, sees words that carry its own on, and follows.
+  a.focused = false
+  b.focused = true
+  b.type('X Y')
+  origin.deliver()
+  assert.deepEqual([a.box.text, a.box.requestKey, a.box.typedHere], ['X Y', k1, true],
+    'A follows: nothing typed in A is lost, and what A typed is still the start of its box')
+
+  // A edits to "X Z" while B's "X Y" was typed in B. B's words do not carry
+  // on from A's, and they were typed there: B forks, and A keeps the key.
+  b.focused = false
+  a.focused = true
+  a.type('X Z')
+  origin.deliver()
+  assert.equal(a.box.text, 'X Z')
+  assert.equal(a.box.requestKey, k1)
+  assert.equal(b.box.text, 'X Y', 'B still shows its own words')
+  const k2 = b.box.requestKey
+  assert.ok(k2 && k2 !== k1, 'under a key of its own')
+  assert.equal(b.own(), k2)
+
+  assert.equal(a.slot(k1)?.text, 'X Z', 'both versions are in storage')
+  assert.equal(a.slot(k2)?.text, 'X Y')
+  assert.equal(listDrafts(org, user, 'journal', origin.local).length, 2)
+
+  // Reload each tab (same sessionStorage): each gets its own words back.
+  assert.equal(new BrowserTab(origin, org, user, a.session).mount().box.text, 'X Z')
+  assert.equal(new BrowserTab(origin, org, user, b.session).mount().box.text, 'X Y')
+  // A new tab owns nothing and takes the newest — B's fork was written last.
+  assert.equal(new BrowserTab(origin, org, user).mount().box.text, 'X Y')
+})
+
+test('the save flow settles slots by key: typed on, begun again, saved as new, saved elsewhere', () => {
+  const org = randomUUID(), user = randomUUID()
+
+  // One tab, typed on after Save (R1): the saved sentence leaves the box, the
+  // rest moves to a fresh key and slot, and the old slot — which the box's own
+  // keystrokes filled — goes with the words that left it.
+  {
+    const tab = new BrowserTab(new Origin(), org, user).mount()
+    tab.type('Called Elena')
+    const sent = tab.press()
+    tab.type('Called Elena. Budget locked in.')
+    tab.draft.settleOk(sent)
+    assert.equal(tab.box.text, 'Budget locked in.')
+    assert.ok(tab.box.requestKey && tab.box.requestKey !== sent.requestKey)
+    assert.equal(tab.box.typedHere, true, 'still typed here and unsaved: nothing may adopt over it')
+    assert.equal(tab.slot(sent.requestKey), null, 'no stale copy of the saved sentence is left to be offered again')
+    assert.equal(tab.slot(tab.box.requestKey)?.text, 'Budget locked in.')
+    assert.equal(tab.own(), tab.box.requestKey)
+  }
+
+  // Astra's case 1, through the wiring: emptied and begun again while the
+  // save was out. The new draft is whole, in the box and in its slot.
+  {
+    const tab = new BrowserTab(new Origin(), org, user).mount()
+    tab.type('Call Erik')
+    const sent = tab.press()
+    tab.type('')
+    assert.equal(tab.slot(sent.requestKey), null, 'emptying the box released its slot')
+    tab.type('Call Erik tomorrow')
+    const k2 = tab.box.requestKey
+    tab.draft.settleOk(sent)
+    assert.deepEqual([tab.box.text, tab.box.requestKey], ['Call Erik tomorrow', k2])
+    assert.equal(tab.slot(k2)?.text, 'Call Erik tomorrow', 'and storage was never cut down to "tomorrow"')
+    assert.equal(tab.own(), k2)
+  }
+
+  // Unchanged: box and slot cleared, ownership forgotten.
+  {
+    const tab = new BrowserTab(new Origin(), org, user).mount()
+    tab.type('Called Elena')
+    const sent = tab.press()
+    tab.draft.settleOk(sent)
+    assert.equal(tab.box.text, '')
+    assert.equal(tab.slot(sent.requestKey), null)
+    assert.equal(tab.own(), null)
+  }
+
+  // "Save as a new entry": the draft MOVES from the collided key to a fresh
+  // one before the await — written there, released here, remembered as own.
+  {
+    const tab = new BrowserTab(new Origin(), org, user).mount()
+    tab.type('edited afterwards')
+    const collided = tab.box.requestKey
+    const sent = tab.press({ freshKey: true })
+    assert.notEqual(sent.requestKey, collided)
+    assert.equal(tab.slot(collided), null, 'the old slot is gone')
+    assert.equal(tab.slot(sent.requestKey)?.text, 'edited afterwards', 'the words are in the new one before the answer')
+    assert.equal(tab.own(), sent.requestKey, 'and a reload finds them under the new key, not the one that collides')
+    tab.draft.settleOk(sent)
+    assert.equal(tab.slot(sent.requestKey), null)
+  }
+
+  // The drawer moved on mid-save: only the sent slot is settled. Unchanged, it
+  // goes; typed on before the switch, it stays under the sent key — its words
+  // were never saved, and saving them later meets the conflict strip.
+  // The answer goes to the draft box the save was pressed in, as the
+  // component's `save` closure sends it — not to the one on screen now.
+  {
+    const tab = new BrowserTab(new Origin(), org, user).mount('prospect:a')
+    tab.type('Called Elena')
+    const pressedIn = tab.draft
+    const sent = tab.press()
+    tab.mount('prospect:b')
+    tab.type('Words about prospect b')
+    assert.equal(pressedIn.settleOk(sent), null, 'a box that is gone shows nothing')
+    assert.equal(tab.slot(sent.requestKey, 'prospect:a'), null, 'saved as it was left: forgotten')
+    assert.equal(tab.box.text, 'Words about prospect b', 'and the box on screen is none of its business')
+
+    tab.mount('prospect:a')
+    tab.type('Called Elena')
+    const pressedAgain = tab.draft
+    const again = tab.press()
+    tab.type('Called Elena, and then some')
+    tab.mount('prospect:b')
+    assert.equal(pressedAgain.settleOk(again), null)
+    assert.equal(tab.box.text, 'Words about prospect b')
+    assert.equal(tab.slot(again.requestKey, 'prospect:a')?.text, 'Called Elena, and then some', 'typed on before switching: kept')
+    assert.equal(tab.mount('prospect:a').box.text, 'Called Elena, and then some', 'and offered back on return')
+  }
+
+  // Another tab typed on under the sent key while the save was out, and A
+  // took the words up. They are B's, not A's: A clears as saved and leaves
+  // them in B's slot, under the sent key, where B's own Save meets
+  // `request_key_conflict` and the strip. Round 5 kept them in A too, under a
+  // fresh key — the same words in two drafts, one filable without a question.
+  {
+    const origin = new Origin()
+    const a = new BrowserTab(origin, org, user).mount()
+    a.focused = true
+    a.type('Called Elena')
+    origin.deliver()
+    const b = new BrowserTab(origin, org, user).mount()
+    const sent = a.press()
+    a.focused = false
+    b.focused = true
+    b.type('Called Elena. B kept going.')
+    origin.deliver()
+    assert.equal(a.draft.settleOk(sent)?.status, 'saved')
+    origin.deliver()
+    assert.deepEqual([a.box.text, a.box.requestKey], ['', null], 'nothing of B’s is kept as A’s own')
+    assert.equal(a.own(), null)
+    assert.deepEqual([b.box.text, b.box.requestKey], ['Called Elena. B kept going.', sent.requestKey])
+    assert.equal(b.slot(sent.requestKey)?.text, 'Called Elena. B kept going.', 'B’s slot was never released')
+    assert.equal(listDrafts(org, user, 'journal', origin.local).length, 1, 'one draft, not two')
+  }
+})
+
+test('the invariant — a tab whose typed words another tab saves or empties keeps them', () => {
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('Words typed in A')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount()
+  assert.equal(b.box.text, 'Words typed in A', 'B mirrors them')
+
+  // B empties its box: a deliberate deletion — in B. A typed them, and keeps
+  // them, back in storage under their own key; B, having let that key go,
+  // stays empty instead of being refilled with them.
+  a.focused = false
+  b.focused = true
+  b.type('')
+  origin.deliver()
+  assert.equal(a.box.text, 'Words typed in A')
+  assert.equal(a.box.requestKey, k1)
+  assert.equal(a.slot(k1)?.text, 'Words typed in A', 'and they are back in storage')
+  assert.equal(b.box.text, '', 'B stays empty')
+  assert.equal(b.box.requestKey, null)
+
+  // A mirror that nobody typed in follows its owner out.
+  const c = new BrowserTab(origin, org, user).mount()
+  assert.equal(c.box.requestKey, a.box.requestKey)
+  c.focused = false
+  a.focused = true
+  const sent = a.press()
+  a.draft.settleOk(sent)
+  origin.deliver()
+  assert.equal(a.box.text, '')
+  assert.equal(c.box.text, '', 'a mirror of a draft its owner saved empties with it')
+})
+
+test('a saved or emptied mirror stays gone: the typing tab keeps its key, the other tab stays empty', () => {
+  const org = randomUUID(), user = randomUUID()
+
+  // B saves its mirror of A's words. Round 3 forked A to a key the server had
+  // never seen, and B — empty — adopted that key and showed the words again:
+  // every later Save in either tab filed an identical entry.
+  {
+    const origin = new Origin()
+    const a = new BrowserTab(origin, org, user).mount()
+    a.focused = true
+    a.type('Call Erik')
+    origin.deliver()
+    const k1 = a.box.requestKey
+    const b = new BrowserTab(origin, org, user).mount()
+    a.focused = false
+    b.focused = true
+    const sent = b.press()
+    assert.equal(sent.requestKey, k1)
+    assert.equal(b.draft.settleOk(sent)?.status, 'saved')
+    origin.deliver()
+    assert.deepEqual([b.box.text, b.box.requestKey], ['', null], 'B clears, says Saved, and stays clear')
+    assert.deepEqual([a.box.text, a.box.requestKey], ['Call Erik', k1], 'A keeps its words, under the key the entry was filed with')
+    assert.equal(a.slot(k1)?.text, 'Call Erik')
+
+    // A's next Save sends that same key: the service replays the filed entry.
+    b.focused = false
+    a.focused = true
+    const again = a.press()
+    assert.equal(again.requestKey, k1, 'a key the server has seen — replayed, never filed twice')
+    assert.equal(a.draft.settleOk(again)?.status, 'saved')
+    origin.deliver()
+    assert.equal(a.box.text, '')
+    assert.equal(b.box.text, '', 'and B is still empty')
+    assert.equal(listDrafts(org, user, 'journal', origin.local).length, 0, 'nothing left to offer anybody')
+  }
+
+  // B empties its mirror of A's words: B stays empty, however A carries on.
+  {
+    const origin = new Origin()
+    const a = new BrowserTab(origin, org, user).mount()
+    a.focused = true
+    a.type('Call Erik')
+    origin.deliver()
+    const k1 = a.box.requestKey
+    const b = new BrowserTab(origin, org, user).mount()
+    a.focused = false
+    b.focused = true
+    b.type('')
+    origin.deliver()
+    assert.deepEqual([a.box.text, a.box.requestKey], ['Call Erik', k1], 'A keeps its words and its key')
+    assert.equal(a.slot(k1)?.text, 'Call Erik')
+    assert.equal(b.box.text, '', 'B is not refilled')
+    b.focused = false
+    a.focused = true
+    a.type('Call Erik tomorrow')
+    origin.deliver()
+    assert.equal(b.box.text, '', 'not even as A types on under that key')
+  }
+})
+
+test('a full stop or a space typed after Save does not leave the saved sentence in storage', () => {
+  for (const tail of ['.', '. ', ',', ' .']) {
+    const tab = new BrowserTab(new Origin(), randomUUID(), randomUUID()).mount()
+    tab.type('Called Elena')
+    const sent = tab.press()
+    tab.type(`Called Elena${tail}`)
+    assert.equal(tab.draft.settleOk(sent)?.status, 'saved', `tail ${JSON.stringify(tail)} belongs to the saved sentence`)
+    assert.equal(tab.box.text, '')
+    assert.equal(tab.slot(sent.requestKey), null, `tail ${JSON.stringify(tail)}: the box's slot goes with it`)
+    assert.equal(tab.own(), null)
+    assert.equal(tab.mount().box.text, '', 'a reload brings nothing back')
+  }
+})
+
+test('a fork during this tab’s own save settles as the draft that was sent', () => {
+  const org = randomUUID(), user = randomUUID()
+  const setUp = () => {
+    const origin = new Origin()
+    const a = new BrowserTab(origin, org, user).mount()
+    a.focused = true
+    a.type('Called Elena')
+    origin.deliver()
+    const k1 = a.box.requestKey
+    const b = new BrowserTab(origin, org, user).mount()
+    const sent = a.press()
+    // While A's save is out, B writes different words under the same key.
+    a.focused = false
+    b.focused = true
+    b.type('Called Erik instead')
+    origin.deliver()
+    assert.equal(a.box.text, 'Called Elena')
+    assert.notEqual(a.box.requestKey, k1, 'A forked')
+    return { origin, a, b, k1, k2: a.box.requestKey, sent }
+  }
+
+  // Unchanged: the forked words ARE the sent words. Saved and cleared — not
+  // "kept newer" with a copy left for the next Save to file twice.
+  {
+    const { origin, a, b, k1, k2, sent } = setUp()
+    assert.equal(a.draft.settleOk(sent)?.status, 'saved')
+    origin.deliver()
+    assert.equal(a.box.text, '')
+    assert.equal(a.slot(k2), null, 'the fork’s slot goes with them')
+    assert.equal(a.own(), null)
+    assert.equal(b.slot(k1)?.text, 'Called Erik instead', 'B’s words under the old key are B’s, and stay')
+    assert.equal(b.box.text, 'Called Erik instead')
+  }
+
+  // Typed on after the fork: the sent sentence leaves, the rest moves on from
+  // the fork's slot to a key of its own.
+  {
+    const { origin, a, k2, sent } = setUp()
+    a.focused = true
+    a.type('Called Elena. Budget locked in.')
+    assert.equal(a.draft.settleOk(sent)?.status, 'savedKeptNewer')
+    origin.deliver()
+    assert.equal(a.box.text, 'Budget locked in.')
+    assert.equal(a.slot(k2), null)
+    assert.equal(a.slot(a.box.requestKey)?.text, 'Budget locked in.')
+  }
+})
+
+test('a box that takes up words continuing its own still counts them as typed here', () => {
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('X')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount()
+  a.focused = false
+  b.focused = true
+  b.type('X Y')
+  origin.deliver()
+  assert.deepEqual([a.box.text, a.box.typedHere], ['X Y', true], 'the "X" typed in A is still in its box')
+  assert.equal(a.box.typedText, 'X', 'what A answers for is what A typed')
+
+  // B now empties its box. A's "X" is inside "X Y": A writes it all back
+  // rather than emptying — the words it typed are not B's to delete.
+  b.type('')
+  origin.deliver()
+  assert.equal(a.box.text, 'X Y')
+  assert.equal(a.slot(k1)?.text, 'X Y')
+  assert.equal(b.box.text, '')
+  assert.equal(a.box.typedText, 'X Y', 'written back, the whole box is A’s to answer for')
+})
+
+test('a draft moves to a new key only once its new slot is written', () => {
+  const org = randomUUID(), user = randomUUID()
+  const draft = { text: 'x', requestKey: 'k', kind: 'update' as const, occurredOn: null }
+  assert.equal(writeDraftSlot(org, user, 'journal', draft, new FakeStorage()), true)
+  assert.equal(writeDraftSlot(org, user, 'journal', draft, hostileStorage), false, 'a refused write says so')
+
+  // "Save as a new entry" while storage is full: the old slot is the only
+  // stored copy of the words, and stays.
+  {
+    const origin = new Origin()
+    const tab = new BrowserTab(origin, org, user).mount()
+    tab.type('edited afterwards')
+    const collided = tab.box.requestKey
+    origin.full = true
+    const sent = tab.press({ freshKey: true })
+    origin.full = false
+    assert.notEqual(sent.requestKey, collided)
+    assert.equal(tab.slot(sent.requestKey), null, 'the new slot could not be written')
+    assert.equal(tab.slot(collided)?.text, 'edited afterwards', 'so the old one was not released')
+  }
+
+  // Typed on after Save, and the remainder's new slot cannot be written: the
+  // old slot, holding every word, stays.
+  {
+    const origin = new Origin()
+    const tab = new BrowserTab(origin, org, user).mount()
+    tab.type('Called Elena')
+    const sent = tab.press()
+    tab.type('Called Elena. More')
+    origin.full = true
+    assert.equal(tab.draft.settleOk(sent)?.status, 'savedKeptNewer')
+    origin.full = false
+    assert.equal(tab.box.text, 'More')
+    assert.equal(tab.slot(tab.box.requestKey), null)
+    assert.equal(tab.slot(sent.requestKey)?.text, 'Called Elena. More', 'nothing released while nothing replaced it')
+  }
+})
+
+test('an answer reaching an unmounted draft box goes to the box on screen that holds the sent draft, or settles only its slots', () => {
+  const org = randomUUID(), user = randomUUID()
+
+  // The drawer went away and came back to the same prospect mid-save, and the
+  // writer typed on. The box now on screen holds the sent draft: it settles
+  // the answer — the sentence leaves, the rest stays under a key of its own,
+  // "savedKeptNewer" — as 8082ed0 did, instead of leaving the words typed
+  // after the return to meet the conflict strip.
+  {
+    const origin = new Origin()
+    const tab = new BrowserTab(origin, org, user).mount('prospect:a')
+    tab.type('Called Elena')
+    const gone = tab.draft
+    const sent = tab.press()
+    assert.equal(gone.beginSave(), null, 'one save at a time')
+    tab.type('Called Elena. More')
+    tab.mount('prospect:b')
+    tab.mount('prospect:a')
+    assert.equal(tab.box.text, 'Called Elena. More', 'the new box finds the words')
+    tab.type('Called Elena. More, still')
+
+    assert.equal(gone.settleOk(sent), null, 'nothing for the gone box itself to show')
+    assert.deepEqual(tab.heard, [{ saved: { view: { text: 'More, still', kind: 'update', occurredOn: '' }, status: 'savedKeptNewer' } }],
+      'the box on screen announces it')
+    assert.equal(tab.box.text, 'More, still')
+    assert.notEqual(tab.box.requestKey, sent.requestKey)
+    assert.equal(tab.slot(sent.requestKey), null, 'no copy of the saved sentence under its used key')
+    assert.equal(tab.slot(tab.box.requestKey)?.text, 'More, still')
+    assert.equal(tab.own(), tab.box.requestKey)
+  }
+
+  // The box on screen holds another draft (emptied and begun again): nothing
+  // is handed over, and the owner key stays the live box's.
+  {
+    const origin = new Origin()
+    const tab = new BrowserTab(origin, org, user).mount()
+    tab.type('Called Elena')
+    const gone = tab.draft
+    const sent = tab.press()
+    tab.mount()
+    tab.type('')
+    tab.type('Something else')
+    const own = tab.own()
+    assert.equal(gone.settleOk(sent), null)
+    assert.deepEqual(tab.heard, [])
+    assert.equal(tab.box.text, 'Something else')
+    assert.equal(tab.own(), own)
+    assert.equal(listDrafts(org, user, 'journal', origin.local).length, 1, 'no slot written by the gone box')
+  }
+
+  // Saved as it was left: the gone box still releases the sent slot, and
+  // leaves ownership alone — it is not the gone box's to forget.
+  {
+    const tab = new BrowserTab(new Origin(), org, user).mount()
+    tab.type('Saved as it was left')
+    const gone = tab.draft
+    const sent = tab.press()
+    gone.unmount()
+    assert.equal(gone.settleOk(sent), null)
+    assert.equal(tab.slot(sent.requestKey), null)
+    assert.equal(tab.own(), sent.requestKey)
+    assert.equal(gone.settleRefused(sent, { error: 'boom', existing: null }), false, 'a refusal is not said over a box that is gone either')
+  }
+})
+
+test('a backspace in the other tab never forks the words typed here', () => {
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('Call')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount()
+  a.focused = false
+  b.focused = true
+  for (const text of ['Call E', 'Call Er', 'Call Eri', 'Call Erik', 'Call Eri', 'Call Erik']) {
+    b.type(text)
+    origin.deliver()
+    assert.deepEqual([a.box.text, a.box.requestKey], [text, k1], `A follows "${text}" on the same key`)
+  }
+  assert.equal(listDrafts(org, user, 'journal', origin.local).length, 1, 'one draft, never forked')
+})
+
+test('a fork keeps its link to the key its words left: a Save replays, files once, or meets the strip', () => {
+  const org = randomUUID(), user = randomUUID()
+  // A types "Call"; B takes it on to "Call Erik", then rewrites it as "Meet
+  // Erik", which does not carry A's words on: A forks "Call Erik" to K2.
+  const setUp = () => {
+    const origin = new Origin()
+    const service = new Service()
+    const a = new BrowserTab(origin, org, user).mount()
+    a.focused = true
+    a.type('Call')
+    origin.deliver()
+    const k1 = a.box.requestKey!
+    const b = new BrowserTab(origin, org, user).mount()
+    a.focused = false
+    b.focused = true
+    b.type('Call Erik')
+    origin.deliver()
+    b.type('Meet Erik')
+    origin.deliver()
+    assert.equal(a.box.text, 'Call Erik')
+    assert.notEqual(a.box.requestKey, k1, 'A forked')
+    return { origin, service, a, b, k1, k2: a.box.requestKey! }
+  }
+
+  // B goes back to "Call Erik" and files it under K1. A's Save of the same
+  // words sends K1, not K2: the entry is replayed, and there is one.
+  {
+    const { origin, service, a, b, k1, k2 } = setUp()
+    b.type('Call Erik')
+    origin.deliver()
+    assert.equal(service.save(b), 'filed')
+    origin.deliver()
+    assert.equal(service.save(a), 'replayed', 'sent under the key the words left')
+    assert.equal(service.entries.size, 1, 'one entry, not two')
+    assert.equal(a.box.text, '')
+    assert.equal(a.slot(k2), null, 'the fork slot goes with the words')
+    assert.equal(a.slot(k1), null)
+  }
+
+  // B files different words under K1: A's Save meets the conflict strip, and
+  // "save as a new entry" then files A's words — deliberately — once.
+  {
+    const { origin, service, a, b } = setUp()
+    assert.equal(service.save(b), 'filed')
+    origin.deliver()
+    assert.equal(service.save(a), 'request_key_conflict', 'never a silent second entry')
+    assert.equal(a.box.text, 'Call Erik', 'the words stay for the strip')
+    assert.equal(service.save(a, { freshKey: true }), 'filed')
+    assert.deepEqual([...service.entries.values()].sort(), ['Call Erik', 'Meet Erik'])
+  }
+
+  // Nobody filed K1 yet: A files its words under it, and B's different words
+  // under K1 then meet B's strip.
+  {
+    const { service, a, b, k1 } = setUp()
+    assert.equal(service.save(a), 'filed')
+    assert.equal(service.entries.get(k1), 'Call Erik')
+    assert.equal(service.save(b), 'request_key_conflict')
+    assert.equal(service.entries.size, 1)
+  }
+})
+
+test('a box unmounted after a fork in flight releases the fork slot holding the saved words', () => {
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount('prospect:a')
+  a.focused = true
+  a.type('Called Elena')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount('prospect:a')
+  const pressedIn = a.draft
+  const sent = a.press()
+  a.focused = false
+  b.focused = true
+  b.type('Called Erik instead')
+  origin.deliver()
+  const k2 = a.box.requestKey
+  assert.notEqual(k2, k1, 'A forked while its save was out')
+
+  a.mount('prospect:b')
+  assert.equal(pressedIn.settleOk(sent), null)
+  assert.equal(a.slot(k2, 'prospect:a'), null, 'the saved words are not left under a key the server never saw')
+  assert.equal(a.own('prospect:a'), null, 'nor is that key left as this tab’s own')
+  assert.equal(b.slot(k1, 'prospect:a')?.text, 'Called Erik instead', 'B’s words stay')
+})
+
+test('a Retry after a lost answer and a fork goes back to the key the words may be filed under', () => {
+  const origin = new Origin()
+  const service = new Service()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('Call Erik')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount()
+
+  // The write lands; the answer is lost.
+  const start = a.draft.beginSave()
+  assert.ok(start)
+  assert.equal(service.answer(start.sent), 'filed')
+  assert.equal(a.draft.settleRefused(start.sent, { error: 'Failed to fetch', existing: null }), true)
+
+  // B writes other words under the key: A forks.
+  a.focused = false
+  b.focused = true
+  b.type('Meet Erik')
+  origin.deliver()
+  assert.notEqual(a.box.requestKey, k1)
+
+  // Retry: sent under K1 again, and replayed — one entry.
+  a.focused = true
+  b.focused = false
+  assert.equal(service.save(a), 'replayed')
+  assert.equal(service.entries.size, 1)
+  assert.equal(a.box.text, '')
+
+  // The other order: forked first, then a Save under the fork's old key whose
+  // answer is lost. The refusal keeps the fork record, so the Retry goes back
+  // to that key too.
+  {
+    const origin2 = new Origin()
+    const service2 = new Service()
+    const c = new BrowserTab(origin2, org, user).mount()
+    c.focused = true
+    c.type('Call Erik')
+    origin2.deliver()
+    const d = new BrowserTab(origin2, org, user).mount()
+    c.focused = false
+    d.focused = true
+    d.type('Meet Erik')
+    origin2.deliver()
+    const lost = c.draft.beginSave()
+    assert.ok(lost)
+    assert.equal(service2.answer(lost.sent), 'filed')
+    assert.equal(c.draft.settleRefused(lost.sent, { error: 'Failed to fetch', existing: null }), true)
+    assert.equal(service2.save(c), 'replayed', 'the Retry is the same entry')
+    assert.equal(service2.entries.size, 1)
+  }
+})
+
+test('a reload keeps the words typed here as typed: another tab emptying them restores rather than empties', () => {
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+  let a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('Words typed in A')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  a = a.reload()
+  assert.deepEqual([a.box.text, a.box.requestKey, a.box.typedHere], ['Words typed in A', k1, true])
+
+  const b = new BrowserTab(origin, org, user).mount()
+  assert.equal(b.box.typedHere, false, 'a new tab is a mirror')
+  a.focused = false
+  b.focused = true
+  b.type('')
+  origin.deliver()
+  assert.equal(a.box.text, 'Words typed in A')
+  assert.equal(a.slot(k1)?.text, 'Words typed in A', 'written back')
+  assert.equal(b.box.text, '', 'and the tab that emptied them stays empty')
+})
+
+test('the fork origin travels with the words: a reload, or another tab mirroring the fork slot, saves under it', () => {
+  const org = randomUUID(), user = randomUUID()
+  // A types "Call"; B takes it on to "Call Erik", then rewrites it as "Meet
+  // Erik": A forks "Call Erik" to K2, and K2's slot names K1 as its origin.
+  const setUp = () => {
+    const origin = new Origin()
+    const service = new Service()
+    const a = new BrowserTab(origin, org, user).mount()
+    a.focused = true
+    a.type('Call')
+    origin.deliver()
+    const k1 = a.box.requestKey!
+    const b = new BrowserTab(origin, org, user).mount()
+    a.focused = false
+    b.focused = true
+    b.type('Call Erik')
+    origin.deliver()
+    b.type('Meet Erik')
+    origin.deliver()
+    const k2 = a.box.requestKey!
+    assert.notEqual(k2, k1)
+    assert.equal(a.slot(k2)?.forkedFrom, k1, 'the fork slot carries its origin')
+    return { origin, service, a, b, k1, k2 }
+  }
+
+  // A reloads, then B files "Call Erik" under K1: A's Save replays it.
+  {
+    const { origin, service, a: before, b } = setUp()
+    const a = before.reload()
+    assert.equal(a.box.text, 'Call Erik')
+    b.type('Call Erik')
+    origin.deliver()
+    assert.equal(service.save(b), 'filed')
+    origin.deliver()
+    assert.equal(service.save(a), 'replayed', 'the reloaded tab sends the origin, not K2')
+    assert.equal(service.entries.size, 1)
+  }
+
+  // A new tab C mirrors the fork slot and saves it: under the origin, K1.
+  // A, whose slot that removed, writes its words back — and its own Save is
+  // then the same entry, replayed.
+  {
+    const { origin, service, a, b, k1, k2 } = setUp()
+    const c = new BrowserTab(origin, org, user).mount()
+    assert.deepEqual([c.box.text, c.box.requestKey], ['Call Erik', k2], 'C mirrors the newest slot, the fork')
+    a.focused = false
+    b.focused = false
+    c.focused = true
+    assert.equal(service.save(c), 'filed')
+    assert.equal(service.entries.get(k1), 'Call Erik', 'filed under the origin')
+    origin.deliver()
+    assert.equal(a.slot(k2)?.text, 'Call Erik', 'A restored its words')
+    assert.equal(service.save(a), 'replayed')
+    assert.equal(service.entries.size, 1, 'one entry')
+    assert.equal(service.save(b), 'request_key_conflict', 'and B’s different words under K1 meet B’s strip')
+  }
+
+  // C is open BEFORE the fork, and empty: it mirrored K1 and let it go. It
+  // can learn the fork's origin only from storage events — the fork's write,
+  // then A's keystroke — never from a mount.
+  {
+    const origin = new Origin()
+    const a = new BrowserTab(origin, org, user).mount()
+    a.focused = true
+    a.type('Call')
+    origin.deliver()
+    const k1 = a.box.requestKey
+    const c = new BrowserTab(origin, org, user).mount()
+    a.focused = false
+    c.focused = true
+    c.type('')
+    origin.deliver()
+    const b = new BrowserTab(origin, org, user).mount()
+    c.focused = false
+    b.focused = true
+    b.type('Call Erik')
+    origin.deliver()
+    assert.equal(c.box.text, '', 'C stays empty: it let K1 go')
+    b.type('Meet Erik')
+    origin.deliver()
+    const k2 = a.box.requestKey
+    assert.notEqual(k2, k1, 'A forked')
+    b.focused = false
+    a.focused = true
+    a.type('Call Erik!')
+    origin.deliver()
+    assert.deepEqual([c.box.text, c.box.requestKey], ['Call Erik!', k2], 'C took up the fork slot through the events')
+    assert.equal(c.draft.beginSave()?.key, k1, 'and saves under the origin')
+  }
+})
+
+test('every Save of forked words goes to the origin: edited after a lost answer, it meets the strip', () => {
+  const origin = new Origin()
+  const service = new Service()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('Call Erik')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount()
+
+  const lost = a.draft.beginSave()
+  assert.ok(lost)
+  assert.equal(service.answer(lost.sent), 'filed')
+  a.draft.settleRefused(lost.sent, { error: 'Failed to fetch', existing: null })
+
+  a.focused = false
+  b.focused = true
+  b.type('Meet Erik')
+  origin.deliver()
+  assert.notEqual(a.box.requestKey, k1, 'A forked')
+
+  // A adds a full stop. Sent under the fork's own key, that was a second,
+  // silent filing of "Call Erik."; sent under the origin, it is a question.
+  b.focused = false
+  a.focused = true
+  a.type('Call Erik.')
+  assert.equal(service.save(a), 'request_key_conflict')
+  assert.equal(service.entries.size, 1)
+  assert.equal(a.box.text, 'Call Erik.', 'the words stay for the strip')
+})
+
+test('a fork in flight, then the drawer away and back: the box on screen holding the fork hears Saved', () => {
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount('prospect:a')
+  a.focused = true
+  a.type('Called Elena')
+  origin.deliver()
+  const b = new BrowserTab(origin, org, user).mount('prospect:a')
+  const pressedIn = a.draft
+  const sent = a.press()
+  a.focused = false
+  b.focused = true
+  b.type('Called Erik instead')
+  origin.deliver()
+  const k2 = a.box.requestKey
+  assert.notEqual(k2, sent.requestKey, 'A forked while its save was out')
+
+  a.mount('prospect:b')
+  a.mount('prospect:a')
+  assert.deepEqual([a.box.text, a.box.requestKey], ['Called Elena', k2], 'the returned box holds the fork')
+  assert.equal(pressedIn.settleOk(sent), null)
+  assert.deepEqual(a.heard, [{ saved: { view: { text: '', kind: 'update', occurredOn: '' }, status: 'saved' } }])
+  assert.equal(a.box.text, '', 'and holds nothing')
+  assert.equal(a.slot(k2, 'prospect:a'), null)
+  assert.equal(b.slot(sent.requestKey, 'prospect:a')?.text, 'Called Erik instead')
+})
+
+test('a Save sent through the fork origin, a second fork mid-flight, then the answer: Saved, and an empty box', () => {
+  const origin = new Origin()
+  const service = new Service()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('Call')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount()
+  a.focused = false
+  b.focused = true
+  b.type('Call Erik')
+  origin.deliver()
+  b.type('Meet Erik')
+  origin.deliver()
+  const k2 = a.box.requestKey
+  const c = new BrowserTab(origin, org, user).mount()
+  assert.equal(c.box.requestKey, k2, 'C mirrors the fork slot')
+
+  const start = a.draft.beginSave()
+  assert.ok(start)
+  assert.equal(start.key, k1, 'sent through the fork origin')
+
+  // C rewrites the fork slot while that save is out: A forks again.
+  b.focused = false
+  c.focused = true
+  c.type('Something else')
+  origin.deliver()
+  const k3 = a.box.requestKey
+  assert.ok(k3 !== k1 && k3 !== k2)
+  assert.equal(a.slot(k3)?.forkedFrom, k1, 'a second fork keeps the FIRST origin')
+
+  assert.equal(service.answer(start.sent), 'filed')
+  assert.deepEqual(a.draft.settleOk(start.sent), { view: { text: '', kind: 'update', occurredOn: '' }, status: 'saved' })
+  assert.equal(a.slot(k3), null)
+})
+
+test('a refusal after the drawer went away and back reaches the box on screen: the error with Retry, or the strip', () => {
+  const org = randomUUID(), user = randomUUID()
+  const awayAndBack = () => {
+    const tab = new BrowserTab(new Origin(), org, user).mount('prospect:a')
+    tab.type('Called Elena')
+    const pressedIn = tab.draft
+    const sent = tab.press()
+    tab.mount('prospect:b')
+    tab.mount('prospect:a')
+    return { tab, pressedIn, sent }
+  }
+
+  // An error: heard by the box on screen, which can Retry — same key.
+  {
+    const { tab, pressedIn, sent } = awayAndBack()
+    assert.equal(pressedIn.settleRefused(sent, { error: 'Failed to fetch', existing: null }), false)
+    assert.deepEqual(tab.heard, [{ refused: { error: 'Failed to fetch', existing: null } }])
+    const retry = tab.draft.beginSave()
+    assert.equal(retry?.key, sent.requestKey, 'Retry sends the same key: a save that did land comes back as itself')
+  }
+
+  // A conflict: the strip, with the entry the key already produced.
+  {
+    const { tab, pressedIn, sent } = awayAndBack()
+    const existing = entryFor(randomUUID(), 'Called Elena, first version')
+    pressedIn.settleRefused(sent, { error: 'request_key_conflict', existing })
+    assert.deepEqual(tab.heard, [{ refused: { error: 'request_key_conflict', existing } }])
+  }
+
+  // Still away: nothing is said over another prospect's box.
+  {
+    const tab = new BrowserTab(new Origin(), org, user).mount('prospect:a')
+    tab.type('Called Elena')
+    const pressedIn = tab.draft
+    const sent = tab.press()
+    tab.mount('prospect:b')
+    pressedIn.settleRefused(sent, { error: 'Failed to fetch', existing: null })
+    assert.deepEqual(tab.heard, [])
+  }
+
+  // Back, but the slot now holds another tab's words: the refusal is not
+  // said over them either.
+  {
+    const origin = new Origin()
+    const tab = new BrowserTab(origin, org, user).mount('prospect:a')
+    tab.focused = true
+    tab.type('Called Elena')
+    origin.deliver()
+    const other = new BrowserTab(origin, org, user).mount('prospect:a')
+    const pressedIn = tab.draft
+    const sent = tab.press()
+    tab.mount('prospect:b')
+    tab.focused = false
+    other.focused = true
+    other.type('Meeting with Bob')
+    origin.deliver()
+    tab.mount('prospect:a')
+    assert.equal(tab.box.text, 'Meeting with Bob')
+    assert.equal(pressedIn.settleRefused(sent, { error: 'Failed to fetch', existing: null }), false)
+    assert.deepEqual(tab.heard, [], 'no error line over words this save never sent')
+  }
+})
+
+test('an answer is not handed to a returned box whose slot another tab rewrote while it was away', () => {
+  const origin = new Origin()
+  const org = randomUUID(), user = randomUUID()
+  const a = new BrowserTab(origin, org, user).mount('prospect:a')
+  a.focused = true
+  a.type('Called Elena')
+  origin.deliver()
+  const k1 = a.box.requestKey
+  const b = new BrowserTab(origin, org, user).mount('prospect:a')
+  const pressedIn = a.draft
+  const sent = a.press()
+  a.mount('prospect:b')
+  a.focused = false
+  b.focused = true
+  b.type('Meeting with Bob')
+  origin.deliver()
+
+  a.mount('prospect:a')
+  assert.deepEqual([a.box.text, a.box.requestKey], ['Meeting with Bob', k1])
+  assert.equal(a.box.typedHere, false, 'B’s words, not A’s: a mirror')
+  assert.equal(pressedIn.settleOk(sent), null)
+  assert.deepEqual(a.heard, [], 'not taken for this tab’s own edit of the sent draft')
+  assert.deepEqual([a.box.text, a.box.requestKey], ['Meeting with Bob', k1], 'the box on screen is untouched')
+  assert.equal(b.slot(k1, 'prospect:a')?.text, 'Meeting with Bob', 'B’s words stay under their key')
+  assert.equal(listDrafts(org, user, 'prospect:a', origin.local).length, 1, 'one slot, not two')
+})
+
+test('the owner record keeps the typed words: a slot that no longer carries them loads as a mirror', () => {
+  const org = randomUUID(), user = randomUUID()
+  const local = new FakeStorage(), session = new FakeStorage()
+  const load = () => {
+    const box = new DraftBox({ organizationId: org, userId: user, surface: 'journal', storage: local, session })
+    box.mount()
+    return box.box
+  }
+  rememberOwnDraft(org, user, 'journal', 'k1', session, 'Called Elena')
+  assert.deepEqual(ownDraft(org, user, 'journal', session), { requestKey: 'k1', typedText: 'Called Elena' })
+
+  writeDraftSlot(org, user, 'journal', { text: 'Meeting with Bob', requestKey: 'k1', kind: 'update', occurredOn: null }, local)
+  assert.deepEqual([load().typedHere, load().typedText], [false, ''], 'other words under the key: a mirror')
+
+  writeDraftSlot(org, user, 'journal', { text: 'Called Elena, and more', requestKey: 'k1', kind: 'update', occurredOn: null }, local)
+  rememberOwnDraft(org, user, 'journal', 'k1', session, 'Called Elena')
+  assert.deepEqual([load().typedHere, load().typedText], [true, 'Called Elena'], 'words carrying them on: still typed here')
+
+  session.setItem(`khyte:journal-draft-owner:${org}:${user}:journal`, 'k1')
+  assert.deepEqual(ownDraft(org, user, 'journal', session), { requestKey: 'k1', typedText: '' }, 'a bare key from an earlier build')
+  assert.equal(load().typedHere, false)
+})
+
+/** A types "Call"; B takes it on to "Call Erik", then rewrites it as "Meet
+ *  Erik": A forks "Call Erik" from K1 to K2. */
+const forked = (org: string, user: string) => {
+  const origin = new Origin()
+  const service = new Service()
+  const a = new BrowserTab(origin, org, user).mount()
+  a.focused = true
+  a.type('Call')
+  origin.deliver()
+  const k1 = a.box.requestKey!
+  const b = new BrowserTab(origin, org, user).mount()
+  a.focused = false
+  b.focused = true
+  b.type('Call Erik')
+  origin.deliver()
+  b.type('Meet Erik')
+  origin.deliver()
+  b.focused = false
+  a.focused = true
+  return { origin, service, a, b, k1, k2: a.box.requestKey! }
+}
+
+test('the fork origin is dropped when its words are filed, emptied, moved on, or saved as new', () => {
+  const org = randomUUID(), user = randomUUID()
+
+  // Filed: the next sentence goes under its own key.
+  {
+    const { service, a, k1 } = forked(org, user)
+    assert.equal(service.save(a), 'filed')
+    a.type('A new sentence')
+    assert.equal(a.draft.beginSave()?.key, a.box.requestKey)
+    assert.notEqual(a.box.requestKey, k1)
+  }
+  // Emptied: likewise.
+  {
+    const { a, k1 } = forked(org, user)
+    a.type('')
+    a.type('A new sentence')
+    const key = a.draft.beginSave()?.key
+    assert.equal(key, a.box.requestKey)
+    assert.notEqual(key, k1)
+  }
+  // Moved on: the remainder of an origin save goes under its own key.
+  {
+    const { service, a, k1 } = forked(org, user)
+    const start = a.draft.beginSave()
+    assert.equal(start?.key, k1)
+    a.type('Call Erik. More')
+    assert.equal(service.answer(start!.sent), 'filed')
+    assert.equal(a.draft.settleOk(start!.sent)?.status, 'savedKeptNewer')
+    assert.equal(a.box.text, 'More')
+    assert.equal(a.draft.beginSave()?.key, a.box.requestKey)
+  }
+  // Saved as new, answer lost: the Retry sends the new entry's key, and replays.
+  {
+    const { service, a, b, k2 } = forked(org, user)
+    assert.equal(service.save(b), 'filed')
+    assert.equal(service.save(a), 'request_key_conflict')
+    const lost = a.draft.beginSave({ freshKey: true })
+    assert.equal(lost?.key, k2)
+    assert.equal(service.answer(lost!.sent), 'filed')
+    a.draft.settleRefused(lost!.sent, { error: 'Failed to fetch', existing: null })
+    const retry = a.draft.beginSave()
+    assert.equal(retry?.key, k2, 'not the origin again')
+    assert.equal(service.answer(retry!.sent), 'replayed')
+  }
+})
+
+test('"save as a new entry" on forked words shared by two tabs files them once', () => {
+  const org = randomUUID(), user = randomUUID()
+  const { origin, service, a, b, k2 } = forked(org, user)
+  // C takes up the fork slot and types into it too: both hold "Call Erik",
+  // typed, with the origin K1.
+  const c = new BrowserTab(origin, org, user).mount()
+  a.focused = false
+  c.focused = true
+  c.type('Call Erik ')
+  origin.deliver()
+  c.type('Call Erik')
+  origin.deliver()
+  assert.deepEqual([a.box.text, a.box.requestKey, c.box.requestKey], ['Call Erik', k2, k2])
+
+  assert.equal(service.save(b), 'filed', 'B files "Meet Erik" under the origin')
+  assert.equal(service.save(c), 'request_key_conflict')
+  assert.equal(service.save(c, { freshKey: true }), 'filed', 'C files "Call Erik" — under the shared fork key')
+  origin.deliver()
+  assert.equal(a.box.text, 'Call Erik', 'A still holds its typed words')
+
+  c.focused = false
+  a.focused = true
+  assert.equal(service.save(a), 'request_key_conflict')
+  assert.equal(service.save(a, { freshKey: true }), 'replayed', 'A’s "save as new" is C’s entry, replayed')
+  assert.deepEqual([...service.entries.values()].sort(), ['Call Erik', 'Meet Erik'], 'once each')
 })
 
 /* ———— R2: an open editor stays on the revision it was opened on ———— */
@@ -1159,12 +2412,12 @@ test('unauthorized reloads but keeps the draft; context_mismatch reloads and cle
     journal: journalApiWith({ createJournalEntry: async () => ({ ok: false, error: 'unauthorized' }) }),
     draftStorage: expired,
   })
-  writeDraft(org, user, 'journal', draft, expired)
+  writeDraftSlot(org, user, 'journal', draft, expired)
   const refused = await ended.getState().submitCapture({ requestKey: 'k1', text: 'unsent' }, { surface: 'journal' })
   assert.equal(refused.ok === false && refused.error, 'unauthorized')
   assert.equal(ended.getState().identityChanged, true, 'SnapshotSync reloads the page on this')
-  assert.equal(readDraft(org, user, 'journal', expired)?.text, 'unsent', 'and the words are still in storage')
-  assert.equal(readDraft(org, user, 'journal', expired)?.requestKey, 'k1',
+  assert.equal(readDraftSlot(org, user, 'journal', 'k1', expired)?.text, 'unsent', 'and the words are still in storage')
+  assert.equal(readDraftSlot(org, user, 'journal', 'k1', expired)?.requestKey, 'k1',
     'with their key, so a save that did land comes back as itself after signing in')
   assert.equal(ended.getState().toasts.length, 0, 'and nothing is toasted over a page that is going')
 
@@ -1172,10 +2425,10 @@ test('unauthorized reloads but keeps the draft; context_mismatch reloads and cle
   // refusal along — keeps the draft too.
   const roster = new FakeStorage()
   const outside = createCRMStore(snapshotFor(workspaceFor(org, user)), { draftStorage: roster })
-  writeDraft(org, user, 'journal', draft, roster)
+  writeDraftSlot(org, user, 'journal', draft, roster)
   outside.getState().markIdentityChanged('unauthorized')
   assert.equal(outside.getState().identityChanged, true)
-  assert.equal(readDraft(org, user, 'journal', roster)?.text, 'unsent')
+  assert.equal(readDraftSlot(org, user, 'journal', 'k1', roster)?.text, 'unsent')
 
   // A different identity is already acting in this browser: cleared, as
   // designed.
@@ -1184,11 +2437,11 @@ test('unauthorized reloads but keeps the draft; context_mismatch reloads and cle
     journal: journalApiWith({ createJournalEntry: async () => ({ ok: false, error: 'context_mismatch' }) }),
     draftStorage: swapped,
   })
-  writeDraft(org, user, 'journal', draft, swapped)
+  writeDraftSlot(org, user, 'journal', draft, swapped)
   const mismatch = await mismatched.getState().submitCapture({ requestKey: 'k1', text: 'unsent' }, { surface: 'journal' })
   assert.equal(mismatch.ok === false && mismatch.error, 'context_mismatch')
   assert.equal(mismatched.getState().identityChanged, true)
-  assert.equal(readDraft(org, user, 'journal', swapped), null, 'context_mismatch still clears the drafts')
+  assert.equal(readDraftSlot(org, user, 'journal', 'k1', swapped), null, 'context_mismatch still clears the drafts')
   assert.equal(mismatched.getState().toasts.length, 0)
 })
 
@@ -1197,16 +2450,19 @@ test('identityChanged clears the drafts of the identity the store was built for'
   const storage = new FakeStorage()
   const store = createCRMStore(snapshotFor(workspaceFor(org, user)), { draftStorage: storage })
 
-  writeDraft(org, user, 'journal', { text: 'mine', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  writeDraft(org, user, 'dashboard', { text: 'also mine', requestKey: 'k2', kind: 'idea', occurredOn: null }, storage)
-  writeDraft(org, stranger, 'journal', { text: 'somebody else', requestKey: 'k3', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'journal', { text: 'mine', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  // A second tab's draft on the same surface: a slot of its own.
+  writeDraftSlot(org, user, 'journal', { text: 'mine, other tab', requestKey: 'k5', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'dashboard', { text: 'also mine', requestKey: 'k2', kind: 'idea', occurredOn: null }, storage)
+  writeDraftSlot(org, stranger, 'journal', { text: 'somebody else', requestKey: 'k3', kind: 'update', occurredOn: null }, storage)
 
   store.getState().markIdentityChanged()
 
   assert.equal(store.getState().identityChanged, true)
-  assert.equal(readDraft(org, user, 'journal', storage), null, 'every surface of the finished identity')
-  assert.equal(readDraft(org, user, 'dashboard', storage), null)
-  assert.equal(readDraft(org, stranger, 'journal', storage)?.text, 'somebody else',
+  assert.equal(readDraftSlot(org, user, 'journal', 'k1', storage), null, 'every surface of the finished identity')
+  assert.equal(readDraftSlot(org, user, 'journal', 'k5', storage), null, 'and every slot on it')
+  assert.equal(readDraftSlot(org, user, 'dashboard', 'k2', storage), null)
+  assert.equal(readDraftSlot(org, stranger, 'journal', 'k3', storage)?.text, 'somebody else',
     'and nobody else is touched')
 })
 
@@ -1215,32 +2471,35 @@ test('signing out clears the leaving identity drafts through the same helper', (
   // logout form posts.
   const org = randomUUID(), user = randomUUID(), otherOrg = randomUUID()
   const storage = new FakeStorage()
-  writeDraft(org, user, 'journal', { text: 'unsent', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  writeDraft(otherOrg, user, 'journal', { text: 'other workspace', requestKey: 'k2', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'journal', { text: 'unsent', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(otherOrg, user, 'journal', { text: 'other workspace', requestKey: 'k2', kind: 'update', occurredOn: null }, storage)
 
   clearDraftsFor(org, user, storage)
 
-  assert.equal(readDraft(org, user, 'journal', storage), null)
-  assert.equal(readDraft(otherOrg, user, 'journal', storage)?.text, 'other workspace',
+  assert.equal(readDraftSlot(org, user, 'journal', 'k1', storage), null)
+  assert.equal(readDraftSlot(otherOrg, user, 'journal', 'k2', storage)?.text, 'other workspace',
     'the same person in another organization is a different identity')
 })
 
 test('the mount sweep removes foreign-identity drafts and keeps the current one', () => {
   const org = randomUUID(), user = randomUUID(), otherOrg = randomUUID(), otherUser = randomUUID()
   const storage = new FakeStorage()
-  writeDraft(org, user, 'journal', { text: 'keep me', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
-  writeDraft(org, user, 'prospect:abc', { text: 'keep me too', requestKey: 'k2', kind: 'update', occurredOn: null }, storage)
-  writeDraft(otherOrg, user, 'journal', { text: 'gone', requestKey: 'k3', kind: 'update', occurredOn: null }, storage)
-  writeDraft(org, otherUser, 'dashboard', { text: 'gone', requestKey: 'k4', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'journal', { text: 'keep me', requestKey: 'k1', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, user, 'prospect:abc', { text: 'keep me too', requestKey: 'k2', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(otherOrg, user, 'journal', { text: 'gone', requestKey: 'k3', kind: 'update', occurredOn: null }, storage)
+  writeDraftSlot(org, otherUser, 'dashboard', { text: 'gone', requestKey: 'k4', kind: 'update', occurredOn: null }, storage)
   storage.setItem('khyte-settings', '{"theme":"dark"}')
+  // An older build's single slot of a foreign identity goes too.
+  storage.setItem(draftKey(otherOrg, user, 'dashboard'), JSON.stringify({ text: 'gone', requestKey: 'k6', kind: 'update' }))
 
   sweepForeignDrafts(org, user, storage)
 
-  assert.equal(readDraft(org, user, 'journal', storage)?.text, 'keep me')
-  assert.equal(readDraft(org, user, 'prospect:abc', storage)?.text, 'keep me too',
-    'a surface key containing a colon is parsed correctly')
-  assert.equal(readDraft(otherOrg, user, 'journal', storage), null)
-  assert.equal(readDraft(org, otherUser, 'dashboard', storage), null)
+  assert.equal(readDraftSlot(org, user, 'journal', 'k1', storage)?.text, 'keep me')
+  assert.equal(readDraftSlot(org, user, 'prospect:abc', 'k2', storage)?.text, 'keep me too',
+    'a surface key containing a colon, followed by the request key, is parsed correctly')
+  assert.equal(readDraftSlot(otherOrg, user, 'journal', 'k3', storage), null)
+  assert.equal(readDraftSlot(org, otherUser, 'dashboard', 'k4', storage), null)
+  assert.equal(storage.getItem(draftKey(otherOrg, user, 'dashboard')), null)
   assert.equal(storage.getItem('khyte-settings'), '{"theme":"dark"}',
     'and keys outside the draft prefix are none of the sweep business')
 })
@@ -1251,11 +2510,22 @@ test('the draft module survives a storage that throws on every access', () => {
   // may reach a composer as an exception — the cost of a refusal is that the
   // draft is not remembered, which the composer degrades to component state.
   assert.doesNotThrow(() =>
-    writeDraft(org, user, 'journal', { text: 'x', requestKey: 'k', kind: 'update', occurredOn: null }, hostileStorage))
-  assert.equal(readDraft(org, user, 'journal', hostileStorage), null)
-  assert.doesNotThrow(() => clearDraft(org, user, 'journal', hostileStorage))
+    writeDraftSlot(org, user, 'journal', { text: 'x', requestKey: 'k', kind: 'update', occurredOn: null }, hostileStorage))
+  assert.equal(readDraftSlot(org, user, 'journal', 'k', hostileStorage), null)
+  assert.doesNotThrow(() => removeDraftSlot(org, user, 'journal', 'k', hostileStorage))
+  assert.deepEqual(listDrafts(org, user, 'journal', hostileStorage), [])
   assert.doesNotThrow(() => clearDraftsFor(org, user, hostileStorage))
   assert.doesNotThrow(() => sweepForeignDrafts(org, user, hostileStorage))
+  // The same for the tab's own sessionStorage: which draft is its own is
+  // simply not remembered, and a mount offers what localStorage has.
+  assert.doesNotThrow(() => rememberOwnDraft(org, user, 'journal', 'k', hostileStorage))
+  assert.equal(ownDraftKey(org, user, 'journal', hostileStorage), null)
+  assert.doesNotThrow(() => forgetOwnDraft(org, user, 'journal', hostileStorage))
+  assert.equal(loadDraftFor(org, user, 'journal', hostileStorage, hostileStorage), null)
+  const storage = new FakeStorage()
+  writeDraftSlot(org, user, 'journal', { text: 'x', requestKey: 'k', kind: 'update', occurredOn: null }, storage)
+  assert.equal(loadDraftFor(org, user, 'journal', storage, hostileStorage)?.text, 'x',
+    'a refused sessionStorage still gets the words back')
 })
 
 test('formatJournalDate never shifts a day, and reads an instant in the organization zone', () => {

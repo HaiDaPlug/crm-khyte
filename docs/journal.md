@@ -237,9 +237,11 @@ service; `note_count`, `last_note_date`, `note_history` and the note point of
 those columns blank rather than zero, when the Journal could not be read.
 [export-schema.md](export-schema.md) carries the contract.
 
-Drafts live in `localStorage` under a key that names the organization, the
-viewer and the surface, together with the request key minted for them, so a
-retry after a reload is the same capture. They are cleared when the store
+Drafts live in `localStorage`, one slot per draft, under a key that names the
+organization, the viewer, the surface and the draft's own request key; the tab
+remembers in `sessionStorage` which draft its box holds, so a retry after a
+reload is the same capture and two tabs never overwrite each other's words
+(correction round 3, below). They are cleared when the store
 learns its identity changed, when the person signs out, and (for any foreign
 identity) when a composer mounts.
 
@@ -306,7 +308,7 @@ only**: the old build selects from a table that no longer exists.
 | MCP behaviour: the Journal write inside `commitAction`, replay, preview, the request-key collision that aborts a commit, receipts without Journal text, `get_crm_record.journal` with a cursor, `list_journal` paging and isolation, the export counting person-written entries only, the bulk path without the Journal read, `journal_quality` | `npm run test:mcp` | 51 / 51 |
 | Stage 1 migration rehearsal, rollout guard and follow-up | `npm run test:org` | 7 / 7 |
 | Scoping lint: 25 organization-owned tables (the four Journal tables joined automatically), 36 Server Action statements over 12 tables, 91 SQL statements over six files including `lib/journal/service.ts`; from the second round: the Journal actions resolve the session without throwing and report `unauthorized` | `npm run test:scoping` | 4 / 4 |
-| Client store: normalized Journal slice, view filing, edit across views, optimistic delete with restore on refusal and on a rejected promise, coverage accumulation, poller merge for paged views, view release, drafts keyed by identity and cleared on identity change and sign-out, the mount sweep, a throwing storage, `formatJournalDate` / `formatJournalDateTime` in the organization's zone, `buildExportRows` over Journal entries, and from the correction pass: the save settlement (unchanged, changed, other surface), the edit session (base captured, incoming revision does not move it, rebase), the poller decision (applied advances, deferred and failed retry), the range refresh dropping a deleted entry and updating an edited one, `changeNextStep` optimistic and restored, `unauthorized` keeping drafts while `context_mismatch` clears them; from the second round: the editor's save settlement (unchanged closes, changed keeps the newer words on the saved revision), the stored-draft settlement across tabs (equal → cleared, advanced by another tab → kept and adopted, both changed → this tab's words under a fresh key), the two-tab replay that fails without the fix, the adopt-from-storage guard | `npm run test:store` | 36 / 36 |
+| Client store: normalized Journal slice, view filing, edit across views, optimistic delete with restore on refusal and on a rejected promise, coverage accumulation, poller merge for paged views, view release, drafts keyed by identity and cleared on identity change and sign-out, the mount sweep, a throwing storage, `formatJournalDate` / `formatJournalDateTime` in the organization's zone, `buildExportRows` over Journal entries, and from the correction pass: the save settlement (unchanged, changed, other surface), the edit session (base captured, incoming revision does not move it, rebase), the poller decision (applied advances, deferred and failed retry), the range refresh dropping a deleted entry and updating an edited one, `changeNextStep` optimistic and restored, `unauthorized` keeping drafts while `context_mismatch` clears them; from the second round: the editor's save settlement (unchanged closes, changed keeps the newer words on the saved revision), the stored-draft settlement across tabs (equal → cleared, advanced by another tab → kept and adopted, both changed → this tab's words under a fresh key), the two-tab replay that fails without the fix, the adopt-from-storage guard; from the third round: per-key draft slots with per-tab ownership, the draft box choreography driven directly against fake storages (restore and fork, let-go keys, the fork origin carried in the slot, the hand-over to a live box, typed words in the owner record), Astra's two cases end to end, and every duplicate path the four review passes found | `npm run test:store` | 59 / 59 |
 | Journal migration rehearsal: nine legacy notes of every shape, ids and dates preserved, authors unknown, precision and Stockholm days, the unique interaction match linked, `legacy_*` carried, revision 1 written, RLS and policies on all four tables, the file applied twice, the follow-up catching up two late notes and dropping `notes`; from the correction pass: a 20 001-character legacy note migrated losslessly, an outreach-shaped line with an invalid date migrated as an ordinary entry and counted malformed, the earlier length check swapped for the named constraint | `npm run test:journal:migration` | 14 / 14 |
 | Journal service: A01, A02 (once with either target), A08 durability, A20 tombstone (with the legacy `notes` row still cascading, stated), A23 read-back and a three-page cursor walk stable under an insert, retry → `replayed`, changed text → `request_key_conflict` with `existing`, a transaction that fails after the capture insert leaving nothing, redaction reaching every content column, edit → revision 2, `revision_conflict`, `deleted`, `not_found`, two organizations invisible to each other, `author_id` nulled when the account goes, the 22:30Z day, `target_not_found`, the 20 000-character bound, explicit precision honoured and incoherent precision refused, `scopeMismatch`; from the correction pass: a real session revoked, re-added, reset or expired is `unauthorized` on every mutation with no row changed while a live one writes and an MCP actor is not gated; retries with changed kind, date, title, performer or links are `request_key_conflict` while an identical retry replays once; `changeNextStep` writes the prospect and the system line in one transaction, logs nothing for an empty previous value, replays a repeated transition, edits of system entries are `system_entry` | `npm run test:journal` | 41 / 41 |
 | Production build | `npm run build` | passes (compiled in 27 s; a first attempt earlier the same day was stopped by the machine running out of memory and was repeated) |
@@ -338,7 +340,8 @@ environment only, and the review was driven in Chrome at 1536 px and at a
 - An unsent draft: typed text is stored under
   `khyte:journal-draft:<organization>:<user>:journal` with a 36-character
   request key and comes back into the composer after a reload; clearing the
-  text removes the key.
+  text removes the key (since round 3 the request key is the slot key's last
+  segment, one slot per draft).
 - The prospect drawer: the Journal section with the inline composer replaces
   the notes timeline; an entry written there is saved with a "Nordvik AB"
   chip and appears on `/journal` and the dashboard with the same chip (one
@@ -624,6 +627,141 @@ Server Action requests only.
   still 11). The "Du loggas in igen…" line itself was not caught between the
   answer and the reload — it is the store suite's `signedOut` state — but the
   outcome it announces was: nothing filed, the page at sign-in, the text kept.
+
+**Correction round 3 — Astra's review of `8082ed0` (2026-09-24).** The editor
+and the authentication fixes were accepted. Two composer cases remained, both
+reproduced through the component handlers, and both with the same root: a
+draft was identified by its text, never by who owned it.
+
+- *An old save truncating a new draft.* Save "Call Erik", empty the box, type
+  "Call Erik tomorrow": when the old answer arrived, the remainder rule saw a
+  text that began with the sent words and cut the new draft to "tomorrow", in
+  the box and in storage. The rule now applies only while the box still
+  carries the request key that was sent — the same draft, continued. A box on
+  another key is another draft, whatever its words begin with: it keeps its
+  whole text and its own key.
+- *Divergent drafts in two tabs.* One storage slot per surface could hold one
+  tab's words; when two tabs held different unsaved text, the other version
+  lived in memory alone and a reload lost it, and the `storage` listener's
+  guard — adopt when this box equals what storage held before the other tab
+  wrote — was exactly backwards: equality with the overwritten value meant
+  this tab's words had just been removed from storage, and adopting removed
+  them from memory too. The draft store is rebuilt around ownership:
+  - Every draft has its own slot, `khyte:journal-draft:<org>:<user>:<surface>:<requestKey>`.
+    A tab writes and clears only the slot of the key its box holds. Two tabs
+    with different words end in two slots.
+  - Every tab remembers, in `sessionStorage` (per tab, survives a reload), the
+    key its box holds and the words it typed there. On mount the box takes
+    its own draft back, typed words counted as typed only while the slot still
+    holds them; a fresh tab takes the newest draft on the surface — the one a
+    closed tab left behind, or a mirror of what another open tab is typing —
+    and a tab with no draft at all starts empty.
+  - The box knows whether its words were typed here (`typedHere`, with the
+    text as of the last local keystroke) or merely mirrored from storage, and
+    which keys it has finished with (saved, emptied, moved away from). The
+    cross-tab rules (`followStorage`) are written from one invariant, held as
+    worded while the tab's composer is on the surface: no rule removes, from
+    the box or from storage, words typed in this tab and not saved. An empty
+    box follows what another tab starts, except under a key it has itself
+    finished with. A mirror follows its source, including when the source is
+    saved or emptied. A box whose typed words the other tab continued — a
+    typo fixed there included, as long as this tab's own words still stand at
+    the front — adopts the continuation and still counts them as typed here.
+    When another tab removes the slot under this box's key, the box writes
+    its words back under the same key. Only a write of different words under
+    this box's key makes it fork to a fresh key; the other tab keeps the old
+    one, both survive a reload, and the fork carries the key it left in its
+    own slot (`forkedFrom`), so whoever later saves those words — the forking
+    tab, the same tab after a reload, a tab that mirrored the fork — sends
+    them under the original key: the server replays the entry if that key
+    already filed those words, files them once if nobody did, or answers
+    `request_key_conflict` and the strip if different words were filed. "Save
+    this version as a new entry" on shared forked words goes out under the
+    fork key every holder shares, so the second holder replays rather than
+    files again. No path files the same sentence twice without the strip.
+  - A save clears the slot under the sent key while it holds the sent words,
+    and the box's own slot while it holds exactly the box's words, so a stray
+    full stop typed after Save does not leave a saved sentence in storage. The
+    words after the saved sentence stay in this box only when they were typed
+    here, never when they were mirrored from another tab, whose words they
+    remain. A slot another tab typed on under the sent key is left to that tab, whose
+    own save then meets `request_key_conflict`. A save whose box was re-keyed
+    by a fork while it was in flight is still settled as the draft it sent,
+    and so is a Retry after a lost answer. An answer, or a refusal, that
+    reaches an instance the drawer has since left is handed to the live box
+    on the same surface when that box holds the sent words or a continuation
+    of them, and otherwise settles only the slots it came from. The round-2
+    "adopt the other tab's words into the box that saved" branch is gone: the
+    words belong to the tab that typed them.
+  - The choreography — mount, keystroke, storage event, Save, answer,
+    unmount — lives in one plain module, `lib/journal/draft-box.ts`, which the
+    component calls and the store suite drives directly against a fake
+    localStorage and one fake sessionStorage per tab. The first pass of this
+    round tested a hand-copied stand-in of the component instead, and the
+    review found the copy already drifting; the module is what closed that.
+  - The single legacy slot from earlier builds is migrated into its own slot
+    the first time a composer mounts on that surface, and the legacy key is
+    removed only after the write went through. A slot write that fails (a
+    full quota) never lets the old slot go. Stage 2 is not deployed, so no
+    production draft exists yet.
+- *Known limits, stated rather than hidden.* Signing out in one tab removes
+  this identity's slots; a tab that still holds typed words writes them back
+  under that identity until the next composer mount by another identity
+  sweeps them — as a keystroke did before this round. While a tab's drawer is
+  on another prospect, nothing there is live to restore that prospect's draft
+  if another tab empties it. Two tabs that both type different words under one
+  shared key end with two drafts; nothing decides for the person which
+  version was meant.
+
+Evidence: typecheck and build pass; mcp 51, org 7, scoping 4, store 59,
+journal:migration 14, journal 41, mcp:http 3. No server file changed; the
+PostgreSQL suite was not rerun. The correction went through four review
+passes (two scoped reviewers with a batched skeptic each, then three single
+reviewer-plus-skeptic passes on each correction batch; the fourth pass's
+four small items were applied and verified without a further pass): Astra's cases
+confirmed closed each time, and seeded random fuzzing over two and three tabs
+(75 000 walks in the first pass, 16 000 with reloads and remounts in the last)
+found no sequence that lost typed words. The passes surfaced and closed: the
+removal refill loop (a saved mirror's owner forked to a fresh key and the
+saver adopted the fork back, so both boxes refilled with saved words), the
+stale slot after a punctuation-only continuation, a fork during an in-flight
+save settled as another draft, a fork on a typo fix in the other tab, the
+fork's origin living only in memory (a reload or a mirroring tab filed the
+sentence twice), refusals dropped after the drawer came back, and the
+extraction's away-and-back regression — plus notes on the hand-over deciding
+by key alone, typedHere across a reload, failed writes, unstamped slots, stale
+comments and test routing.
+
+*On screen, round 3 (2026-09-24, local stack rebuilt on the same migrations).*
+Both tabs sat behind Hai's working tab, so every step was driven through the
+page's own handlers from the developer console, with the box, the storage
+slots (`khyte:journal-draft:…:<requestKey>`), the per-tab owner record and the
+feed read back after each step; the dev server was the one the earlier rounds
+used, on the rebuilt database (no entries at the start).
+- *Astra's case 1.* "Call Erik" was submitted with the answer held six
+  seconds, the box emptied (its slot and owner record went with it) and
+  "Call Erik tomorrow" typed under a new key. When the answer came the box
+  still held "Call Erik tomorrow", its slot held the same under that key, the
+  line said the first text was saved and the newer kept, and the card read
+  "Call Erik". Feed: 1.
+- *Astra's case 2.* Tab A typed "Call" (K1). Tab B opened and mirrored it
+  (owner record K1, no typed words). B typed "Call Erik"; A adopted the
+  continuation with its own typed words still "Call". A rewrote to "Meet
+  Erik": B forked "Call Erik" to K2 with `forkedFrom` K1, leaving two slots.
+  B reloaded and came back with "Call Erik" under K2; A reloaded and came back
+  with "Meet Erik" under K1. Nothing was lost.
+- *The fork's origin.* B saved its forked words: the request went out under
+  K1, "Call Erik" was filed once, B cleared and said Saved, and its K2 slot
+  was released while A's K1 slot stayed. A saved "Meet Erik" under K1: the
+  strip ("Det här utkastet är redan sparat, i en tidigare version.") with
+  "Spara den här versionen som ett nytt inlägg", which filed it under a fresh
+  key and cleared the box. Feed: 3, one per draft.
+- *The refill loop the first review found.* A typed "Call Erik" (K5); the
+  empty B mirrored it and saved; B cleared and released the slot. A got the
+  removal and restored its words under the same key K5, and B stayed empty
+  with "Sparat" instead of taking the words back. A then saved: the same key
+  replayed the entry, the box cleared, and a reload showed 4 entries — one
+  for this draft, not two.
 
 ## The exact next stage
 

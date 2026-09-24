@@ -691,6 +691,12 @@ export function createCRMStore(snapshot: CRMSnapshot, options: CRMStoreOptions =
      *
      * Clearing is idempotent, so a `context_mismatch` that arrives after an
      * `unauthorized` has already finished the store still clears.
+     *
+     * Clearing is not a tombstone either: another open tab of the same person
+     * that holds words typed in it writes them back when their slot goes
+     * (lib/journal/drafts.ts, `clearDraftsFor`). They stay keyed to this
+     * identity, are never offered to anybody else, and the next mount by
+     * another identity sweeps them.
      */
     function finishIdentity(options: { keepDrafts?: boolean } = {}): void {
       if (!options.keepDrafts) {

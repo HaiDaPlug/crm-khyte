@@ -15,6 +15,23 @@ import type { JournalDraft } from './drafts'
  *
  * The stored-draft functions decide what happens to storage; they never touch
  * it. The composer reads the draft, asks, and carries the answer out.
+ *
+ * A DRAFT IS IDENTIFIED BY ITS OWNER, NOT BY ITS TEXT. Every draft has its own
+ * storage slot, named by its request key, and every tab remembers the key its
+ * box holds (lib/journal/drafts.ts). The two bugs of Astra's third review were
+ * both a rule comparing text across different drafts: an old save's answer
+ * cut the sent words off the front of a new draft that merely began with them,
+ * and two tabs' different words fought over one slot. So every rule below that
+ * weighs one draft against another asks first whether they are the same draft
+ * — the same request key — and only then compares words.
+ *
+ * THE INVARIANT every function below keeps, and tests/store.test.ts checks:
+ * no rule ever removes from the box, or from storage, words that were typed in
+ * this tab and not saved. Where a rule cannot tell, it keeps the words — back
+ * under their own key when another tab removed the slot, under a fresh key
+ * when another tab wrote different words into it — and accepts that a
+ * near-duplicate draft is possible. Divergent drafts in two tabs end in two
+ * slots, each owned by one tab.
  */
 
 /* ———— identity ———— */
@@ -55,27 +72,32 @@ export interface ComposerNow {
   occurredOn: string
   surface: string
   /**
-   * The key the current draft carries, when the caller knows it. A draft that
-   * already has a key of its own (the box was emptied and a new sentence
-   * begun while the save was in flight) needs no new one.
+   * The key the current draft carries — null only for an empty box. Required,
+   * because it is what says whether the box still holds the draft a save sent
+   * or another one: the box emptied and a sentence begun again while the save
+   * was in flight, or a draft taken up from another tab.
    */
-  requestKey?: string | null
+  requestKey: string | null
 }
 
 export type SaveAnnouncement = 'saved' | 'savedKeptNewer' | 'ignored'
 
 export interface SaveSettlement {
-  /** Empty the box and forget the stored draft. */
+  /**
+   * Empty the box. The sent slot goes by `settleSentSlot`, and the box's own
+   * slot with it while it holds exactly the box's words — never another tab's.
+   */
   clear: boolean
   /** Keep the box, and give what is in it a key of its own. */
   mintNewKey: boolean
   /**
    * With `clear: false`: what the box should now hold. When the writer simply
-   * kept typing after Save — the box begins with exactly the words that were
-   * sent — the saved words leave the box and only what came after them stays,
-   * the same as a save whose answer arrived before the next keystroke. When
-   * the sent words were edited rather than continued, they cannot be told
-   * apart from the newer ones and the whole text stays.
+   * kept typing after Save — the box still holds the sent draft, under the
+   * sent key, and begins with exactly the words that were sent — the saved
+   * words leave the box and only what came after them stays, the same as a
+   * save whose answer arrived before the next keystroke. Absent, the whole
+   * text stays: the sent words were edited rather than continued, or the box
+   * holds another draft altogether.
    */
   text?: string
   announce: SaveAnnouncement
@@ -98,60 +120,72 @@ export function typedSince(sent: string, current: string): string | null {
  *
  * Before this, success emptied the box unconditionally — and the textarea is
  * deliberately not disabled while a save is in flight, so every word typed
- * between Save and the answer was erased by the answer. Three cases now:
+ * between Save and the answer was erased by the answer. The cases now:
  *
- *   the box still says what was sent       → it was saved; empty it ('saved').
- *   the box says something newer           → the earlier words were saved, the
- *                                            newer ones stay, and they get a
- *                                            new request key: the old key now
+ *   the box is on another surface now      → nothing on screen is this save's
+ *                                            to touch ('ignored'); the caller
+ *                                            settles only the slot the save
+ *                                            came from (`settleSentSlot`).
+ *   the box is empty                       → nothing in it to keep ('saved').
+ *   the box holds ANOTHER draft — a key    → it is not this save's at all: its
+ *   other than the one sent                  whole text stays, under its own
+ *                                            key, whatever it begins with
+ *                                            ('savedKeptNewer').
+ *   the same draft, still what was sent    → it was saved; empty it ('saved').
+ *   the same draft, typed on               → the sent words leave the box, the
+ *                                            ones after them stay, and they get
+ *                                            a new request key: the old key now
  *                                            belongs to a saved entry, and a
  *                                            retry on it would collide
  *                                            ('savedKeptNewer').
- *   the box is on another surface now      → nothing on screen is this save's
- *                                            to touch ('ignored'); the caller
- *                                            settles the OLD surface's stored
- *                                            draft instead, which it can do by
- *                                            asking this same function about
- *                                            that draft.
+ *   the same draft, edited or reshaped     → kept whole, under a new key.
  *
- * "The same" is the text, trimmed — the saved entry is the trimmed text, so a
- * trailing space is not a newer draft — plus the kind and the date. An empty
- * box is treated as settled: there is nothing in it to keep.
+ * THE KEY IS ASKED BEFORE THE TEXT. Round 2 compared words alone, so a box
+ * that was emptied after Save and begun again with a sentence that happened
+ * to start with the sent one ("Call Erik" sent; "Call Erik tomorrow" typed
+ * fresh) was taken for a continuation, and the answer cut "Call Erik" off the
+ * new draft — in the box and, on the next write, in storage. A draft with a
+ * key of its own is somebody's new draft, and nothing about the old save may
+ * shorten it.
+ *
+ * "The same words" is the text, trimmed — the saved entry is the trimmed
+ * text, so a trailing space is not a newer draft — plus the kind and the
+ * date.
  */
 export function settleSave(snapshot: SaveSnapshot, current: ComposerNow): SaveSettlement {
   if (current.surface !== snapshot.surface) {
     return { clear: false, mintNewKey: false, announce: 'ignored' }
   }
   const text = current.text.trim()
-  const unchanged =
-    text === snapshot.text.trim() &&
-    current.kind === snapshot.kind &&
-    current.occurredOn === snapshot.occurredOn
-  if (unchanged || text === '') {
+  if (text === '') {
+    return { clear: true, mintNewKey: false, announce: 'saved' }
+  }
+  if (current.requestKey !== snapshot.requestKey) {
+    // Another draft. It keeps its key — a box that somehow has words and no
+    // key is given one, since it cannot keep what it does not have.
+    return { clear: false, mintNewKey: current.requestKey === null, announce: 'savedKeptNewer' }
+  }
+  const sameShape = current.kind === snapshot.kind && current.occurredOn === snapshot.occurredOn
+  if (sameShape && text === snapshot.text.trim()) {
     return { clear: true, mintNewKey: false, announce: 'saved' }
   }
   // Kept typing, same kind and date: the saved sentence leaves the box and
   // what followed it stays — at any network speed, so a fast answer and a
   // slow one end in the same box. Nothing left after the sentence is a
   // settled save.
-  const sameShape = current.kind === snapshot.kind && current.occurredOn === snapshot.occurredOn
   const remainder = sameShape ? typedSince(snapshot.text, current.text) : null
   if (remainder === '') {
     return { clear: true, mintNewKey: false, announce: 'saved' }
   }
-  const ownKey =
-    current.requestKey !== undefined &&
-    current.requestKey !== null &&
-    current.requestKey !== snapshot.requestKey
   return {
     clear: false,
-    mintNewKey: !ownKey,
+    mintNewKey: true,
     ...(remainder !== null ? { text: remainder } : {}),
     announce: 'savedKeptNewer',
   }
 }
 
-/* ———— the stored draft two tabs share ———— */
+/* ———— drafts in several tabs: one slot per draft, one owner per tab ———— */
 
 /** The fields of a stored draft that a tab settles against and adopts. */
 export type StoredDraft = Pick<JournalDraft, 'text' | 'kind' | 'occurredOn' | 'requestKey'>
@@ -164,101 +198,32 @@ function sameWords(
   return a.text.trim() === b.text.trim() && a.kind === b.kind && (a.occurredOn ?? '') === (b.occurredOn ?? '')
 }
 
-export interface StoredDraftSettlement {
-  /**
-   *   'clear'  empty the box — it says what was sent, or nothing.
-   *   'adopt'  put the stored draft in the box, key and all: another tab
-   *            wrote newer words into it while this box sat unchanged.
-   *   'keep'   this box holds newer words of its own; they stay.
-   *   'ignore' the box is on another surface now (see `settleSave`).
-   */
-  box: 'clear' | 'adopt' | 'keep' | 'ignore'
-  /** With `box: 'keep'`: the box's words need a key of their own. */
-  mintNewKey: boolean
-  /** With `box: 'keep'`: what the box should hold — see `SaveSettlement.text`. */
-  text?: string
-  /**
-   *   'clear'  forget it — it is exactly what the save sent, key included.
-   *   'write'  file the box's draft over it (under the fresh key, if one was
-   *            minted); what it held was this box's own words, the sent ones,
-   *            or nothing.
-   *   'rekey'  keep its words under a fresh key (another surface's draft,
-   *            typed on under the key the save just used up).
-   *   'keep'   leave it alone — it holds words this tab does not have.
-   */
-  stored: 'clear' | 'write' | 'rekey' | 'keep'
-  announce: SaveAnnouncement
-}
-
 /**
- * What an `{ ok: true }` may do to the box AND to the stored draft.
+ * What a save's `{ ok: true }` does to the slot under the key it SENT.
  *
- * `settleSave` weighs the answer against the box, and that is not enough: the
- * stored draft is shared. Two tabs on one surface read and write the same key.
- * Tab A saves; tab B types newer words into the stored draft; A's answer finds
- * A's own box unchanged — and, settled against the box alone, cleared storage
- * and B's words with it, so a reload of B found nothing. The stored draft is
- * therefore re-read when the answer arrives and weighed as well:
+ *   'clear'  the slot still holds the sent words under the sent key — they are
+ *            an entry now — or it is already gone (nothing to do; a caller may
+ *            treat 'clear' on a missing slot as a no-op).
+ *   'keep'   it holds anything else. Somebody typed on under this key after
+ *            the words left: another tab that shares it, or this box before
+ *            its own settlement moves them. Those words are not the save's to
+ *            erase. A later save of them on this consumed key answers
+ *            `request_key_conflict`, and the composer's existing strip offers
+ *            them as a new entry — never a silent duplicate, never a loss.
  *
- *   stored draft is what was sent (same key, same words) → cleared.
- *   stored draft moved on, this box did not              → storage kept, and
- *                                                          the box adopts it,
- *                                                          so both tabs agree
- *                                                          with storage.
- *   stored draft moved on, and so did this box           → storage kept; the
- *                                                          box keeps its words
- *                                                          under a fresh key.
- *   stored draft is this box's own newer words           → rewritten under the
- *                                                          fresh key (R1).
- *   no stored draft (none, or storage refuses access)    → R1 exactly.
+ * The box is settled separately (`settleSave`). Round 2 also let the box take
+ * over another tab's newer words here ('adopt'); that is gone. With a slot per
+ * draft, the words belong to the tab that typed them, and the box that saved
+ * simply clears.
  *
- * An adopted draft keeps ITS request key. When that is the key this save just
- * used, the next save of the adopted words answers `request_key_conflict`, and
- * the composer's conflict strip offers them as a new entry — never a silent
- * duplicate, never a silent loss.
+ * The same question answers any other letting-go of a slot — a box that was
+ * emptied, a draft moved to a fresh key: pass what the box held under the old
+ * key as the snapshot, and the slot is released only while it still holds
+ * exactly that.
  */
-export function settleStoredDraft(
-  snapshot: SaveSnapshot,
-  current: ComposerNow,
-  stored: StoredDraft | null
-): StoredDraftSettlement {
-  const storedIsSent = stored !== null && stored.requestKey === snapshot.requestKey && sameWords(stored, snapshot)
-
-  if (current.surface !== snapshot.surface) {
-    // Nothing on screen is this answer's; the draft it came from is settled
-    // on its own, as R1 did — but cleared only while it is still, exactly,
-    // what was sent.
-    const onSentKey = stored !== null && stored.requestKey === snapshot.requestKey
-    return {
-      box: 'ignore',
-      mintNewKey: false,
-      stored: storedIsSent ? 'clear' : onSentKey ? 'rekey' : 'keep',
-      announce: 'ignored',
-    }
-  }
-
-  const box = settleSave(snapshot, current)
-
-  if (box.clear) {
-    if (stored === null || storedIsSent) {
-      return { box: 'clear', mintNewKey: false, stored: storedIsSent ? 'clear' : 'keep', announce: 'saved' }
-    }
-    // Storage moved on while this box did not: another tab's words. A box
-    // that was emptied here stays empty, and the words stay in storage.
-    if (current.text.trim() === '') {
-      return { box: 'clear', mintNewKey: false, stored: 'keep', announce: 'saved' }
-    }
-    return { box: 'adopt', mintNewKey: false, stored: 'keep', announce: 'savedKeptNewer' }
-  }
-
-  const storedIsAnotherTabs = stored !== null && !storedIsSent && !sameWords(stored, current)
-  return {
-    box: 'keep',
-    mintNewKey: box.mintNewKey,
-    ...(box.text !== undefined ? { text: box.text } : {}),
-    stored: storedIsAnotherTabs ? 'keep' : 'write',
-    announce: 'savedKeptNewer',
-  }
+export function settleSentSlot(snapshot: SaveSnapshot, stored: StoredDraft | null): 'clear' | 'keep' {
+  if (stored === null) return 'clear'
+  return stored.requestKey === snapshot.requestKey && sameWords(stored, snapshot) ? 'clear' : 'keep'
 }
 
 /**
@@ -266,7 +231,8 @@ export function settleStoredDraft(
  * or saved it": the box empties the way a save empties it. Otherwise every
  * field comes across — the request key included: a draft adopted without its
  * key would mint a new one on the next keystroke, and a retry of a save that
- * had landed would become a second entry.
+ * had landed would become a second entry. Whether the adopted box still holds
+ * words typed in this tab is `followStorage`'s answer, not this function's.
  */
 export function adoptDraft(stored: StoredDraft | null, current: ComposerNow): ComposerNow {
   if (stored === null) return { ...current, text: '', occurredOn: '', requestKey: null }
@@ -279,21 +245,154 @@ export function adoptDraft(stored: StoredDraft | null, current: ComposerNow): Co
   }
 }
 
+/** A `storage` event on one of this surface's slots, resolved by `slotOf`. */
+export interface StorageChange {
+  /** The slot the other tab wrote or removed. */
+  requestKey: string
+  /** What the slot held before — the event's `oldValue`. */
+  previous: StoredDraft | null
+  /** What it holds now; null when the other tab removed it. */
+  next: StoredDraft | null
+}
+
+/** The box as `followStorage` weighs it. */
+export type FollowBox = ComposerNow & {
+  /** The words include keystrokes made in THIS tab that no save has settled. */
+  typedHere: boolean
+  /**
+   * With `typedHere`: the words this tab answers for — the box's text after
+   * its last keystroke here, or after it last wrote its words back (a restore
+   * or a fork). Not the box's text: after taking up another tab's
+   * continuation, the box also holds that tab's words, which that tab may
+   * still take back (a backspace) without this tab losing anything.
+   */
+  typedText: string
+  /**
+   * Request keys this box has finished with since it mounted on the surface:
+   * the key a save sent once the answer came back, the key of a box that was
+   * emptied, the old key of "save as a new entry" and of a fork. An empty box
+   * never takes up a draft under one of them again — see `followStorage`.
+   */
+  letGo: ReadonlySet<string>
+}
+
+export type FollowAction =
+  | { do: 'ignore' }
+  /**
+   * Put this draft in the box (null: empty it), key and all, with this
+   * `typedHere`: false for a mirror or an empty box, true when the box's own
+   * typed words are the start of the draft it takes — they are still in it.
+   */
+  | { do: 'adopt'; draft: StoredDraft | null; typedHere: boolean }
+  /**
+   * The box's own slot was removed, and its words stay: write them back under
+   * the SAME key, `typedHere` unchanged. Same key, so a later Save of the same
+   * words replays the entry the other tab filed instead of filing it twice,
+   * and a Save of different words meets `request_key_conflict` and the strip.
+   */
+  | { do: 'restore' }
+  /** Another tab wrote different words under the box's key: keep every word in
+   *  the box, under a FRESH key, in a slot of its own. */
+  | { do: 'fork' }
+
 /**
- * Does this tab take what another tab just wrote to this surface's draft?
+ * What this tab does when another tab writes one of this surface's slots.
  *
- * `focused` is somebody writing in THIS tab's box right now — the document
- * has focus and the textarea is its active element. Their own text wins, and
- * is written on their next keystroke. Otherwise the tab is idle and follows
- * storage, unless its box holds words storage did not have when the other tab
- * wrote over it (`previous`, the event's old value): adopting then would erase
- * the only copy of those words, so the box keeps them. An empty box has
- * nothing to lose.
+ * `box.typedHere` is true when the words in the box include keystrokes made in
+ * THIS tab that no save has settled — false for a mirror of storage.
+ * `focused` is somebody writing in this box right now: the document has focus
+ * AND the textarea is its active element (a background tab keeps its active
+ * element).
+ *
+ * Round 2 had one slot per surface and one question — adopt or not — and both
+ * answers could lose words: adopting over a box that had typed on wrote over
+ * the only copy of its words, and not adopting left them in memory alone,
+ * with storage holding the other tab's, so a reload lost them. Now the box
+ * can also keep its words in storage itself: restored under its own key when
+ * the slot is removed, forked to a fresh one when it is written with other
+ * words. The rules, in order:
+ *
+ *   another slot, empty box, words in it,
+ *   and not a key this box let go of        → adopt: an empty tab follows what
+ *                                             another tab starts (a mirror).
+ *   another slot, anything else             → ignore: another draft.
+ *   this box's slot, removed (saved or
+ *   emptied elsewhere):
+ *     box empty                             → adopt nothing.
+ *     a mirror, in step with the slot       → adopt nothing: its owner is
+ *                                             finished with it.
+ *     otherwise                             → restore, under the same key: the
+ *                                             words were typed here, or storage
+ *                                             never had them, and may be unsaved.
+ *   this box's slot, written:
+ *     box empty, or a mirror                → adopt: a mirror follows its source.
+ *     idle, and the new words continue the
+ *     words TYPED here (same kind and date,
+ *     beginning with `typedText`)           → adopt, still typed here: nothing
+ *                                             typed here is lost, and it is still
+ *                                             in the box.
+ *     otherwise                             → fork: this tab's words move to a
+ *                                             fresh key, the other tab keeps the
+ *                                             old one, and both survive a reload.
+ *
+ * WHY THE TYPED WORDS AND NOT THE BOX. A types "Call"; B types on to "Call
+ * Erik", and A takes each keystroke up. Compared with A's box, B's backspace
+ * ("Call Eri") no longer continued it, A forked "Call Erik" to a key the
+ * server had never seen, and a Save there filed the entry B saved a second
+ * time. Compared with what A typed, "Call Eri" still carries A's "Call" on:
+ * B may take back its own words, and A just follows.
+ *
+ * WHY A REMOVAL RESTORES RATHER THAN FORKS, and why a let-go key is never
+ * adopted. Tab A types "Call Erik"; tab B mirrors it and saves it; B's box
+ * empties and B's save removes the slot. Forking kept A's words under a key
+ * the server had never seen — and B, empty, adopted that fresh key as a new
+ * draft: B showed "Call Erik" again, and every later Save in either tab filed
+ * an identical entry. Emptying a mirror refilled it the same way. Restored
+ * under the SAME key, A's words replay the filed entry when saved again, or
+ * meet the conflict strip if edited; and B, having let that key go, does not
+ * take it up again.
+ *
+ * A mirror "in step" is one whose words are the slot's old value — equal words
+ * are not enough when they were typed here: another tab saving them is no
+ * proof that this tab's copy was the one saved, and Astra's review named that
+ * exact adoption as the listener erasing the last copy of a tab's words.
  */
-export function shouldAdoptStored(current: ComposerNow, focused: boolean, previous: StoredDraft | null): boolean {
-  if (focused) return false
-  if (current.text.trim() === '') return true
-  return previous !== null && sameWords(current, previous)
+export function followStorage(box: FollowBox, focused: boolean, change: StorageChange): FollowAction {
+  const empty = box.text.trim() === ''
+  const { next, previous } = change
+
+  if (change.requestKey !== box.requestKey) {
+    const followable = empty && next !== null && !box.letGo.has(change.requestKey)
+    return followable ? { do: 'adopt', draft: next, typedHere: false } : { do: 'ignore' }
+  }
+
+  if (next === null) {
+    if (empty) return { do: 'adopt', draft: null, typedHere: false }
+    if (!box.typedHere && previous !== null && sameWords(box, previous)) {
+      return { do: 'adopt', draft: null, typedHere: false }
+    }
+    return { do: 'restore' }
+  }
+
+  if (empty || !box.typedHere) return { do: 'adopt', draft: next, typedHere: false }
+  if (!focused && continuesTyped(box, next)) return { do: 'adopt', draft: next, typedHere: true }
+  return { do: 'fork' }
+}
+
+/**
+ * Do the stored words carry on from the words typed in this tab — same kind
+ * and date as the box, and beginning with `typedText`, compared trimmed the
+ * way `settleSave` reads them? Adopting them then drops nothing typed here.
+ * A typed box with no typed text recorded is judged by its whole text, the
+ * stricter reading.
+ */
+function continuesTyped(box: FollowBox, next: StoredDraft): boolean {
+  const mine = box.typedText.trim() !== '' ? box.typedText : box.text
+  return (
+    box.kind === next.kind &&
+    box.occurredOn === (next.occurredOn ?? '') &&
+    typedSince(mine.trim(), next.text.trim()) !== null
+  )
 }
 
 /* ———— R2: an editor that stays on the revision it was opened on ———— */
