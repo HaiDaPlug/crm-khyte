@@ -4,6 +4,7 @@
 **Branch:** `feat/journal` (from `5b54cce`, Stage 1 merged with master; PR #31 carries Stage 1 to master)
 **Blueprint:** [Donna-Product-Architecture-and-Fable-Handoff-v1.md](Donna-Product-Architecture-and-Fable-Handoff-v1.md), Section 13, Stage 2
 **Previous stage:** [organization-foundation.md](organization-foundation.md) and [donna-handoff-after-stage-1.md](donna-handoff-after-stage-1.md)
+**Status:** Accepted as code by Astra at `442bc34` on 2026-09-25, after four correction rounds (`f36b90c`, `b40ac63` + `8082ed0`, `57f27fa`, `442bc34`). Not merged, not deployed. Next steps and the Stage 3 handoff: [donna-handoff-after-stage-2.md](donna-handoff-after-stage-2.md)
 
 This is the review handoff for the second stage of the Donna redesign: a
 Journal that is a useful daily home for thoughts before any AI acts on them.
