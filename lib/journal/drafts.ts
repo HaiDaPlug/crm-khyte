@@ -46,18 +46,22 @@ import type { JournalKind } from './contracts'
  * the one browser store that belongs to a single tab and survives its reload.
  * A reloaded tab therefore gets its own words back, not whichever tab wrote
  * last — and still knows they were typed in it (`ownDraft`), so another tab
- * emptying the same draft after the reload cannot empty this one. The one
- * case left: while this tab's composer is on another surface (the drawer moved
- * to another prospect), nothing here is live to write the words back, and
- * another tab emptying the shared draft removes it. A tab that owns nothing
- * yet — a new one — takes the newest slot on the surface, another tab's or a
- * closed one's, and remembers it: it is a mirror of that draft until somebody
- * types in it. "Duplicate tab" copies
+ * emptying the same draft after the reload cannot empty this one. The record
+ * also keeps the tab's own COPY of the draft (`OwnSnapshot`): while the
+ * composer is on another surface (the drawer moved to another prospect)
+ * nothing here is live to hear another tab empty or rewrite the shared slot,
+ * so the next mount reconciles the copy with the slot instead — restoring,
+ * forking or following exactly as the live listener would. A tab that owns
+ * nothing yet — a new one — takes the newest slot on the surface, another
+ * tab's or a closed one's, and remembers it: it is a mirror of that draft
+ * until somebody types in it. "Duplicate tab" copies
  * sessionStorage and so makes two owners of one key; that is the same case as
  * a new tab mirroring an open one, and the composer's cross-tab rules
  * (`followStorage` in ./composer-state.ts) are written for it. The owner
- * prefix is deliberately not under `PREFIX`: it names a key, holds no words,
- * and is none of the sweeps' business.
+ * prefix is deliberately not under `PREFIX` — it lives in another storage —
+ * but it carries the identity the same way, and since the record holds a copy
+ * of the words, sign-out (`clearDraftsFor`) and the mount sweep
+ * (`sweepForeignDrafts`) clear it like a slot.
  *
  * A SLOT IS REMOVED ONLY BY WHOEVER IS LETTING GO OF ITS WORDS, and only while
  * it still holds exactly those words — a save whose words landed, a box that
@@ -384,19 +388,56 @@ export function ownDraft(
   userId: string,
   surface: string,
   session?: DraftStorage
-): { requestKey: string; typedText: string } | null {
+): OwnDraft | null {
   const store = resolveSession(session)
   if (!store) return null
   try {
     const raw = store.getItem(ownerKey(organizationId, userId, surface))
     if (!raw) return null
-    if (!raw.startsWith('{')) return { requestKey: raw, typedText: '' }
-    const parsed = JSON.parse(raw) as { requestKey?: unknown; typedText?: unknown }
+    if (!raw.startsWith('{')) return { requestKey: raw, typedText: '', snapshot: null }
+    const parsed = JSON.parse(raw) as Partial<Record<'requestKey' | 'typedText' | 'text' | 'kind' | 'occurredOn' | 'forkedFrom', unknown>>
     if (typeof parsed.requestKey !== 'string' || parsed.requestKey === '') return null
-    return { requestKey: parsed.requestKey, typedText: typeof parsed.typedText === 'string' ? parsed.typedText : '' }
+    const snapshot: OwnSnapshot | null =
+      typeof parsed.text === 'string'
+        ? {
+            text: parsed.text,
+            kind: (typeof parsed.kind === 'string' ? parsed.kind : 'update') as JournalKind,
+            occurredOn: typeof parsed.occurredOn === 'string' ? parsed.occurredOn : null,
+            ...(typeof parsed.forkedFrom === 'string' && parsed.forkedFrom !== '' ? { forkedFrom: parsed.forkedFrom } : {}),
+          }
+        : null
+    return { requestKey: parsed.requestKey, typedText: typeof parsed.typedText === 'string' ? parsed.typedText : '', snapshot }
   } catch {
     return null
   }
+}
+
+/**
+ * This tab's own copy of the draft its box holds: the words, kind, date and
+ * fork origin, as the box last showed them.
+ *
+ * WHY A COPY, when the slot has the words. The slot is shared: while this
+ * tab's composer is not mounted on the surface — the drawer moved to another
+ * prospect — another tab may empty it or write over it, and nothing here is
+ * live to write the words back or fork them. The copy is in sessionStorage,
+ * which no other tab can touch, and the next mount reconciles it with the slot
+ * by the same rules the live listener applies (`reconcileOnMount` in
+ * ./composer-state.ts).
+ */
+export interface OwnSnapshot {
+  text: string
+  kind: JournalKind
+  occurredOn: string | null
+  forkedFrom?: string
+}
+
+/** What a tab remembers of its draft on a surface — see `ownDraft`. */
+export interface OwnDraft {
+  requestKey: string
+  /** The words typed in this tab; empty for a mirror. */
+  typedText: string
+  /** Null for a record written by an earlier build: the key, and no words. */
+  snapshot: OwnSnapshot | null
 }
 
 /** The request key this tab's box holds on this surface, or null. */
@@ -410,8 +451,9 @@ export function ownDraftKey(
 }
 
 /**
- * Records the request key this tab's box now holds, and the words typed in
- * this tab (see `ownDraft`; empty for a mirror). Silent on failure.
+ * Records the request key this tab's box now holds, the words typed in this
+ * tab (empty for a mirror), and — when given — the tab's own copy of the
+ * draft (see `ownDraft` and `OwnSnapshot`). Silent on failure.
  */
 export function rememberOwnDraft(
   organizationId: string,
@@ -419,15 +461,18 @@ export function rememberOwnDraft(
   surface: string,
   requestKey: string,
   session?: DraftStorage,
-  typedText = ''
+  typedText = '',
+  snapshot?: OwnSnapshot
 ): void {
   const store = resolveSession(session)
   if (!store) return
   try {
-    store.setItem(ownerKey(organizationId, userId, surface), JSON.stringify({ requestKey, typedText }))
+    store.setItem(ownerKey(organizationId, userId, surface), JSON.stringify({ requestKey, typedText, ...snapshot }))
   } catch {
-    // A reload then takes the newest slot instead of this one — still words,
-    // never nothing.
+    // The previous record stays, older than the box: the next mount weighs
+    // that older copy against the slot and shows, restores or forks it by the
+    // usual rules — still this tab's words, a keystroke or two behind, never
+    // nothing. With no previous record, the mount takes the newest slot.
   }
 }
 
@@ -492,13 +537,23 @@ export function loadDraftFor(
  * another identity. Before per-key slots the same tab rewrote it on its next
  * keystroke; an idle one emptied.
  */
-export function clearDraftsFor(organizationId: string, userId: string, storage?: DraftStorage): void {
-  const store = resolve(storage)
-  if (!store) return
-  removeMatching(store, key => {
-    const identity = identityOf(key)
+export function clearDraftsFor(
+  organizationId: string,
+  userId: string,
+  storage?: DraftStorage,
+  session?: DraftStorage
+): void {
+  const theirs = (prefix: string) => (key: string) => {
+    const identity = identityOf(key, prefix)
     return identity !== null && identity.organizationId === organizationId && identity.userId === userId
-  })
+  }
+  const store = resolve(storage)
+  if (store) removeMatching(store, PREFIX, theirs(PREFIX))
+  // And this tab's own copies of that identity's drafts (`ownDraft`): they
+  // hold the words too, and signing back in on this tab must not restore
+  // a draft that was signed out.
+  const tab = resolveSession(session)
+  if (tab) removeMatching(tab, OWNER_PREFIX, theirs(OWNER_PREFIX))
 }
 
 /**
@@ -510,29 +565,38 @@ export function clearDraftsFor(organizationId: string, userId: string, storage?:
  * reopened by somebody else. Those keys would otherwise sit in storage
  * indefinitely holding somebody's words.
  */
-export function sweepForeignDrafts(organizationId: string, userId: string, storage?: DraftStorage): void {
-  const store = resolve(storage)
-  if (!store) return
-  removeMatching(store, key => {
-    const identity = identityOf(key)
+export function sweepForeignDrafts(
+  organizationId: string,
+  userId: string,
+  storage?: DraftStorage,
+  session?: DraftStorage
+): void {
+  const foreign = (prefix: string) => (key: string) => {
+    const identity = identityOf(key, prefix)
     // A key under our prefix that does not parse is not one this build wrote;
     // it goes too, for the same reason.
     if (identity === null) return true
     return identity.organizationId !== organizationId || identity.userId !== userId
-  })
+  }
+  const store = resolve(storage)
+  if (store) removeMatching(store, PREFIX, foreign(PREFIX))
+  // And this tab's copies of other identities' drafts, which hold their words.
+  const tab = resolveSession(session)
+  if (tab) removeMatching(tab, OWNER_PREFIX, foreign(OWNER_PREFIX))
 }
 
 /**
- * `<org>:<user>` out of a draft key, or null when the key is not one.
+ * `<org>:<user>` out of a draft key — or, with `OWNER_PREFIX`, an owner
+ * record's key — or null when the key is not one.
  *
  * The surface may itself contain a colon (`prospect:<id>`) and a slot adds its
  * request key after it, so only the first two segments are taken and the rest
  * is left alone — which is why a slot and the legacy single key answer to the
  * same identity.
  */
-function identityOf(key: string): { organizationId: string; userId: string } | null {
-  if (!key.startsWith(PREFIX)) return null
-  const rest = key.slice(PREFIX.length)
+function identityOf(key: string, prefix = PREFIX): { organizationId: string; userId: string } | null {
+  if (!key.startsWith(prefix)) return null
+  const rest = key.slice(prefix.length)
   const first = rest.indexOf(':')
   if (first <= 0) return null
   const second = rest.indexOf(':', first + 1)
@@ -546,12 +610,12 @@ function identityOf(key: string): { organizationId: string; userId: string } | n
  * Collected first, then removed: removing while walking `store.key(i)`
  * reindexes the store underneath the loop and silently skips entries.
  */
-function removeMatching(store: DraftStorage, matches: (key: string) => boolean): void {
+function removeMatching(store: DraftStorage, prefix: string, matches: (key: string) => boolean): void {
   const doomed: string[] = []
   try {
     for (let i = 0; i < store.length; i += 1) {
       const key = store.key(i)
-      if (key && key.startsWith(PREFIX) && matches(key)) doomed.push(key)
+      if (key && key.startsWith(prefix) && matches(key)) doomed.push(key)
     }
   } catch {
     return

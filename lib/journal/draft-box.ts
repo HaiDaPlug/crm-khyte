@@ -2,6 +2,7 @@ import type { JournalEntryView, JournalKind } from './contracts'
 import {
   adoptDraft,
   followStorage,
+  reconcileOnMount,
   settleSave,
   settleSentSlot,
   typedSince,
@@ -198,9 +199,12 @@ export class DraftBox {
 
   /**
    * On mount, and on StrictMode's second mount: drop any other identity's
-   * leftovers and load this tab's own draft for the surface — the slot this
-   * tab remembers owning, or else the newest one, which it then owns too.
-   * The box is reset whether or not a draft is found: a prospect with nothing
+   * leftovers and load this tab's own draft for the surface. What this tab
+   * remembers of it (`ownDraft`, with its own copy of the words) is weighed
+   * against the shared slot by `reconcileOnMount` — the rules the live
+   * listener applies, for whatever happened while this composer was not
+   * mounted. A tab that owns nothing takes the newest slot as a mirror. The
+   * box is reset whether or not a draft is found: a prospect with nothing
    * written about it must not inherit the sentence somebody was mid-way
    * through on the previous one.
    */
@@ -210,35 +214,54 @@ export class DraftBox {
     this.letGo.clear()
     this.inFlight = null
     this.alias = null
-    sweepForeignDrafts(this.org, this.user, this.storage)
-    // Read before loading: a load that falls back to the newest slot records
-    // it as a mirror, not typed.
+    sweepForeignDrafts(this.org, this.user, this.storage, this.session)
     const owned = ownDraft(this.org, this.user, this.surface, this.session)
-    const draft = loadDraftFor(this.org, this.user, this.surface, this.storage, this.session)
-    // The fork origin travels with the words, whoever holds them now.
-    this.forkedFrom = draft?.forkedFrom ?? null
-    // Words this tab typed before a reload are still its own — a mirror they
-    // are not, or another tab deleting the draft would empty them — but only
-    // while the slot still says them, or carries them on. Another tab may have
-    // rewritten it while this composer was away; those words are a mirror.
-    const typedText = owned?.typedText.trim() ?? ''
-    const typed =
-      draft !== null &&
-      owned !== null &&
-      owned.requestKey === draft.requestKey &&
-      typedText !== '' &&
-      typedSince(typedText, draft.text.trim()) !== null
-    return this.show(
-      {
-        text: draft?.text ?? '',
-        kind: draft?.kind ?? 'update',
-        occurredOn: draft?.occurredOn ?? '',
-        surface: this.surface,
-        requestKey: draft?.requestKey ?? null,
-      },
-      typed,
-      typed ? owned!.typedText : ''
+    const slot = owned ? readDraftSlot(this.org, this.user, this.surface, owned.requestKey, this.storage) : null
+    const decision = reconcileOnMount(owned, slot)
+
+    if (decision.do === 'fallback' || owned === null) {
+      const draft = loadDraftFor(this.org, this.user, this.surface, this.storage, this.session)
+      this.forkedFrom = draft?.forkedFrom ?? null
+      return this.show(
+        {
+          text: draft?.text ?? '',
+          kind: draft?.kind ?? 'update',
+          occurredOn: draft?.occurredOn ?? '',
+          surface: this.surface,
+          requestKey: draft?.requestKey ?? null,
+        },
+        false
+      )
+    }
+
+    if (decision.do === 'show' && slot !== null) {
+      // The fork origin travels with the words, whoever holds them now.
+      this.forkedFrom = slot.forkedFrom ?? null
+      const view = this.show(
+        { text: slot.text, kind: slot.kind, occurredOn: slot.occurredOn ?? '', surface: this.surface, requestKey: slot.requestKey },
+        decision.typedHere,
+        decision.typedHere ? owned.typedText : ''
+      )
+      this.claim()
+      return view
+    }
+
+    // Restore or fork: the tab's own copy comes back, typed, with its kind,
+    // date and origin — under its own key when the slot is gone, under a fresh
+    // one (the old key its origin) when another tab wrote other words there.
+    const copy = owned.snapshot!
+    const fork = decision.do === 'fork'
+    const key = fork ? newRequestKey() : owned.requestKey
+    this.forkedFrom = copy.forkedFrom ?? (fork ? owned.requestKey : null)
+    if (fork) this.letGo.add(owned.requestKey)
+    const view = this.show(
+      { text: copy.text, kind: copy.kind, occurredOn: copy.occurredOn ?? '', surface: this.surface, requestKey: key },
+      true,
+      owned.typedText
     )
+    this.file(this.current)
+    this.claim()
+    return view
   }
 
   unmount(): void {
@@ -389,7 +412,12 @@ export class DraftBox {
     const sharedFork =
       options.freshKey === true && this.forkedFrom !== null && before.requestKey !== null && this.forkedFrom !== before.requestKey
     if (options.freshKey) this.forkedFrom = null
-    if (sharedFork) this.file(before)
+    if (sharedFork) {
+      // The key stays, so nothing below re-claims it: the tab's own copy must
+      // drop the origin too, or a later mount would restore it.
+      this.file(before)
+      this.claim()
+    }
     const key = sharedFork ? before.requestKey! : options.freshKey ? newRequestKey() : before.requestKey ?? newRequestKey()
     if (key !== before.requestKey) {
       const filed = this.file({ ...before, requestKey: key })
@@ -417,9 +445,9 @@ export class DraftBox {
    * Null when this instance is gone. The box now on screen for the surface in
    * this tab settles the answer instead when it still holds the sent draft
    * (`heirFor`), and tells its component through `listen`. Otherwise only the
-   * slots the save came from are settled: the sent one, and the fork's while
-   * it holds exactly the sent words; the owner key is left to whatever box is
-   * on screen, and forgotten only when it names the fork's slot that just went.
+   * slots the save came from are settled — the sent one, and the fork's while
+   * it holds exactly the sent words — and this tab's own copy of the draft is
+   * forgotten, its slot with it, when it is exactly the acknowledged words.
    */
   settleOk(sent: SaveSnapshot): SaveResult | null {
     const alias = this.alias
@@ -427,19 +455,44 @@ export class DraftBox {
     this.alias = null
     if (this.isAlive) return this.settle(sent, alias)
 
-    const heir = this.heirFor(sent, alias)
-    if (heir) {
-      const result = heir.settle(sent, alias)
-      if (result) heir.listener?.({ saved: result })
+    const found = this.heirFor(sent, alias)
+    if (found) {
+      const result = found.heir.settle(sent, found.alias)
+      if (result) found.heir.listener?.({ saved: result })
       return null
     }
 
     const aliasTo = alias !== null && alias.from === sent.requestKey ? alias.to : null
     this.release(sent)
-    if (aliasTo !== null) {
-      this.release({ ...sent, requestKey: aliasTo })
-      const gone = readDraftSlot(this.org, this.user, this.surface, aliasTo, this.storage) === null
-      if (gone && ownDraftKey(this.org, this.user, this.surface, this.session) === aliasTo) {
+    if (aliasTo !== null) this.release({ ...sent, requestKey: aliasTo })
+
+    // This tab's own copy of the draft, which the next mount would restore —
+    // under the sent key, the fork's in flight, or a key the mount forked it
+    // to from the sent one. When it holds the words just acknowledged, perhaps
+    // with a full stop or a space after them (the rule `settle` applies to a
+    // live box), its slot is released while it holds exactly them and the
+    // record forgotten, so a saved sentence does not come back. A copy that
+    // carries on past them is kept — on return it restores or forks, and its
+    // Save meets the origin, replay and strip rules. A record from an earlier
+    // build, with no copy, goes when its slot went.
+    const owned = ownDraft(this.org, this.user, this.surface, this.session)
+    const copy = owned?.snapshot ?? null
+    const matches =
+      owned !== null &&
+      (owned.requestKey === sent.requestKey || owned.requestKey === aliasTo || copy?.forkedFrom === sent.requestKey)
+    if (owned !== null && matches) {
+      const words =
+        copy === null
+          ? null
+          : { ...sent, text: copy.text, kind: copy.kind, occurredOn: copy.occurredOn ?? '', requestKey: owned.requestKey }
+      const acknowledged =
+        words === null
+          ? readDraftSlot(this.org, this.user, this.surface, owned.requestKey, this.storage) === null
+          : words.kind === sent.kind &&
+            words.occurredOn === sent.occurredOn &&
+            typedSince(sent.text.trim(), words.text.trim()) === ''
+      if (acknowledged) {
+        if (words !== null) this.release(words)
         forgetOwnDraft(this.org, this.user, this.surface, this.session)
       }
     }
@@ -448,24 +501,32 @@ export class DraftBox {
 
   /**
    * The box on screen for this surface in this tab that an answer reaching
-   * this unmounted instance belongs to — or null. It must hold the sent draft
-   * under the sent key or the key a fork moved it to, AND its words must be
-   * the sent words or carry them on (same kind and date). The key alone is
+   * this unmounted instance belongs to, and the alias to settle it with — or
+   * null. It must hold the sent draft under the sent key, the key a fork in
+   * flight moved it to, or a key forked from the sent one (the mount forked
+   * this tab's copy away from a slot another tab rewrote), AND its words must
+   * be the sent words or carry them on (same kind and date). The key alone is
    * not enough: another tab may have rewritten the slot while the drawer was
    * away, and settling the answer against those words would take them for
    * this tab's own edit.
    */
-  private heirFor(sent: SaveSnapshot, alias: { from: string; to: string } | null): DraftBox | null {
+  private heirFor(
+    sent: SaveSnapshot,
+    alias: { from: string; to: string } | null
+  ): { heir: DraftBox; alias: { from: string; to: string } | null } | null {
     const heir = screenOf(this.session).get(this.screenKey)
     if (!heir || heir === this || !heir.isAlive) return null
     const box = heir.current
     const aliasTo = alias !== null && alias.from === sent.requestKey ? alias.to : null
-    if (box.requestKey === null || (box.requestKey !== sent.requestKey && box.requestKey !== aliasTo)) return null
+    const forkedFromSent = heir.forkedFrom === sent.requestKey
+    if (box.requestKey === null) return null
+    if (box.requestKey !== sent.requestKey && box.requestKey !== aliasTo && !forkedFromSent) return null
     const carriesOn =
       box.kind === sent.kind &&
       box.occurredOn === sent.occurredOn &&
       typedSince(sent.text.trim(), box.text.trim()) !== null
-    return carriesOn ? heir : null
+    if (!carriesOn) return null
+    return { heir, alias: box.requestKey === sent.requestKey ? alias : { from: sent.requestKey, to: box.requestKey } }
   }
 
   private settle(sent: SaveSnapshot, alias: { from: string; to: string } | null): SaveResult | null {
@@ -560,7 +621,7 @@ export class DraftBox {
     this.inFlight = null
     this.alias = null
     if (this.isAlive) return true
-    this.heirFor(sent, alias)?.listener?.({ refused: refusal })
+    this.heirFor(sent, alias)?.heir.listener?.({ refused: refusal })
     return false
   }
 
@@ -606,8 +667,15 @@ export class DraftBox {
    * reload knows which words are this tab's, and which are a mirror.
    */
   private claim(): void {
-    const { requestKey, typedHere, typedText } = this.current
+    const { requestKey, typedHere, typedText, text, kind, occurredOn } = this.current
     if (!requestKey) return
-    rememberOwnDraft(this.org, this.user, this.surface, requestKey, this.session, typedHere ? typedText : '')
+    // With this tab's own copy of the draft, for a mount that finds the shared
+    // slot emptied or rewritten while nothing here was live (`reconcileOnMount`).
+    rememberOwnDraft(this.org, this.user, this.surface, requestKey, this.session, typedHere ? typedText : '', {
+      text,
+      kind,
+      occurredOn: occurredOn || null,
+      ...(this.forkedFrom !== null ? { forkedFrom: this.forkedFrom } : {}),
+    })
   }
 }

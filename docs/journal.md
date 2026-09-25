@@ -308,7 +308,7 @@ only**: the old build selects from a table that no longer exists.
 | MCP behaviour: the Journal write inside `commitAction`, replay, preview, the request-key collision that aborts a commit, receipts without Journal text, `get_crm_record.journal` with a cursor, `list_journal` paging and isolation, the export counting person-written entries only, the bulk path without the Journal read, `journal_quality` | `npm run test:mcp` | 51 / 51 |
 | Stage 1 migration rehearsal, rollout guard and follow-up | `npm run test:org` | 7 / 7 |
 | Scoping lint: 25 organization-owned tables (the four Journal tables joined automatically), 36 Server Action statements over 12 tables, 91 SQL statements over six files including `lib/journal/service.ts`; from the second round: the Journal actions resolve the session without throwing and report `unauthorized` | `npm run test:scoping` | 4 / 4 |
-| Client store: normalized Journal slice, view filing, edit across views, optimistic delete with restore on refusal and on a rejected promise, coverage accumulation, poller merge for paged views, view release, drafts keyed by identity and cleared on identity change and sign-out, the mount sweep, a throwing storage, `formatJournalDate` / `formatJournalDateTime` in the organization's zone, `buildExportRows` over Journal entries, and from the correction pass: the save settlement (unchanged, changed, other surface), the edit session (base captured, incoming revision does not move it, rebase), the poller decision (applied advances, deferred and failed retry), the range refresh dropping a deleted entry and updating an edited one, `changeNextStep` optimistic and restored, `unauthorized` keeping drafts while `context_mismatch` clears them; from the second round: the editor's save settlement (unchanged closes, changed keeps the newer words on the saved revision), the stored-draft settlement across tabs (equal → cleared, advanced by another tab → kept and adopted, both changed → this tab's words under a fresh key), the two-tab replay that fails without the fix, the adopt-from-storage guard; from the third round: per-key draft slots with per-tab ownership, the draft box choreography driven directly against fake storages (restore and fork, let-go keys, the fork origin carried in the slot, the hand-over to a live box, typed words in the owner record), Astra's two cases end to end, and every duplicate path the four review passes found | `npm run test:store` | 59 / 59 |
+| Client store: normalized Journal slice, view filing, edit across views, optimistic delete with restore on refusal and on a rejected promise, coverage accumulation, poller merge for paged views, view release, drafts keyed by identity and cleared on identity change and sign-out, the mount sweep, a throwing storage, `formatJournalDate` / `formatJournalDateTime` in the organization's zone, `buildExportRows` over Journal entries, and from the correction pass: the save settlement (unchanged, changed, other surface), the edit session (base captured, incoming revision does not move it, rebase), the poller decision (applied advances, deferred and failed retry), the range refresh dropping a deleted entry and updating an edited one, `changeNextStep` optimistic and restored, `unauthorized` keeping drafts while `context_mismatch` clears them; from the second round: the editor's save settlement (unchanged closes, changed keeps the newer words on the saved revision), the stored-draft settlement across tabs (equal → cleared, advanced by another tab → kept and adopted, both changed → this tab's words under a fresh key), the two-tab replay that fails without the fix, the adopt-from-storage guard; from the third round: per-key draft slots with per-tab ownership, the draft box choreography driven directly against fake storages (restore and fork, let-go keys, the fork origin carried in the slot, the hand-over to a live box, typed words in the owner record), Astra's two cases end to end, and every duplicate path the four review passes found; from the fourth round: the owner copy reconciled on mount for a parked surface (clear, replace, reload, forked draft with kind and date), acknowledged and discarded drafts not resurrected, lost acknowledgements replaying, sign-out and the sweep clearing the copies | `npm run test:store` | 68 / 68 |
 | Journal migration rehearsal: nine legacy notes of every shape, ids and dates preserved, authors unknown, precision and Stockholm days, the unique interaction match linked, `legacy_*` carried, revision 1 written, RLS and policies on all four tables, the file applied twice, the follow-up catching up two late notes and dropping `notes`; from the correction pass: a 20 001-character legacy note migrated losslessly, an outreach-shaped line with an invalid date migrated as an ordinary entry and counted malformed, the earlier length check swapped for the named constraint | `npm run test:journal:migration` | 14 / 14 |
 | Journal service: A01, A02 (once with either target), A08 durability, A20 tombstone (with the legacy `notes` row still cascading, stated), A23 read-back and a three-page cursor walk stable under an insert, retry → `replayed`, changed text → `request_key_conflict` with `existing`, a transaction that fails after the capture insert leaving nothing, redaction reaching every content column, edit → revision 2, `revision_conflict`, `deleted`, `not_found`, two organizations invisible to each other, `author_id` nulled when the account goes, the 22:30Z day, `target_not_found`, the 20 000-character bound, explicit precision honoured and incoherent precision refused, `scopeMismatch`; from the correction pass: a real session revoked, re-added, reset or expired is `unauthorized` on every mutation with no row changed while a live one writes and an MCP actor is not gated; retries with changed kind, date, title, performer or links are `request_key_conflict` while an identical retry replays once; `changeNextStep` writes the prospect and the system line in one transaction, logs nothing for an empty previous value, replays a repeated transition, edits of system entries are `system_entry` | `npm run test:journal` | 41 / 41 |
 | Production build | `npm run build` | passes (compiled in 27 s; a first attempt earlier the same day was stopped by the machine running out of memory and was repeated) |
@@ -709,7 +709,8 @@ draft was identified by its text, never by who owned it.
   under that identity until the next composer mount by another identity
   sweeps them — as a keystroke did before this round. While a tab's drawer is
   on another prospect, nothing there is live to restore that prospect's draft
-  if another tab empties it. Two tabs that both type different words under one
+  if another tab empties it (withdrawn in round 4, below: the owner record
+  now carries the draft and is reconciled on mount). Two tabs that both type different words under one
   shared key end with two drafts; nothing decides for the person which
   version was meant.
 
@@ -762,6 +763,70 @@ used, on the rebuilt database (no entries at the start).
   with "Sparat" instead of taking the words back. A then saved: the same key
   replayed the entry, the box cleared, and a reload showed 4 entries — one
   for this draft, not two.
+
+**Correction round 4 — Astra's review of `57f27fa` (2026-09-25).** Both
+round-3 cases pass. One finding, R4-1, blocked acceptance: the limit round 3
+had documented — a tab whose drawer is parked on another prospect cannot
+protect that prospect's draft — is a loss against the capture guarantee, not
+an exception to it. Tab A types "Call Erik tomorrow" (a decision, dated) on
+Erik; tab B mirrors it under the same key; A's drawer moves to another
+prospect, so the Erik box unmounts and its listener stops restoring and
+forking; B empties or replaces the draft; A returns to Erik and finds an
+empty box, or B's words as a mirror — and the mount even discarded A's owner
+record. Reproduced by Astra through the production `DraftBox`.
+
+- *A durable owned copy, reconciled on mount.* The per-tab owner record in
+  `sessionStorage` now carries the tab's own copy of its draft — text, kind,
+  date, request key, fork origin and the words typed here — written wherever
+  the box changes and forgotten wherever the draft is settled or discarded.
+  On mount the box reconciles that copy against the slot under its key with
+  the same rules the live listener applies (`reconcileOnMount`), so a parked
+  surface and a live one behave alike: the slot still holds the words, or
+  continues them → the slot is shown and the words stay typed; the slot holds
+  different words → the box forks its own words to a fresh key carrying the
+  origin, and the other tab keeps the old slot, both recoverable; the slot is
+  gone → the box restores its words under the same key, so a later Save
+  replays if the other tab saved them or meets the strip if it saved
+  something else. A mirror's copy restores nothing: its source was saved or
+  discarded by the tab that owned the words. Kind, date and origin travel
+  with the copy through a restore, a fork and a reload.
+- *Settled stays settled.* An acknowledgement that reaches a parked surface
+  forgets the copy when the copy is what was saved — the sent words, or a
+  punctuation tail on them, under the sent key, the in-flight alias or a key
+  the return had forked from the sent one — and releases that slot; a copy
+  typed on past the saved words is kept and comes back whole, where its Save
+  meets the strip. A box this tab emptied has already forgotten its copy. A
+  lost acknowledgement leaves the copy in place, so the return restores the
+  words and the next Save replays. Nothing acknowledged or discarded comes
+  back as a fresh entry.
+- *Sign-out clears the copies too.* Signing out, and the identity sweep on
+  mount, now remove this tab's owner copies as well as the slots, so the same
+  person signing back in on that tab does not find a discarded draft; the
+  `unauthorized` path keeps them, as it keeps the slots. Another open tab
+  still restores its typed words under the signed-out identity until swept —
+  the cross-tab case stands as stated in round 3.
+- *The limit is withdrawn.* The invariant now holds across a drawer switch
+  and a reload, not only while the composer is on the surface. Two limits
+  remain as stated: sign-out in another tab, and two tabs typing different
+  words under one shared key.
+
+Evidence: typecheck and build pass; mcp 51, org 7, scoping 4, store 68,
+journal:migration 14, journal 41, mcp:http 3. Astra's acceptance checks are
+in the store suite, driving the production `DraftBox` with one shared
+localStorage fake and one sessionStorage fake per tab: clear and replace while
+parked, the same through a reload and for a forked draft with kind and date,
+an acknowledged save and an intentional discard not resurrected, a lost
+acknowledgement replaying, and every round-3 regression kept. One reviewer
+plus skeptic on the batch: the acceptance list confirmed closed against the
+production module; 27 000 seeded walks over two and three tabs with drawer
+switches, reloads, held and lost answers found no loss and no silent
+duplicate; two should-fix findings the skeptic downgraded to notes (an
+acknowledgement reaching a parked surface after the return had already
+forked its copy; the owner copy surviving sign-out in the same tab) and five
+further notes, all applied above and pinned by tests. No server file
+changed; the PostgreSQL suite was not rerun. Not replayed in a browser this
+round: the finding and its fix live entirely in the draft module the suite
+drives, and the earlier rounds' on-screen paths are unchanged.
 
 ## The exact next stage
 

@@ -110,6 +110,8 @@ export interface JournalApi {
 export interface CRMStoreOptions {
   journal?: JournalApi
   draftStorage?: DraftStorage
+  /** The tab's own copies of its drafts (lib/journal/drafts `ownDraft`); `sessionStorage` when omitted. */
+  draftSession?: DraftStorage
 }
 
 /**
@@ -502,6 +504,7 @@ export function createCRMStore(snapshot: CRMSnapshot, options: CRMStoreOptions =
   const journalApi: JournalApi = options.journal ?? journalActions
   /** `undefined` leaves lib/journal/drafts on its own `localStorage` default. */
   const draftStorage = options.draftStorage
+  const draftSession = options.draftSession
 
   /**
    * The read arguments each view was loaded with.
@@ -701,7 +704,7 @@ export function createCRMStore(snapshot: CRMSnapshot, options: CRMStoreOptions =
     function finishIdentity(options: { keepDrafts?: boolean } = {}): void {
       if (!options.keepDrafts) {
         const { workspace } = get()
-        clearDraftsFor(workspace.organization.id, workspace.viewer.userId, draftStorage)
+        clearDraftsFor(workspace.organization.id, workspace.viewer.userId, draftStorage, draftSession)
       }
       if (!get().identityChanged) set({ identityChanged: true })
     }

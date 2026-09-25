@@ -203,7 +203,8 @@ export function JournalComposer({
   // whichever draft box is on screen for that surface and still holds the
   // sent draft — the drawer went away and came back — which tells this
   // component through `listen`; with none, only the slots the save came from
-  // are settled, and this tab's owner key is left to the box on screen.
+  // are settled, and this tab's own copy of the draft is forgotten when it is
+  // exactly the acknowledged words, so the next mount does not bring them back.
   useEffect(() => {
     render(draftBox.mount())
     setStatus('idle')

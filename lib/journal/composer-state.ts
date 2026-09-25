@@ -1,6 +1,6 @@
 import { CONTEXT_MISMATCH, UNAUTHORIZED } from '@/lib/actions/scope'
 import type { JournalKind } from './contracts'
-import type { JournalDraft } from './drafts'
+import type { JournalDraft, OwnDraft } from './drafts'
 
 /**
  * The decisions the Journal's three client surfaces make, as pure functions.
@@ -377,6 +377,55 @@ export function followStorage(box: FollowBox, focused: boolean, change: StorageC
   if (empty || !box.typedHere) return { do: 'adopt', draft: next, typedHere: false }
   if (!focused && continuesTyped(box, next)) return { do: 'adopt', draft: next, typedHere: true }
   return { do: 'fork' }
+}
+
+/**
+ * What a box shows when it mounts, given what this tab remembers of its draft
+ * (`owned`, from sessionStorage) and the shared slot under that key now.
+ *
+ *   'show'     the slot, typed here or a mirror as `typedHere` says.
+ *   'restore'  the tab's own copy, written back under its key.
+ *   'fork'     the tab's own copy, under a fresh key, its origin the key it
+ *              left (or that key's own origin); the other tab keeps the slot.
+ *   'fallback' what a tab that owns nothing shows: the newest slot on the
+ *              surface as a mirror, or nothing.
+ *
+ * WHY. While the composer is not mounted — the drawer moved to another
+ * prospect — another tab may empty or rewrite the slot, and nothing is live
+ * to hear it. The mount then asks what `followStorage` would have answered:
+ *
+ *   typed words, and a copy of them:
+ *     slot says the same words              → show, typed.
+ *     slot carries the typed words on       → show, typed: another tab took
+ *                                             them further while we were away.
+ *     slot says something else              → fork.
+ *     slot gone                             → restore. If another tab SAVED
+ *                                             them, a Save here replays; if it
+ *                                             saved other words, the strip.
+ *   a mirror: slot there → show; gone → fallback.
+ *   a record from an earlier build (a key, maybe typed words, no copy):
+ *     as before — show, typed while the slot carries the words on; fallback
+ *     when the slot is gone.
+ *   nothing remembered                      → fallback.
+ *
+ * A save acknowledged while the drawer was away, or a box emptied here, has
+ * already forgotten the record, so neither comes back.
+ */
+export type MountDecision = { do: 'show'; typedHere: boolean } | { do: 'restore' } | { do: 'fork' } | { do: 'fallback' }
+
+export function reconcileOnMount(owned: OwnDraft | null, slot: StoredDraft | null): MountDecision {
+  if (owned === null) return { do: 'fallback' }
+  const typed = owned.typedText.trim()
+  const copy = owned.snapshot
+  if (slot === null) return typed !== '' && copy !== null ? { do: 'restore' } : { do: 'fallback' }
+  if (typed === '') return { do: 'show', typedHere: false }
+  if (copy === null) return { do: 'show', typedHere: typedSince(typed, slot.text.trim()) !== null }
+  if (sameWords(slot, copy)) return { do: 'show', typedHere: true }
+  const carriesOn =
+    slot.kind === copy.kind &&
+    (slot.occurredOn ?? '') === (copy.occurredOn ?? '') &&
+    typedSince(typed, slot.text.trim()) !== null
+  return carriesOn ? { do: 'show', typedHere: true } : { do: 'fork' }
 }
 
 /**
